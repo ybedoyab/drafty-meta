@@ -54,6 +54,43 @@ def mesh_step(step_path: Path, msh_path: Path, spec: DesignSpec) -> meshio.Mesh:
     return mesh
 
 
+def assess_mesh(points: np.ndarray, cells: np.ndarray) -> dict:
+    """Reject inverted, empty, or duplicated corner tetrahedra before the solve."""
+
+    if len(cells) == 0:
+        raise GeometryError("The mesh has no tetrahedra.")
+    if int(cells.min()) < 0 or int(cells.max()) >= len(points):
+        raise GeometryError("The mesh connectivity points outside the node list.")
+    corners = cells[:, :4]
+    volumes = _corner_volumes(points, corners)
+    if not np.isfinite(volumes).all():
+        raise GeometryError("The mesh has a non-finite element volume.")
+    positive = int(np.count_nonzero(volumes > 1e-18))
+    negative = int(np.count_nonzero(volumes < -1e-18))
+    if positive and negative:
+        raise GeometryError("The mesh has an inverted or degenerate tetrahedron.")
+    if positive + negative != len(volumes):
+        raise GeometryError("The mesh has an inverted or degenerate tetrahedron.")
+    keys = {tuple(sorted(int(node) for node in row)) for row in corners}
+    if len(keys) != len(corners):
+        raise GeometryError("The mesh has duplicate tetrahedra.")
+    return {
+        "elements": int(len(cells)),
+        "min_corner_volume_m3": float(volumes.min()),
+        "max_corner_volume_m3": float(volumes.max()),
+        "inverted_elements": 0,
+        "jacobian": "positive corner-tetrahedron volume; quadratic mid-edge nodes are matched separately",
+    }
+
+
+def _corner_volumes(points: np.ndarray, corners: np.ndarray) -> np.ndarray:
+    a = points[corners[:, 0]]
+    b = points[corners[:, 1]]
+    c = points[corners[:, 2]]
+    d = points[corners[:, 3]]
+    return np.einsum("ij,ij->i", b - a, np.cross(c - a, d - a)) / 6.0
+
+
 def tetra_cells(mesh: meshio.Mesh, order: int) -> tuple[np.ndarray, np.ndarray, str]:
     key = "tetra10" if order == 2 else "tetra"
     if key not in mesh.cells_dict:

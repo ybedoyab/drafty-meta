@@ -128,9 +128,7 @@ class DesignSpec(BaseModel):
         if self.plate:
             values.extend([self.plate.length_m, self.plate.width_m, self.plate.thickness_m])
         if self.bracket:
-            values.extend(
-                [self.bracket.leg_x_m, self.bracket.leg_z_m, self.bracket.thickness_m, self.bracket.width_m]
-            )
+            values.extend([self.bracket.leg_x_m, self.bracket.leg_z_m, self.bracket.thickness_m, self.bracket.width_m])
         if self.holes:
             values.extend([self.holes.radius_m, self.holes.margin_m, self.holes.count_x, self.holes.count_y])
         if any(not math.isfinite(float(value)) for value in values):

@@ -40,7 +40,11 @@ def optimize_thickness(
         fallback = (low + high) / 2.0
         sample = fallback
         source = "bisection"
-        if proposer is not None:
+        submitted = _current_thickness(spec)
+        if index == 0 and submitted is not None and lower_m <= submitted <= upper_m:
+            sample = submitted
+            source = "submitted"
+        elif proposer is not None:
             idea = proposer(iterations, low, high)
             if idea is not None and low <= idea <= high:
                 sample = float(idea)
@@ -106,7 +110,9 @@ def optimize_thickness(
             "displacement_m": displacement,
             "safety_factor": result["safety_factor"],
             "governing_von_mises_pa": result["governing_von_mises_pa"],
+            "max_von_mises_pa": result["max_von_mises_pa"],
             "validation_status": result["validation_status"],
+            "safety_factor_status": (result.get("stress_assessment") or {}).get("safety_factor_status", "exploratory"),
             "feasible": feasible,
             "accepted": False,
             "artifact_dir": iteration_dir.name,
@@ -129,11 +135,29 @@ def optimize_thickness(
         "max_displacement_m": max_displacement_m,
         "iterations": iterations,
         "best": best,
+        "submitted": next((item for item in iterations if item.get("source") == "submitted"), None),
+        "optimality": "Bounded one-dimensional search. Not a proof of a global optimum.",
+        "safety_basis": "exploratory governing von Mises, not a certified safety factor",
         "units": {"length": "m", "mass": "kg", "stress": "Pa"},
     }
     if best is None:
         summary["message"] = "No solved iteration met the safety factor and displacement limits."
+    elif best.get("validation_status") != "benchmark_passed":
+        summary["message"] = (
+            "The accepted iteration finished in CalculiX. Its factor uses the exploratory governing stress "
+            "and is not a closed-form benchmark."
+        )
     return summary
+
+
+def _current_thickness(spec: DesignSpec) -> float | None:
+    if spec.kind == "cantilever_beam" and spec.beam:
+        return spec.beam.height_m
+    if spec.kind == "l_bracket" and spec.bracket:
+        return spec.bracket.thickness_m
+    if spec.plate:
+        return spec.plate.thickness_m
+    return None
 
 
 def _with_thickness(spec: DesignSpec, thickness_m: float) -> DesignSpec:

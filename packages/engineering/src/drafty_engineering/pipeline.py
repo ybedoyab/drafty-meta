@@ -19,7 +19,7 @@ from drafty_engineering.cad import build_solid, cad_matches_spec, export_preview
 from drafty_engineering.errors import DraftyError, GeometryError, SolverError
 from drafty_engineering.geometry_math import envelope, expected_face_area
 from drafty_engineering.materials import get_material
-from drafty_engineering.mesh import mesh_step, tetra_cells
+from drafty_engineering.mesh import assess_mesh, mesh_step, tetra_cells
 from drafty_engineering.openscad_export import to_openscad
 from drafty_engineering.solver import (
     distribute_load,
@@ -27,6 +27,7 @@ from drafty_engineering.solver import (
     measure_surface_area,
     parse_dat,
     parse_frd_nodal,
+    parse_reaction_sum,
     run_calculix,
     select_surface_nodes,
     write_input,
@@ -58,6 +59,7 @@ def run_simulation(
     _raise_if_cancelled(cancel_file)
     mesh = mesh_step(workdir / "model.step", workdir / "model.msh", spec)
     points, cells, cell_type = tetra_cells(mesh, spec.element_order)
+    quality = assess_mesh(points, cells)
     max_nodes = int(os.environ.get("DRAFTY_MAX_NODES", "250000"))
     if len(points) > max_nodes:
         raise GeometryError(
@@ -116,6 +118,24 @@ def run_simulation(
         raise SolverError(f"The solver output did not contain displacements and stresses.\n{excerpt}")
     frd_displacements, frd_stresses = parse_frd_nodal(frd_text)
     displacement, von_mises = fields_from_frd(len(points), frd_displacements, frd_stresses)
+    if not np.isfinite(displacement).all() or not np.isfinite(von_mises).all():
+        raise SolverError("The solver returned a non-finite displacement or stress field.")
+    applied = np.sum(np.stack(list(nodal_forces.values())), axis=0)
+    reaction = parse_reaction_sum(dat_text)
+    residual = float(np.linalg.norm(reaction + applied))
+    applied_norm = max(float(np.linalg.norm(applied)), 1e-9)
+    relative_residual = residual / applied_norm
+    equilibrium = {
+        "applied_force_n": [float(value) for value in applied],
+        "reaction_force_n": [float(value) for value in reaction],
+        "residual_n": residual,
+        "relative_residual": relative_residual,
+        "passed": relative_residual <= 0.05,
+    }
+    if not equilibrium["passed"]:
+        raise SolverError(
+            f"Reaction forces do not balance the applied load. Relative residual is {relative_residual:.3f}."
+        )
     surface = _surface_mesh(points, cells, displacement, von_mises)
     _write_vtu(workdir / "model.vtu", points, cells, cell_type, displacement, von_mises)
     _write_stress_glb(workdir / "results.glb", surface)
@@ -132,6 +152,8 @@ def run_simulation(
         surface,
         load_area,
         solver_info,
+        quality,
+        equilibrium,
     )
     (workdir / "results.json").write_text(json.dumps(result), encoding="utf-8")
     return result
@@ -149,6 +171,8 @@ def _result_payload(
     surface: dict,
     load_area: float,
     solver_info: dict,
+    quality: dict,
+    equilibrium: dict,
 ) -> dict:
     displacement_magnitude = np.linalg.norm(displacement, axis=1)
     peak_von_mises = float(np.max(von_mises))
@@ -192,7 +216,9 @@ def _result_payload(
             "element_type": "C3D10" if spec.element_order == 2 else "C3D4",
             "target_size_m": spec.mesh_size_m,
             "load_area_m2": load_area,
+            "quality": quality,
         },
+        "equilibrium": equilibrium,
         "mass_kg": volume * density,
         "volume_m3": volume,
         "max_displacement_m": float(np.max(displacement_magnitude)),
@@ -200,6 +226,18 @@ def _result_payload(
         "governing_von_mises_pa": governing_von_mises,
         "yield_strength_pa": yield_strength_pa,
         "safety_factor": yield_strength_pa / governing_von_mises,
+        "stress_assessment": {
+            "peak_von_mises_pa": peak_von_mises,
+            "measure_pa": governing_von_mises,
+            "measure": "maximum extrapolated nodal von Mises outside the support zone",
+            "exclusion": "nodes within 1.5 section depths of the support",
+            "exclusion_reason": "A fully fixed face can create a constraint singularity.",
+            "displayed_surface": "corner triangles of the quadratic tetrahedra, not a high-order interpolation",
+            "nodal_field": "extrapolated nodal stresses from the CalculiX .frd file",
+            "integration_point_field": "element stresses in the .dat file; not used for the factor",
+            "safety_factor_status": "exploratory",
+            "mesh_sensitivity": "Compare at least two element sizes. One completed solve is not a convergence proof.",
+        },
         "benchmark": benchmark,
         "warnings": warnings,
         "surface": surface,

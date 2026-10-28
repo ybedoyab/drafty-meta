@@ -30,6 +30,9 @@ def test_cantilever_benchmark_uses_calculix(tmp_path):
     assert result["surface"]["vertices_m"]
     assert result["mass_kg"] == pytest.approx(7850 * 0.300 * 0.020 * 0.012, rel=1e-4)
     assert result["mesh"]["load_area_m2"] == pytest.approx(0.020 * 0.012, rel=0.03)
+    assert result["equilibrium"]["passed"] is True
+    assert result["stress_assessment"]["safety_factor_status"] == "exploratory"
+    assert result["mesh"]["quality"]["inverted_elements"] == 0
     assert any("exploratory" in warning for warning in result["warnings"])
     assert any("corner triangles" in warning for warning in result["warnings"])
 
@@ -78,5 +81,7 @@ def test_other_geometries_complete_without_a_benchmark_claim(factory, tmp_path):
     assert result["validation_status"] == "solver_completed"
     assert result["benchmark"]["applicable"] is False
     assert result["benchmark"]["passed"] is None
+    assert result["equilibrium"]["passed"] is True
+    assert result["stress_assessment"]["safety_factor_status"] == "exploratory"
     assert result["max_displacement_m"] > 0
     assert result["governing_von_mises_pa"] > 0

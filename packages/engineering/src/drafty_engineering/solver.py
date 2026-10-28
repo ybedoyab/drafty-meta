@@ -75,6 +75,8 @@ def write_input(
                 lines.append(f"{int(node) + 1}, {dof}, {float(component):.10e}")
     lines.extend(
         [
+            "*NODE PRINT, NSET=FIXED",
+            "RF",
             "*NODE PRINT, NSET=NALL",
             "U",
             "*EL PRINT, ELSET=EALL",
@@ -271,6 +273,34 @@ def fields_from_frd(
         displacement[node_id - 1] = displacements[node_id]
         von_mises[node_id - 1] = von_mises_pa(stresses[node_id])
     return displacement, von_mises
+
+
+def parse_reaction_sum(text: str) -> np.ndarray:
+    """Sum support reaction forces written by *NODE PRINT RF."""
+
+    total = np.zeros(3)
+    reading = False
+    found = False
+    for raw_line in text.splitlines():
+        lowered = raw_line.lower()
+        if "forces (fx,fy,fz)" in lowered:
+            reading = True
+            found = True
+            continue
+        if not reading:
+            continue
+        if any(character.isalpha() and character not in "eEdD" for character in raw_line):
+            reading = False
+            continue
+        values = [float(item) for item in _FLOATS.findall(raw_line.replace("D", "E").replace("d", "E"))]
+        if len(values) >= 4:
+            total += np.array(values[-3:], dtype=float)
+    if not found:
+        raise SolverError("CalculiX did not write support reaction forces.")
+    return total
+
+
+_FLOATS = re.compile(r"[+-]?(?:\d+\.\d*|\.\d+|\d+)(?:[Ee][+-]?\d+)?")
 
 
 def parse_dat(text: str) -> tuple[dict[int, np.ndarray], dict[int, list[np.ndarray]]]:
