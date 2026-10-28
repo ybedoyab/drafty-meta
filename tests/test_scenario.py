@@ -71,6 +71,9 @@ def test_responses_search_uses_the_responses_endpoint(monkeypatch):
     assert calls["body"]["tools"] == [{"type": "web_search"}]
     assert calls["body"]["max_tool_calls"] == 2
     assert calls["body"]["input"][0]["content"][0]["type"] == "input_text"
+    assert calls["body"]["text"]["format"]["type"] == "json_schema"
+    assert calls["body"]["text"]["format"]["name"] == "scenario_reply"
+    assert "response_format" not in calls["body"]
     assert result["citations"][0]["url"] == "https://example.test/nsr"
     assert result["citations"][0]["title"] == "NSR-10"
     assert calls["authorization"] == "Bearer contract-test"
@@ -162,3 +165,168 @@ def test_model_wording_cannot_supply_a_stress_or_an_uncited_source():
     follow = advance_scenario(result, "What did you find?", responder=responder)
     assert seen[1]["previous_response_id"] == "resp_test"
     assert follow["previous_response_id"] == "resp_test"
+    assert len([item for item in follow["sources"] if item.get("url") == "https://example.test/page"]) == 1
+
+
+def test_prose_around_json_does_not_drop_the_reply():
+    from drafty_ai.scenario_agent import advance_scenario, blank_inputs
+
+    def responder(**_kwargs):
+        return {
+            "id": "resp_parse",
+            "model": "muse-spark-1.3",
+            "text": (
+                'Commentary {not json} {"message":"Need the span.","questions":["What is the span?"],'
+                '"observations":["A drawing of a beam"]}'
+            ),
+            "citations": [],
+            "usage": {"output_tokens": 5},
+        }
+
+    result = advance_scenario(
+        {"inputs": blank_inputs(), "messages": [], "evidence": []},
+        "classroom floor",
+        responder=responder,
+    )
+    assert "Need the span." in result["messages"][-1]["text"]
+    assert result["model_questions"] == ["What is the span?"]
+    assert result["observations"] == ["A drawing of a beam"]
+    assert result["phase"] == "asking"
+
+
+def test_a_research_budget_blocks_another_model_call():
+    from drafty_ai.scenario_agent import advance_scenario, blank_inputs
+
+    def responder(**_kwargs):
+        raise AssertionError("The model should not be called.")
+
+    result = advance_scenario(
+        {"inputs": blank_inputs(), "messages": [], "evidence": [], "meta_turns": 8},
+        "Review the current inputs.",
+        responder=responder,
+    )
+    assert "research limit" in result["messages"][-1]["text"]
+    assert result["ai"] == "not called"
+
+
+def test_duplicate_citations_keep_the_longer_span(monkeypatch):
+    monkeypatch.setenv("MODEL_API_KEY", "contract-test")
+
+    class _Response:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {
+                "id": "resp_cite",
+                "output": [
+                    {
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": "Educational classrooms are listed in the table.",
+                                "annotations": [
+                                    {
+                                        "type": "url_citation",
+                                        "url": "https://example.test/nsr",
+                                        "title": "NSR",
+                                        "start_index": 0,
+                                        "end_index": 11,
+                                    },
+                                    {
+                                        "type": "url_citation",
+                                        "url": "https://example.test/nsr",
+                                        "title": "NSR-10",
+                                        "start_index": 0,
+                                        "end_index": 23,
+                                    },
+                                    {"type": "url_citation", "url": "file:///tmp/secret", "title": "local"},
+                                ],
+                            }
+                        ]
+                    }
+                ],
+            }
+
+    monkeypatch.setattr("drafty_ai.responses.httpx.post", lambda *args, **kwargs: _Response())
+    from drafty_ai.responses import create_response
+
+    created = create_response(instructions="Cite.", user_text="classroom live load")
+    assert len(created["citations"]) == 1
+    assert created["citations"][0]["span"] == "Educational classrooms are listed in the table."[:23]
+    assert created["citations"][0]["title"] == "NSR-10"
+
+
+def test_a_lost_response_id_is_retried_once(monkeypatch):
+    monkeypatch.setenv("MODEL_API_KEY", "contract-test")
+    calls = []
+
+    class _Response:
+        def __init__(self, status, payload=None, text="previous_response_id rejected"):
+            self.status_code = status
+            self.text = text
+            self._payload = payload or {}
+
+        def json(self):
+            return self._payload
+
+    def post(url, headers, json, timeout):
+        calls.append(json)
+        if json.get("previous_response_id"):
+            return _Response(400)
+        return _Response(200, {"id": "resp_new", "output": []})
+
+    monkeypatch.setattr("drafty_ai.responses.httpx.post", post)
+    from drafty_ai.responses import create_response
+
+    created = create_response(instructions="Continue.", user_text="span", previous_response_id="resp_old")
+    assert created["context_reset"] is True
+    assert created["id"] == "resp_new"
+    assert "previous_response_id" not in calls[1]
+    assert calls[0]["previous_response_id"] == "resp_old"
+
+
+def test_a_response_timeout_does_not_expose_the_key(monkeypatch):
+    import httpx
+
+    monkeypatch.setenv("MODEL_API_KEY", "contract-test-secret")
+
+    def post(*_args, **_kwargs):
+        raise httpx.TimeoutException("timed out")
+
+    monkeypatch.setattr("drafty_ai.responses.httpx.post", post)
+    from drafty_ai.client import MetaRequestError
+    from drafty_ai.responses import create_response
+
+    with pytest.raises(MetaRequestError, match="timed out") as caught:
+        create_response(instructions="Cite.", user_text="span")
+    assert "contract-test-secret" not in str(caught.value)
+
+
+def test_image_urls_must_be_supported_data_urls(monkeypatch):
+    monkeypatch.setenv("MODEL_API_KEY", "contract-test")
+
+    def post(*_args, **_kwargs):
+        raise AssertionError("An invalid image must not be sent.")
+
+    monkeypatch.setattr("drafty_ai.responses.httpx.post", post)
+    from drafty_ai.client import MetaRequestError
+    from drafty_ai.responses import create_response
+
+    with pytest.raises(MetaRequestError, match="PNG, JPEG, or WebP"):
+        create_response(
+            instructions="Look.", user_text="What is visible?", image_data_urls=["https://example.test/a.png"]
+        )
+
+
+def test_chat_completions_do_not_receive_web_search(monkeypatch):
+    monkeypatch.setenv("MODEL_API_KEY", "contract-test")
+
+    def post(*_args, **_kwargs):
+        raise AssertionError("Chat completions must not send web_search.")
+
+    monkeypatch.setattr("drafty_ai.client.httpx.post", post)
+    from drafty_ai.client import MetaRequestError, chat_completion
+
+    with pytest.raises(MetaRequestError, match="Responses API"):
+        chat_completion([{"role": "user", "content": "search"}], tools=[{"type": "web_search"}])

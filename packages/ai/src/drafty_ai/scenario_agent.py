@@ -1,11 +1,11 @@
-"""One scenario orchestration. Physics stays in drafty_engineering.scenario."""
+"""One scenario orchestration. Physics stays in drafty_engineering."""
 
 import json
 import re
 from datetime import UTC, datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from drafty_ai.client import MetaNotConfigured, MetaRequestError, configured
 from drafty_ai.responses import create_response
@@ -15,7 +15,7 @@ INSTRUCTIONS = """You are Drafty's scenario assistant.
 One reply covers understanding, research, assumptions, a physical model, numerical verification, and criticism.
 Use web_search only for published codes, standards, or material sources.
 Do not search in order to do arithmetic.
-Return one JSON object and nothing else: {"message": "", "questions": [], "observations": []}.
+Return only the JSON object required by the schema: message, questions, and observations.
 observations may name visible objects. They must not state a dimension, a load, or a stress.
 Do not claim that a design is safe, approved, or certified.
 Do not invent finite-element stresses, displacements, or safety factors.
@@ -23,6 +23,21 @@ Do not write Python, shell, or solver input.
 The server replaces every load and section number with its own calculation.
 """
 
+MAX_META_TURNS = 8
+MAX_SESSION_OUTPUT_TOKENS = 6000
+_COMPARE_KEYS = (
+    "jurisdiction",
+    "span_m",
+    "tributary_width_m",
+    "dead_n_per_m2",
+    "live_n_per_m2",
+    "beam_self_weight_n_per_m",
+    "depth_m",
+    "flange_width_m",
+    "flange_thickness_m",
+    "web_thickness_m",
+    "supports",
+)
 _STUDENTS = re.compile(r"(\d+)\s+students", re.I)
 _SPAN = re.compile(r"\bspan(?:\s+of)?\s+(\d+(?:\.\d+)?)\s*m\b", re.I)
 _WIDTH = re.compile(r"\btributary(?:\s+width)?\s+(\d+(?:\.\d+)?)\s*m\b", re.I)
@@ -90,29 +105,41 @@ def advance_scenario(
 ) -> dict:
     inputs = absorb_message(state.get("inputs") or blank_inputs(), message)
     study = evaluate_classroom(**inputs)
+    analysis = _fresh_analysis(state.get("analysis"), inputs)
+    comparison = None if analysis is None or analysis.get("stale") else state.get("comparison")
     image_count = len(state.get("evidence") or [])
-    summary = _summary(study, inputs, image_count, bool(image_data_urls))
-    mode = "offline-template"
-    model_name = None
+    images_sent = bool(image_data_urls)
+    summary = _summary(study, inputs, image_count, images_sent)
+    mode = state.get("mode") if state.get("mode") in {"offline-template", "meta-responses"} else "offline-template"
+    model_name = state.get("model") if mode == "meta-responses" else None
     response_id = state.get("previous_response_id")
-    usage = None
+    usage = state.get("usage")
+    meta_turns = int(state.get("meta_turns") or 0)
+    output_tokens = int(state.get("output_tokens") or 0)
+    context_reset = False
     withheld = ""
     accepted = ""
     questions: list[str] = []
     observations: list[str] = []
     search_sources: list[dict] = []
+    over_budget = _over_budget(meta_turns, output_tokens)
     caller = responder
-    if caller is None and configured():
+    if caller is None and configured() and not over_budget:
         selected_model = model
 
         def caller(**kwargs: Any) -> dict:
             return create_response(model=selected_model, **kwargs)
 
-    if caller is not None:
+    if over_budget and (responder is not None or configured()):
+        withheld = (
+            "This session reached its Meta research limit of 8 turns or 6000 output tokens. "
+            "No further model call was sent. The numbers below are the local calculation."
+        )
+    elif caller is not None:
         try:
             result = caller(
                 instructions=INSTRUCTIONS,
-                user_text=_model_prompt(message, inputs, image_count),
+                user_text=_model_prompt(message, inputs, image_count, study["missing"]),
                 image_data_urls=(image_data_urls or [])[:8],
                 previous_response_id=response_id,
             )
@@ -124,11 +151,20 @@ def advance_scenario(
                 f"The Meta request failed ({exc}). No citation was stored from that attempt. "
                 "The numbers below are the local calculation."
             )
+        else:
+            if not isinstance(result, dict):
+                result = None
+                withheld = "The model reply was empty, so its wording was not used."
         if result:
             mode = "meta-responses"
-            model_name = result.get("model")
+            model_name = result.get("model") or model_name
             response_id = result.get("id") or response_id
-            usage = result.get("usage")
+            usage_payload = result.get("usage") if isinstance(result.get("usage"), dict) else {}
+            context_reset = bool(result.get("context_reset"))
+            meta_turns += 1
+            output_tokens += int(usage_payload.get("output_tokens") or 0)
+            if usage_payload:
+                usage = usage_payload
             parsed = _parse_model(str(result.get("text") or ""))
             if parsed is None:
                 withheld = (
@@ -140,7 +176,7 @@ def advance_scenario(
                 questions = parsed.questions[:6]
                 observations = parsed.observations[:6]
             for item in result.get("citations") or []:
-                if not item.get("url"):
+                if not isinstance(item, dict) or not item.get("url"):
                     continue
                 search_sources.append(
                     {
@@ -153,6 +189,17 @@ def advance_scenario(
                         "limit": "A retrieved page is not a checked code provision and it is not a certification.",
                     }
                 )
+            if context_reset:
+                withheld = (
+                    "The previous Meta conversation could not be resumed, so this turn started a new one. "
+                    "Saved inputs were kept. " + withheld
+                ).strip()
+    phase = _phase(
+        study,
+        images_sent=images_sent,
+        searched=bool(search_sources),
+        analysis_current=bool(analysis) and not analysis.get("stale"),
+    )
     assistant = " ".join(part for part in (accepted, withheld, summary) if part).strip()
     messages = list(state.get("messages") or [])
     if message.strip():
@@ -164,13 +211,14 @@ def advance_scenario(
         "missing": study["missing"],
         "errors": study["errors"],
         "assumptions": study["assumptions"],
-        "sources": [*study["sources"], *search_sources],
+        "sources": _merge_sources(study["sources"], state.get("sources") or [], search_sources),
         "calculation": study["line"],
         "section": study["section"],
         "beam": study["beam"],
         "model_proposal": {
             "family": "simply supported classroom I-beam, preliminary",
             "ready_for_3d_simulation": False,
+            "ready_for_beam_elements": study["ready_for_beam_elements"],
             "reason": study["reason"],
         },
         "verification": study["verification"],
@@ -180,37 +228,87 @@ def advance_scenario(
         "model": model_name,
         "previous_response_id": response_id,
         "usage": usage,
+        "meta_turns": meta_turns,
+        "output_tokens": output_tokens,
+        "context_reset": context_reset,
+        "phase": phase,
+        "analysis": analysis,
+        "comparison": comparison,
         "ai": "responses" if mode == "meta-responses" else "not called",
     }
 
 
-def _model_prompt(message: str, inputs: dict, image_count: int) -> str:
+def _model_prompt(message: str, inputs: dict, image_count: int, missing: list[str]) -> str:
     return (
         f"User message: {message or 'Review the current inputs.'}\n"
         f"Known inputs, which you must not replace: {json.dumps(inputs)}\n"
+        f"Missing fields: {', '.join(missing) if missing else 'none'}.\n"
         f"Stored images: {image_count}. Describe only what is visible. Do not measure them."
     )
 
 
 def _parse_model(text: str) -> ModelReply | None:
-    match = None
-    for candidate in re.finditer(r"\{.*\}", text, re.S):
-        match = candidate
-    if match is None:
-        return None
-    try:
-        payload = json.loads(match.group(0))
-    except json.JSONDecodeError:
-        return None
-    try:
-        reply = ModelReply.model_validate(payload)
-    except ValueError:
-        return None
-    if _FORBIDDEN.search(reply.message):
-        reply.message = ""
-    reply.observations = [item for item in reply.observations if item and not _MEASURED.search(item)]
-    reply.questions = [item[:240] for item in reply.questions if item.strip()]
-    return reply
+    for candidate in _json_candidates(text):
+        try:
+            payload = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        try:
+            reply = ModelReply.model_validate(payload)
+        except ValidationError:
+            continue
+        if _FORBIDDEN.search(reply.message):
+            reply.message = ""
+        reply.message = reply.message.strip()[:1200]
+        reply.observations = [item for item in reply.observations if item and not _MEASURED.search(item)][:6]
+        reply.questions = [
+            item.strip()[:240]
+            for item in reply.questions
+            if item.strip() and not _MEASURED.search(item) and not _FORBIDDEN.search(item)
+        ][:6]
+        return reply
+    return None
+
+
+def _json_candidates(text: str) -> list[str]:
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
+        cleaned = re.sub(r"\s*```$", "", cleaned)
+    found = [cleaned] if cleaned else []
+    found.extend(_balanced_objects(cleaned))
+    return found
+
+
+def _balanced_objects(text: str) -> list[str]:
+    objects: list[str] = []
+    start: int | None = None
+    depth = 0
+    in_string = False
+    escape = False
+    for index, character in enumerate(text):
+        if in_string:
+            if escape:
+                escape = False
+            elif character == "\\":
+                escape = True
+            elif character == '"':
+                in_string = False
+            continue
+        if character == '"':
+            in_string = True
+        elif character == "{":
+            if depth == 0:
+                start = index
+            depth += 1
+        elif character == "}" and depth:
+            depth -= 1
+            if depth == 0 and start is not None:
+                objects.append(text[start : index + 1])
+                start = None
+    return objects
 
 
 def _summary(study: dict, inputs: dict, image_count: int, images_sent: bool) -> str:
@@ -234,6 +332,77 @@ def _summary(study: dict, inputs: dict, image_count: int, images_sent: bool) -> 
             f"M = {beam['max_moment_n_m']:.1f} N·m, each reaction = {beam['end_shear_n']:.1f} N, "
             f"midspan deflection = {beam['midspan_deflection_m'] * 1000:.3f} mm."
         )
+    if study["ready_for_beam_elements"]:
+        parts.append(
+            "Confirmed simple supports can be sent to Euler-Bernoulli beam elements. "
+            "They are not sent to the solid cantilever solver."
+        )
     parts.append(study["reason"])
     parts.extend(study["errors"])
     return " ".join(parts)
+
+
+def _phase(study: dict, *, images_sent: bool, searched: bool, analysis_current: bool) -> str:
+    if analysis_current:
+        return "verifying"
+    if study.get("beam") or study.get("ready_for_beam_elements"):
+        return "building-model"
+    if searched:
+        return "searching"
+    if images_sent:
+        return "interpreting-evidence"
+    if study.get("missing"):
+        return "asking"
+    return "collecting"
+
+
+def _over_budget(meta_turns: int, output_tokens: int) -> bool:
+    return meta_turns >= MAX_META_TURNS or output_tokens >= MAX_SESSION_OUTPUT_TOKENS
+
+
+def _fresh_analysis(analysis: dict | None, inputs: dict) -> dict | None:
+    if not analysis:
+        return None
+    snapshot = analysis.get("inputs") or {}
+    stale = any(not _same(snapshot.get(key), inputs.get(key)) for key in _COMPARE_KEYS)
+    return {**analysis, "stale": stale}
+
+
+def _same(left: Any, right: Any) -> bool:
+    if isinstance(left, (int, float)) and isinstance(right, (int, float)):
+        scale = max(1.0, abs(float(left)), abs(float(right)))
+        return abs(float(left) - float(right)) <= 1e-9 * scale
+    return left == right
+
+
+def _merge_sources(authoritative: list[dict], prior: list[dict], fresh: list[dict]) -> list[dict]:
+    merged: list[dict] = []
+    index: dict[str, dict] = {}
+    protected: set[str] = set()
+
+    def add(item: dict, *, protect: bool = False, refresh: bool = False) -> None:
+        url = str(item.get("url") or "").strip()
+        key = url or f"{item.get('origin')}|{item.get('title')}"
+        current = index.get(key)
+        if current is not None:
+            if key in protected or not refresh:
+                return
+            for field in ("span", "retrieved_at", "title", "status", "limit"):
+                if item.get(field) not in (None, ""):
+                    current[field] = item[field]
+            return
+        copy = dict(item)
+        index[key] = copy
+        merged.append(copy)
+        if protect:
+            protected.add(key)
+
+    for item in authoritative:
+        add(item, protect=True)
+    for item in prior:
+        if item.get("origin") == "checked template":
+            continue
+        add(item)
+    for item in fresh:
+        add(item, refresh=True)
+    return merged

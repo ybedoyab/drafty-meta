@@ -33,7 +33,7 @@ npm install
 npm run dev
 ```
 
-Open http://localhost:5173. The homepage offers **Start with AI** (`/scenario/new`) and **Open Studio** (`/studio`). The scenario assistant keeps a server-side session. Without `MODEL_API_KEY` it is a labeled guided template: it asks for missing data, cites the checked NSR-10 classroom minimum only after Colombia is confirmed, and calculates the line load in Python. It does not call Meta and it does not send that floor beam to CalculiX. With a key, the same turn uses the Responses API (`muse-spark-1.3` by default, optional `muse-wonder-1.0`) with `web_search` and `previous_response_id`. Citations are the `url_citation` annotations from that response, not compliance findings.
+Open http://localhost:5173. The homepage offers **Start with AI** (`/scenario/new`) and **Open Studio** (`/studio`). The scenario assistant keeps a server-side session. Without `MODEL_API_KEY` it is a labeled guided template: it asks for missing data, cites the checked NSR-10 classroom minimum only after Colombia is confirmed, and calculates the line load in Python. A confirmed simply supported I-beam can then run Euler-Bernoulli beam elements. Those results are checked against the closed form and are not a certification. The same beam is not sent to the CalculiX solid solver or to the cantilever example. With a key, the turn uses the Responses API (`muse-spark-1.3` by default, optional `muse-wonder-1.0`) with `web_search`, `previous_response_id`, and `text.format` JSON. Citations are the `url_citation` annotations from that response, not compliance findings. A session stops after 8 model turns or 6000 output tokens.
 
 Docker Compose publishes the web app on port 15173 and the API on port 18080.
 
@@ -71,7 +71,7 @@ Copy `.env.example` to `.env`. Leave unknown values blank.
 | `CCX_BIN`, `CCX_DOCKER_IMAGE`, `DRAFTY_USE_DOCKER_CCX` | Local `ccx` or the `drafty-ccx` image |
 | `VITE_API_URL` | API origin for the web app |
 
-Chat uses `POST https://api.meta.ai/v1/chat/completions` with tool calls. The model can only call `ask_clarification` and `propose_design`. A proposal fills the form; it does not start a solve and it does not run generated code. `drafty_ai.responses` can call `POST /responses` with `web_search`, and only when `MODEL_API_KEY` is set. The classroom template does not call it and does not invent citations. Reference images are stored and are not measured for dimensions.
+Chat uses `POST https://api.meta.ai/v1/chat/completions` with tool calls. The model can only call `ask_clarification` and `propose_design`. Built-in `web_search` is rejected on that endpoint. A proposal fills the form; it does not start a solve and it does not run generated code. `drafty_ai.responses` calls `POST /responses` with `web_search` and structured `text.format`, and only when `MODEL_API_KEY` is set. The classroom template does not call it and does not invent citations. Reference images are stored and are not measured for dimensions. A simply supported classroom beam uses `drafty_engineering.beam_fem`, not a CalculiX job.
 
 Modal deploy, after the tokens exist:
 

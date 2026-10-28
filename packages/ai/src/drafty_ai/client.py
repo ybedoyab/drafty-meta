@@ -44,6 +44,10 @@ def chat_completion(
     base = os.environ.get("MODEL_API_BASE", "https://api.meta.ai/v1").rstrip("/")
     body: dict = {"model": selected, "messages": messages}
     if tools is not None:
+        if any(tool.get("type") == "web_search" for tool in tools):
+            raise MetaRequestError(
+                "Built-in web_search belongs on the Responses API. Chat completions does not receive it."
+            )
         body["tools"] = tools
         body["tool_choice"] = "auto"
     if response_format is not None:
@@ -53,8 +57,10 @@ def chat_completion(
             f"{base}/chat/completions",
             headers={"Authorization": f"Bearer {key}"},
             json=body,
-            timeout=90,
+            timeout=httpx.Timeout(10.0, read=60.0),
         )
+    except httpx.TimeoutException as exc:
+        raise MetaRequestError("The Meta chat request timed out. No result was stored.") from exc
     except httpx.HTTPError as exc:
         raise MetaRequestError(f"The Meta Model API request failed: {exc.__class__.__name__}") from exc
     if response.status_code >= 400:

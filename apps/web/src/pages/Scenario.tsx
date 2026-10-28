@@ -3,10 +3,13 @@ import { Canvas } from "@react-three/fiber";
 import { Link } from "react-router-dom";
 import { useEffect, useState, type ReactNode } from "react";
 import { SiteHeader } from "@/components/SiteHeader";
+import { BeamResults } from "@/components/BeamResults";
 import { Button } from "@/components/ui/button";
 import {
+  analyzeScenario,
   createScenario,
   deleteScenarioEvidence,
+  downloadScenarioReport,
   getScenario,
   scenarioEvidenceUrl,
   turnScenario,
@@ -22,6 +25,15 @@ import {
   rememberScenarioId,
   type ScenarioForm,
 } from "@/lib/scenario";
+
+const PHASE_LABEL: Record<string, string> = {
+  collecting: "Collecting the problem",
+  asking: "Asking for missing data",
+  "interpreting-evidence": "Reading attached images",
+  searching: "Reviewing retrieved sources",
+  "building-model": "Preliminary model ready",
+  verifying: "Beam-element results ready",
+};
 
 export function Scenario() {
   const [session, setSession] = useState<ScenarioSession | null>(null);
@@ -114,16 +126,48 @@ export function Scenario() {
     setSession(next);
   }
 
+  async function runBeam(compare: boolean) {
+    if (!session) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const next = await analyzeScenario(session.id, {
+        method: "euler-bernoulli",
+        elements: 16,
+        compare,
+        inputs: inputsFromForm(form),
+      });
+      setSession(next);
+      if (!compare) setForm(formFromInputs(next.inputs));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "The beam analysis failed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function downloadReport() {
+    if (!session) return;
+    setError(null);
+    try {
+      await downloadScenarioReport(session.id);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "The report is not available.");
+    }
+  }
+
   const connected = session?.mode === "meta-responses";
+  const questions = session?.model_questions ?? [];
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">
       <SiteHeader />
-      <main className="mx-auto grid max-w-6xl gap-4 px-4 py-4 lg:grid-cols-[minmax(0,1.3fr)_minmax(300px,0.7fr)]">
-        <section className="flex min-h-[70vh] flex-col rounded-lg border border-slate-200 bg-white">
+      <main className="mx-auto grid min-w-0 max-w-6xl gap-4 px-4 py-4 lg:grid-cols-[minmax(0,1.3fr)_minmax(300px,0.7fr)]">
+        <section className="flex min-h-[70vh] min-w-0 flex-col rounded-lg border border-slate-200 bg-white">
           <header className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 px-4 py-3">
             <div>
               <p className="text-xs font-medium uppercase tracking-[0.14em] text-slate-500">
-                {connected ? `Muse ${session?.model ?? "Spark"} · Responses API` : "Guided template · AI not connected"}
+                {PHASE_LABEL[session?.phase ?? "collecting"] ?? "Collecting the problem"}
+                {connected ? ` · Muse ${session?.model ?? "Spark"} · Responses API` : " · AI not connected"}
               </p>
               <h1 className="text-xl font-semibold">Scenario assistant</h1>
             </div>
@@ -182,7 +226,7 @@ export function Scenario() {
           </form>
         </section>
 
-        <div className="space-y-4">
+        <div className="min-w-0 space-y-4">
           <Panel title="Still needed">
             {session?.missing.length ? (
               <ul className="list-disc space-y-1 pl-4 text-sm">
@@ -192,6 +236,13 @@ export function Scenario() {
               </ul>
             ) : (
               <p className="text-sm text-slate-600">The preliminary record has the inputs it knows how to use.</p>
+            )}
+            {questions.length > 0 && (
+              <ul className="mt-3 list-disc space-y-1 pl-4 text-sm">
+                {questions.map((item) => (
+                  <li key={item}>{item}</li>
+                ))}
+              </ul>
             )}
           </Panel>
           <Panel title="Inputs">
@@ -272,7 +323,7 @@ export function Scenario() {
           </Panel>
         </div>
 
-        <section className="space-y-4 lg:col-span-2">
+        <section className="min-w-0 space-y-4 lg:col-span-2">
           <Panel title="Load path">
             <BeamFigure
               span={session?.inputs.span_m ?? null}
@@ -327,16 +378,22 @@ export function Scenario() {
             </Panel>
           </div>
           <Panel title="Simulation gate">
-            <p className="text-sm leading-6">{session?.model_proposal.reason}</p>
-            <p className="mt-2 text-sm">3D simulation is not available for this floor beam.</p>
-            <ul className="mt-2 list-disc space-y-1 pl-4 text-sm text-slate-700">
+            {session ? (
+              <BeamResults
+                session={session}
+                busy={busy}
+                onRun={() => void runBeam(false)}
+                onCompare={() => void runBeam(true)}
+                onDownload={() => void downloadReport()}
+              />
+            ) : (
+              <p className="text-sm">The scenario is still loading.</p>
+            )}
+            <ul className="mt-3 list-disc space-y-1 pl-4 text-sm text-slate-700">
               {(session?.verification ?? []).map((item) => (
                 <li key={item}>{item}</li>
               ))}
             </ul>
-            <button type="button" className="mt-3 rounded-md bg-slate-200 px-3 py-2 text-sm text-slate-500" disabled>
-              Run 3D simulation
-            </button>
           </Panel>
         </section>
       </main>
@@ -378,7 +435,7 @@ function BeamFigure({ span, lineLoad, reaction }: { span: number | null; lineLoa
         q = {lineLoad == null ? "—" : `${lineLoad.toFixed(0)} N/m`}
       </text>
       <text x="430" y="150" fontSize="14" fill="#1e3a8a">
-        R = {reaction == null ? "—" : `${reaction.toFixed(0)} N`}
+        R = {reaction == null ? "—" : `${reaction.toFixed(0)} N upward`}
       </text>
     </svg>
   );

@@ -214,13 +214,50 @@ export interface ScenarioSession {
   calculation: { q_line_n_per_m: number; live_n_per_m2: number; trace?: { formula?: string } } | null;
   section: { area_m2: number; inertia_x_m4: number; inertia_y_m4: number } | null;
   beam: { max_moment_n_m: number; end_shear_n: number; midspan_deflection_m: number; material?: { name: string; source: string } } | null;
-  model_proposal: { family: string; ready_for_3d_simulation: boolean; reason: string };
+  model_proposal: { family: string; ready_for_3d_simulation: boolean; ready_for_beam_elements?: boolean; reason: string };
   verification: string[];
   model_questions: string[];
   observations: string[];
   mode: string;
   model: string | null;
+  phase?: string;
+  analysis: BeamAnalysis | null;
+  comparison: BeamAnalysis | null;
   ai: string;
+}
+
+export interface BeamStation {
+  x_m: number;
+  shear_n: number;
+  moment_n_m: number;
+  deflection_m: number;
+}
+
+export interface BeamAnalysis {
+  method: string;
+  status: string;
+  passed: boolean;
+  stale?: boolean;
+  elements: number;
+  span_m: number;
+  solver: { name: string; formulation: string };
+  mesh: { elements: number; nodes: number; element_type: string; free_degrees_of_freedom: number };
+  left_reaction_n: number;
+  right_reaction_n: number;
+  max_shear_n: number;
+  max_moment_n_m: number;
+  midspan_deflection_m: number;
+  max_elastic_bending_stress_pa: number;
+  elastic_range: string;
+  analytical_midspan_deflection_m: number;
+  deflection_error: number;
+  moment_error: number;
+  equilibrium: { applied_n: number; residual_n: number; residual_relative: number };
+  stations: BeamStation[];
+  assumptions: string[];
+  limitations: string[];
+  material?: { name: string; source: string };
+  inputs?: { span_m: number | null };
 }
 
 export const createScenario = () => api<ScenarioSession>("/api/v1/scenarios", { method: "POST" });
@@ -229,6 +266,20 @@ export const getScenario = (id: string) => api<ScenarioSession>(`/api/v1/scenari
 
 export const turnScenario = (id: string, body: object) =>
   api<ScenarioSession>(`/api/v1/scenarios/${id}/turn`, { method: "POST", body: JSON.stringify(body) });
+
+export const analyzeScenario = (id: string, body: object) =>
+  api<ScenarioSession>(`/api/v1/scenarios/${id}/analyze`, { method: "POST", body: JSON.stringify(body) });
+
+export async function downloadScenarioReport(id: string) {
+  const report = await api<unknown>(`/api/v1/scenarios/${id}/report`);
+  const blob = new Blob([JSON.stringify(report, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = `drafty-beam-${id}.json`;
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
 
 export async function uploadScenarioEvidence(id: string, file: File, role: string, note: string) {
   const body = new FormData();

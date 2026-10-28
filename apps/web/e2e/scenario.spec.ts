@@ -6,6 +6,11 @@ const png = Buffer.from(
 );
 
 test("a classroom scenario asks for missing data and does not open a 3D solve", async ({ page }) => {
+  const pageErrors: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  page.on("console", (message) => {
+    if (message.type() === "error") pageErrors.push(message.text());
+  });
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/scenario/new");
   await expect(page.getByText("AI not connected")).toBeVisible();
@@ -25,6 +30,15 @@ test("a classroom scenario asks for missing data and does not open a 3D solve", 
   await expect(page.getByText("not finite-element results").first()).toBeVisible();
   await expect(page.getByText("3D simulation is not available").first()).toBeVisible();
   await expect(page.getByRole("button", { name: "Run 3D simulation" })).toBeDisabled();
+  await page.getByLabel("Supports").fill("simply supported");
+  await page.getByRole("button", { name: "Run beam elements" }).click();
+  await expect(page.getByRole("heading", { name: "Beam-element results" })).toBeVisible();
+  await expect(page.getByText("not a certification").first()).toBeVisible();
+  await expect(page.getByText("Euler-Bernoulli beam elements").first()).toBeVisible();
+  await expect(page.getByRole("button", { name: "Run 3D simulation" })).toBeDisabled();
+  await page.getByLabel("Span m").fill("5");
+  await page.getByRole("button", { name: "Compare this edit" }).click();
+  await expect(page.getByText("Edited, 5 m")).toBeVisible();
   await page.getByLabel("Evidence images").setInputFiles([
     { name: "plan.png", mimeType: "image/png", buffer: png },
     { name: "photo.png", mimeType: "image/png", buffer: png },
@@ -33,15 +47,18 @@ test("a classroom scenario asks for missing data and does not open a 3D solve", 
   await expect(page.getByText("photo.png")).toBeVisible();
   await page.getByRole("button", { name: "Remove" }).first().click();
   await expect(page.getByText("plan.png")).toHaveCount(0);
-  await page.getByRole("heading", { name: "Load path" }).scrollIntoViewIfNeeded();
+  await page.getByRole("heading", { name: "Beam-element results" }).scrollIntoViewIfNeeded();
   await page.screenshot({ path: "../../docs/screenshots/scenario-model-1440x900.png" });
   await page.reload();
   await expect(page.getByText("12500.0 N/m").first()).toBeVisible();
   await expect(page.getByText("photo.png")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Beam-element results" })).toBeVisible();
   await page.setViewportSize({ width: 390, height: 844 });
+  await page.getByRole("heading", { name: "Beam-element results" }).scrollIntoViewIfNeeded();
   await page.screenshot({ path: "../../docs/screenshots/scenario-model-mobile.png" });
   await page.getByRole("link", { name: "Open Studio manually" }).click();
   await expect(page.getByRole("button", { name: "Load cantilever example" })).toBeVisible();
+  expect(pageErrors).toEqual([]);
 });
 
 test("landing screenshots", async ({ page }) => {

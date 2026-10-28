@@ -1,5 +1,6 @@
 import io
 
+import pytest
 from fastapi.testclient import TestClient
 
 from drafty_api.main import app
@@ -78,3 +79,75 @@ def test_scenario_resume_upload_and_removal(tmp_path, monkeypatch):
     assert missing.status_code == 404
     assert traversal.status_code == 404
     assert resumed.json()["evidence"] == []
+
+
+CLASSROOM = {
+    "jurisdiction": "Colombia",
+    "span_m": 6,
+    "tributary_width_m": 2.5,
+    "dead_n_per_m2": 3000,
+    "depth_m": 0.2,
+    "flange_width_m": 0.1,
+    "flange_thickness_m": 0.01,
+    "web_thickness_m": 0.006,
+    "supports": "simply supported",
+}
+
+
+def test_confirmed_beam_elements_run_and_a_solid_model_stays_closed(tmp_path, monkeypatch):
+    with _client(tmp_path, monkeypatch) as client:
+        scenario_id = client.post("/api/v1/scenarios").json()["id"]
+        blocked = client.post(
+            f"/api/v1/scenarios/{scenario_id}/analyze",
+            json={"method": "calculix", "inputs": CLASSROOM},
+        )
+        missing = client.post(
+            f"/api/v1/scenarios/{scenario_id}/analyze",
+            json={"method": "euler-bernoulli", "inputs": {**CLASSROOM, "span_m": None}},
+        )
+        fixed = client.post(
+            f"/api/v1/scenarios/{scenario_id}/analyze",
+            json={"method": "euler-bernoulli", "inputs": {**CLASSROOM, "supports": "fixed at one end"}},
+        )
+        invalid = client.post(
+            f"/api/v1/scenarios/{scenario_id}/analyze",
+            json={"method": "euler-bernoulli", "inputs": {**CLASSROOM, "depth_m": 0.01, "flange_thickness_m": 0.02}},
+        )
+        solved = client.post(
+            f"/api/v1/scenarios/{scenario_id}/analyze",
+            json={"method": "euler-bernoulli", "elements": 16, "inputs": CLASSROOM},
+        )
+        compared = client.post(
+            f"/api/v1/scenarios/{scenario_id}/analyze",
+            json={"method": "euler-bernoulli", "compare": True, "inputs": {**CLASSROOM, "span_m": 5}},
+        )
+        report = client.get(f"/api/v1/scenarios/{scenario_id}/report")
+        stale = client.post(
+            f"/api/v1/scenarios/{scenario_id}/turn",
+            json={"message": "Change the span.", "inputs": {**CLASSROOM, "span_m": 7}},
+        )
+        stale_report = client.get(f"/api/v1/scenarios/{scenario_id}/report")
+    assert blocked.status_code == 422
+    assert "cantilever" in blocked.json()["detail"]
+    assert missing.status_code == 422
+    assert fixed.status_code == 422
+    assert "cantilever" in fixed.json()["detail"]
+    assert invalid.status_code == 422
+    body = solved.json()
+    assert body["analysis"]["passed"] is True
+    assert body["analysis"]["method"] == "euler-bernoulli"
+    deflection = body["analysis"]["midspan_deflection_m"]
+    assert deflection == pytest.approx(body["analysis"]["analytical_midspan_deflection_m"], rel=0.01)
+    assert body["analysis"]["material"]["source"].startswith("EN 10025")
+    assert body["model_proposal"]["ready_for_3d_simulation"] is False
+    assert body["model_proposal"]["ready_for_beam_elements"] is True
+    assert body["inputs"]["span_m"] == 6
+    assert compared.json()["comparison"]["span_m"] == 5
+    assert compared.json()["analysis"]["span_m"] == 6
+    assert compared.json()["inputs"]["span_m"] == 6
+    assert report.status_code == 200
+    assert report.json()["certification"] == "not claimed"
+    assert report.json()["analysis"]["solver"]["name"] == "drafty-beam-element"
+    assert stale.json()["analysis"]["stale"] is True
+    assert stale_report.status_code == 404
+    assert list(tmp_path.glob("jobs/**")) == []

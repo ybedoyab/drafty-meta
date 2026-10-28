@@ -302,11 +302,24 @@ def evaluate_classroom(
                 "left_reaction_n": beam["end_shear_n"],
                 "right_reaction_n": beam["end_shear_n"],
                 "material": steel.model_dump(),
+                "elastic_bending_stress_pa": beam["max_moment_n_m"] * (depth_m / 2.0) / section["inertia_x_m4"],
+                "stress_basis": "M*c/I elastic outer fiber. Not von Mises and not a capacity check.",
             }
         except ValueError as exc:
             errors.append(str(exc))
     elif kind == "fixed":
         errors.append("This fixed description stays unsolved. It is not converted into the studio cantilever.")
+    ready_for_beam_elements = beam is not None and kind == "simple" and not errors
+    solid = (
+        "The CalculiX solid solver accepts one fixed face and one load face. "
+        "This simply supported line load is not that model, so no solid job is created."
+    )
+    if ready_for_beam_elements:
+        reason = "Simple supports and the line load are confirmed. Euler-Bernoulli beam elements can run. " + solid
+    elif beam is not None and kind == "unspecified":
+        reason = "A simple span is only a candidate until the supports are confirmed. " + solid
+    else:
+        reason = solid
     citation = {
         **NSR10_CLASSROOM_CITATION,
         "retrieved_at": None,
@@ -329,16 +342,16 @@ def evaluate_classroom(
         "section": section,
         "beam": beam,
         "ready_for_3d_simulation": False,
-        "reason": (
-            "The current solid solver applies one face load to one supported solid. "
-            "A uniform load on a simply supported I-beam is not that model, so no CalculiX job is created."
-        ),
+        "ready_for_beam_elements": ready_for_beam_elements,
+        "reason": reason,
         "verification": [
             "The service line load is not an ultimate combination.",
             "Bending and shear strength are not checked.",
             "Lateral-torsional buckling, local buckling, connections, bearing, and vibration are not checked.",
+            "An elastic stress above the recorded yield puts this elastic model outside its range.",
             "A citation is not a certification, and a search result is not proof of compliance.",
             "An image is evidence. It is not a dimensional survey.",
+            "Agreement between beam elements and the closed form is a numerical check, not a certification.",
         ],
     }
 

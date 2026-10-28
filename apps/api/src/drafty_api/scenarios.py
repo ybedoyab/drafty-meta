@@ -15,6 +15,8 @@ from drafty_ai.scenario_agent import advance_scenario, blank_inputs
 from drafty_api.auth import current_owner
 from drafty_api.images import inspect_image
 from drafty_api.settings import settings
+from drafty_engineering.beam_fem import analyze_simply_supported_udl
+from drafty_engineering.scenario import evaluate_classroom
 
 router = APIRouter()
 MAX_IMAGES = 8
@@ -43,6 +45,13 @@ class TurnBody(BaseModel):
     message: str = ""
     inputs: ScenarioInputs = Field(default_factory=ScenarioInputs)
     model: str | None = None
+
+
+class AnalyzeBody(BaseModel):
+    method: str = "euler-bernoulli"
+    elements: int = Field(default=16, ge=2, le=64)
+    compare: bool = False
+    inputs: ScenarioInputs = Field(default_factory=ScenarioInputs)
 
 
 def scenario_dir(scenario_id: str) -> Path:
@@ -98,6 +107,7 @@ def create_scenario(request: Request) -> dict:
         "model_proposal": {
             "family": "unset",
             "ready_for_3d_simulation": False,
+            "ready_for_beam_elements": False,
             "reason": "Describe the problem before any model is proposed.",
         },
         "verification": [],
@@ -107,6 +117,12 @@ def create_scenario(request: Request) -> dict:
         "model": None,
         "previous_response_id": None,
         "usage": None,
+        "meta_turns": 0,
+        "output_tokens": 0,
+        "context_reset": False,
+        "phase": "collecting",
+        "analysis": None,
+        "comparison": None,
         "ai": "not called",
     }
     _write(session)
@@ -121,12 +137,7 @@ def get_scenario(scenario_id: str, request: Request) -> dict:
 @router.post("/api/v1/scenarios/{scenario_id}/turn")
 def scenario_turn(scenario_id: str, body: TurnBody, request: Request) -> dict:
     session = read_scenario(scenario_id, current_owner(request))
-    incoming = body.inputs.model_dump()
-    merged = dict(session.get("inputs") or blank_inputs())
-    for key, value in incoming.items():
-        if key == "student_count":
-            continue
-        merged[key] = value
+    merged = _merge_inputs(session, body.inputs.model_dump())
     urls, withheld = _vision_urls(session) if configured() else ([], False)
     updated = advance_scenario(
         {**session, "inputs": merged},
@@ -140,6 +151,57 @@ def scenario_turn(scenario_id: str, body: TurnBody, request: Request) -> dict:
     session["updated_at"] = datetime.now(UTC).isoformat()
     _write(session)
     return _public(session)
+
+
+@router.post("/api/v1/scenarios/{scenario_id}/analyze")
+def analyze_scenario(scenario_id: str, body: AnalyzeBody, request: Request) -> dict:
+    session = read_scenario(scenario_id, current_owner(request))
+    if body.method != "euler-bernoulli":
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Only Euler-Bernoulli beam elements are enabled. The solid solver is not this beam, "
+                "and a simply supported span is not converted into the cantilever."
+            ),
+        )
+    if body.compare and not session.get("analysis"):
+        raise HTTPException(status_code=422, detail="Run the confirmed beam before comparing an edit.")
+    merged = _merge_inputs(session, body.inputs.model_dump())
+    try:
+        solved = _beam_record(merged, body.elements)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    solved["inputs"] = merged
+    solved["stale"] = False
+    if body.compare:
+        session["comparison"] = solved
+    else:
+        session["analysis"] = solved
+        session["comparison"] = None
+        session["inputs"] = merged
+        session["phase"] = "verifying"
+        _apply_study(session, merged)
+    session["updated_at"] = datetime.now(UTC).isoformat()
+    _write(session)
+    return _public(session)
+
+
+@router.get("/api/v1/scenarios/{scenario_id}/report")
+def scenario_report(scenario_id: str, request: Request) -> dict:
+    session = read_scenario(scenario_id, current_owner(request))
+    analysis = session.get("analysis")
+    if not analysis or analysis.get("stale"):
+        raise HTTPException(status_code=404, detail="There is no current beam-element report.")
+    return {
+        "report": "drafty-beam-element",
+        "scenario_id": session["id"],
+        "certification": "not claimed",
+        "analysis": analysis,
+        "comparison": session.get("comparison"),
+        "assumptions": session.get("assumptions") or [],
+        "sources": session.get("sources") or [],
+        "verification": session.get("verification") or [],
+    }
 
 
 @router.post("/api/v1/scenarios/{scenario_id}/evidence")
@@ -213,6 +275,77 @@ def get_evidence(scenario_id: str, evidence_id: str, request: Request) -> FileRe
     if not path.exists():
         raise HTTPException(status_code=404, detail="Image not found.")
     return FileResponse(path, media_type=item["media_type"], filename=item["name"])
+
+
+def _merge_inputs(session: dict, incoming: dict) -> dict:
+    merged = dict(session.get("inputs") or blank_inputs())
+    for key, value in incoming.items():
+        if key == "student_count":
+            continue
+        merged[key] = value
+    return merged
+
+
+def _beam_record(inputs: dict, elements: int) -> dict:
+    study = evaluate_classroom(**inputs)
+    if study["errors"]:
+        raise ValueError(study["errors"][0])
+    if not study["ready_for_beam_elements"] or study["beam"] is None or study["line"] is None:
+        raise ValueError(study["reason"])
+    material = study["beam"]["material"]
+    record = analyze_simply_supported_udl(
+        load_n_per_m=study["line"]["q_line_n_per_m"],
+        span_m=inputs["span_m"],
+        youngs_modulus_pa=material["youngs_modulus_pa"],
+        inertia_m4=study["section"]["inertia_x_m4"],
+        depth_m=inputs["depth_m"],
+        elements=elements,
+        yield_strength_pa=material["yield_strength_pa"],
+    )
+    record["material"] = material
+    record["section"] = study["section"]
+    record["load"] = {
+        "q_line_n_per_m": study["line"]["q_line_n_per_m"],
+        "live_n_per_m2": study["line"]["live_n_per_m2"],
+        "trace": study["line"]["trace"],
+        "citation": study["line"].get("citation"),
+    }
+    record["assumptions"] = [
+        *record["assumptions"],
+        (
+            f"Young's modulus is {material['youngs_modulus_pa']} Pa for {material['name']}. "
+            f"{material['source']}. {material['caveat']}"
+        ),
+    ]
+    record["limitations"] = [
+        *record["limitations"],
+        "Yield strength is recorded with the material and is not used as a pass or fail.",
+    ]
+    if record["elastic_range"] == "above typical yield":
+        record["limitations"].append(
+            "The elastic outer-fiber stress is above the typical yield stored for this material, "
+            "so this elastic model is outside the range where that stress remains meaningful. Strength is not checked."
+        )
+    return record
+
+
+def _apply_study(session: dict, inputs: dict) -> None:
+    study = evaluate_classroom(**inputs)
+    kept = [item for item in session.get("sources") or [] if item.get("origin") != "checked template"]
+    session["calculation"] = study["line"]
+    session["section"] = study["section"]
+    session["beam"] = study["beam"]
+    session["missing"] = study["missing"]
+    session["errors"] = study["errors"]
+    session["assumptions"] = study["assumptions"]
+    session["sources"] = [*study["sources"], *kept]
+    session["verification"] = study["verification"]
+    session["model_proposal"] = {
+        "family": "simply supported classroom I-beam, preliminary",
+        "ready_for_3d_simulation": False,
+        "ready_for_beam_elements": study["ready_for_beam_elements"],
+        "reason": study["reason"],
+    }
 
 
 def _evidence_id(evidence_id: str) -> None:

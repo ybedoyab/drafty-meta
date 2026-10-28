@@ -63,6 +63,8 @@ def interpret(message: str, image_data_url: str | None = None, model: str | None
                 arguments = json.loads(raw_arguments)
             except json.JSONDecodeError:
                 arguments = {}
+            if not isinstance(arguments, dict):
+                arguments = {}
             outcome = execute_tool(name, arguments)
             if outcome["action"] in {"clarify", "propose"}:
                 return outcome
@@ -177,8 +179,11 @@ def propose_next_thickness(history: list[dict], lower_m: float, upper_m: float) 
         response_format=schema,
     )
     content = payload["choices"][0]["message"].get("content") or "{}"
-    parsed = json.loads(content)
-    return float(parsed["thickness_m"])
+    try:
+        parsed = json.loads(content)
+        return float(parsed["thickness_m"])
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+        return None
 
 
 def _design_schema() -> dict:
