@@ -1,0 +1,62 @@
+[project]
+name = "drafty"
+version = "0.1.0"
+description = "AI-native parametric CAD and finite element analysis"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "pydantic>=2.10",
+    "pydantic-settings>=2.6",
+    "cadquery>=2.5",
+    "gmsh>=4.13",
+    "meshio>=5.3",
+    "numpy>=1.26",
+    "trimesh>=4.5",
+    "pygltflib>=1.16",
+    "httpx>=0.27",
+    "pyjwt[crypto]>=2.10",
+    "python-multipart>=0.0.18",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.3", "ruff>=0.8"]
+modal = ["modal>=1.0"]
+viz = ["pyvista>=0.44"]
+
+[project.scripts]
+drafty-api = "drafty_api.main:run"
+drafty-benchmark = "drafty_engineering.benchmark:main"
+
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = [
+    "packages/engineering/src",
+    "packages/ai/src",
+    "apps/api/src",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "cad: requires CadQuery",
+    "mesh: requires Gmsh",
+    "fem: requires CalculiX",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+src = [
+    "packages/engineering/src",
+    "packages/ai/src",
+    "apps/api/src",
+    "tests",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
