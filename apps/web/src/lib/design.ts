@@ -154,6 +154,22 @@ export function specToForm(spec: DesignSpec, previous: DesignForm): DesignForm {
   };
 }
 
+export function formIssues(form: DesignForm): string[] {
+  const issues: string[] = [];
+  const dimensions = [form.lengthMm, form.widthMm, form.heightMm, form.thicknessMm, form.meshMm, form.magnitude];
+  if (dimensions.some((value) => !Number.isFinite(value) || value <= 0)) {
+    issues.push("Dimensions, mesh size, and load magnitude must be finite and positive.");
+  }
+  if (form.support === form.loadSurface) {
+    issues.push("The support and the load must use different faces.");
+  }
+  const direction = Math.hypot(form.directionX, form.directionY, form.directionZ);
+  if (!Number.isFinite(direction) || direction === 0) {
+    issues.push("The load direction cannot be zero.");
+  }
+  return issues;
+}
+
 export function mmFromMeters(value: number): number {
   return value * 1000;
 }

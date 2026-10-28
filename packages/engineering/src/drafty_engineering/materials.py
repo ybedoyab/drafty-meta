@@ -17,6 +17,11 @@ class Material(BaseModel):
     density_kg_m3: float = Field(gt=0)
     yield_strength_pa: float = Field(gt=0)
     source: str
+    condition: str = "typical, about 20 C"
+    caveat: str = (
+        "Typical published room-temperature value. "
+        "Not a certified certificate for a specific heat, lot, or temperature."
+    )
 
 
 MATERIALS: dict[str, Material] = {

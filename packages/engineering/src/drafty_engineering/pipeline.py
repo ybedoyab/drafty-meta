@@ -78,8 +78,13 @@ def run_simulation(
         raise GeometryError(f"No nodes lie on the support surface {support.surface}.")
     if len(loaded_nodes) == 0:
         raise GeometryError(f"No nodes lie on the load surface {spec.loads[0].surface}.")
-    if set(fixed_nodes.tolist()) & set(loaded_nodes.tolist()):
-        raise GeometryError("The support and load surfaces share nodes, so the model is invalid.")
+    fixed_set = set(fixed_nodes.tolist())
+    loaded_set = set(loaded_nodes.tolist())
+    if fixed_set <= loaded_set or loaded_set <= fixed_set:
+        raise GeometryError(
+            "The support and load selections cover the same nodes. "
+            "Faces may meet at an edge, but one cannot contain the other."
+        )
     support_area = measure_surface_area(points, cells, fixed_nodes)
     expected_support = expected_face_area(spec, support.surface)
     area_tolerance = 0.08 if spec.kind == "perforated_plate" else 0.03
@@ -153,15 +158,23 @@ def _result_payload(
         raise SolverError("The solver returned a zero stress field.")
     warnings = [
         "Von Mises values are the nodal stresses written by CalculiX to the .frd file.",
-        "The peak stress at a fully fixed face can be a constraint singularity. "
-        "The governing stress excludes a zone within 1.5 section depths of the support.",
+        "The contour is drawn on the corner triangles of each tetrahedron. "
+        "It is not a full high-order stress interpolation.",
+        "Peak von Mises includes the fixed face, where a fully fixed support can create a singularity. "
+        "Governing von Mises drops nodes within 1.5 section depths of that support.",
+        "The factor of safety is yield strength divided by that governing value. "
+        "It is an exploratory check, not a certified safety factor.",
     ]
     benchmark = _benchmark(spec, points, displacement, von_mises)
     if benchmark["applicable"] and benchmark["passed"] is False:
         warnings.append("The finite element result is outside the documented beam-theory tolerance.")
-    validation = "checked"
+    validation = "solver_completed"
     if benchmark["applicable"]:
         validation = "benchmark_passed" if benchmark["passed"] else "benchmark_failed"
+    else:
+        warnings.append(
+            "CalculiX finished this case. It has no closed-form acceptance check, so it is not a passed benchmark."
+        )
     return {
         "units": UNITS,
         "validation_status": validation,
@@ -247,8 +260,7 @@ def _benchmark(
         "stress_error": stress_error,
         "stress_tolerance": STRESS_TOLERANCE,
         "reference": (
-            "Euler-Bernoulli tip deflection plus rectangular Timoshenko shear; "
-            "midspan outer-fiber bending stress"
+            "Euler-Bernoulli tip deflection plus rectangular Timoshenko shear; midspan outer-fiber bending stress"
         ),
         "notes": [
             "Deflection is the mean free-end displacement along the load direction.",

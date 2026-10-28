@@ -24,3 +24,60 @@ def test_beam_support_and_load_faces_match_the_design(tmp_path):
     load_area = measure_surface_area(points, cells, loaded)
     assert support_area == pytest.approx(expected_face_area(spec, "xmin"), rel=0.03)
     assert load_area == pytest.approx(expected_face_area(spec, "xmax"), rel=0.03)
+
+
+def test_curved_midnode_still_belongs_to_its_edge():
+    import numpy as np
+
+    from drafty_engineering.mesh import order_tetra10
+
+    corners = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [0.006, 0.0, 0.0],
+            [0.0, 0.006, 0.0],
+            [0.0, 0.0, 0.006],
+        ]
+    )
+    mids = np.array(
+        [
+            [0.003, 0.0012, 0.0],
+            [0.003, 0.003, 0.0],
+            [0.0, 0.003, 0.0],
+            [0.0, 0.0, 0.003],
+            [0.003, 0.0, 0.003],
+            [0.0, 0.003, 0.003],
+        ]
+    )
+    points = np.vstack([corners, mids])
+    ordered = order_tetra10(points, np.arange(10))
+    assert list(ordered[4:]) == [4, 5, 6, 7, 8, 9]
+
+
+def test_a_midnode_far_from_every_edge_is_rejected():
+    import numpy as np
+
+    from drafty_engineering.errors import GeometryError
+    from drafty_engineering.mesh import order_tetra10
+
+    corners = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [0.006, 0.0, 0.0],
+            [0.0, 0.006, 0.0],
+            [0.0, 0.0, 0.006],
+        ]
+    )
+    mids = np.array(
+        [
+            [0.003, 0.004, 0.0],
+            [0.003, 0.003, 0.0],
+            [0.0, 0.003, 0.0],
+            [0.0, 0.0, 0.003],
+            [0.003, 0.0, 0.003],
+            [0.0, 0.003, 0.003],
+        ]
+    )
+    points = np.vstack([corners, mids])
+    with pytest.raises(GeometryError, match="midpoint"):
+        order_tetra10(points, np.arange(10))

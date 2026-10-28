@@ -75,14 +75,16 @@ def order_tetra10(points: np.ndarray, cell: np.ndarray) -> np.ndarray:
         raise GeometryError("A quadratic tetrahedron must have 10 nodes.")
     ordered: list[int] = []
     used: set[int] = set()
-    scale = max(float(np.linalg.norm(points[corners[0]])), 1.0)
     for start, end in TET10_EDGES:
         target = 0.5 * (points[corners[start]] + points[corners[end]])
+        edge_length = float(np.linalg.norm(points[corners[end]] - points[corners[start]]))
         unused = [node for node in mids if node not in used]
         distances = [float(np.linalg.norm(points[node] - target)) for node in unused]
-        choice = unused[int(np.argmin(distances))]
-        if distances[int(np.argmin(distances))] > 1e-4 * scale:
+        choice_index = int(np.argmin(distances))
+        # A high-order node on a curved hole can leave the straight chord midpoint.
+        if distances[choice_index] > max(1e-9, 0.4 * edge_length):
             raise GeometryError("A quadratic edge node is not at the edge midpoint.")
+        choice = unused[choice_index]
         used.add(choice)
         ordered.append(choice)
     return np.array(corners + ordered, dtype=np.int64)

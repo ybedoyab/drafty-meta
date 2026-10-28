@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import logo from "@/assets/logo.png";
-import { Suspense, useEffect, useMemo, useState } from "react";
+import { Suspense, useMemo, useState } from "react";
 import { Viewport } from "@/components/Viewport";
 import { Button } from "@/components/ui/button";
 import {
@@ -23,6 +23,7 @@ import { turbo } from "@/lib/colormap";
 import {
   SURFACES,
   benchmarkForm,
+  formIssues,
   formToSpec,
   formatEngineering,
   mmFromMeters,
@@ -76,11 +77,11 @@ export function Workstation() {
     enabled: Boolean(activeId) && job.data?.status !== "queued",
   });
 
-  useEffect(() => {
-    if (!results.data) return;
-    const size = modelExtent(results.data.surface);
+  const suggestedScale = useMemo(() => {
+    if (!results.data) return 1;
     const physical = results.data.max_displacement_m;
-    setVisualScale(physical > 0 ? Math.min(80, (0.12 * size) / physical) : 1);
+    if (physical <= 0) return 1;
+    return Math.min(80, (0.12 * modelExtent(results.data.surface)) / physical);
   }, [results.data]);
 
   const legend = useMemo(() => {
@@ -96,7 +97,11 @@ export function Workstation() {
   }, [results.data]);
 
   const preview = useMutation({
-    mutationFn: async () => previewSpec(formToSpec(form)),
+    mutationFn: async () => {
+      const issues = formIssues(form);
+      if (issues.length) throw new Error(issues.join(" "));
+      return previewSpec(formToSpec(form));
+    },
     onSuccess: (url) => {
       setPreviewUrl((current) => {
         if (current) URL.revokeObjectURL(current);
@@ -109,6 +114,8 @@ export function Workstation() {
 
   const run = useMutation({
     mutationFn: async (kind: "simulation" | "optimization") => {
+      const issues = formIssues(form);
+      if (issues.length) throw new Error(issues.join(" "));
       const spec = formToSpec(form);
       const optimization =
         kind === "optimization"
@@ -286,7 +293,12 @@ export function Workstation() {
               ))}
             </select>
           </label>
-          <p className="col-span-2 mt-2 text-xs font-semibold uppercase tracking-wide text-indigo-600">3. Hold and load</p>
+          <p className="col-span-2 mt-2 text-xs text-gray-500">
+            Typical values near 20 °C. Not a certified material certificate.
+          </p>
+          <p className="col-span-2 mt-4 text-xs font-semibold uppercase tracking-wide text-indigo-600">
+            3. Hold and load
+          </p>
           <label className="field">
             <span>Support</span>
             <select
@@ -392,7 +404,9 @@ export function Workstation() {
           />
         </Suspense>
         <div className="pointer-events-none absolute left-3 top-3 rounded-lg border border-gray-200 bg-white/90 px-3 py-1 text-xs text-gray-500 shadow-sm">
-          {result ? "von Mises on the surface mesh · meters" : "CAD preview · meters"}
+          {result
+            ? "Contour max on corner triangles, not a certified stress plot · meters"
+            : "CAD preview · meters"}
         </div>
         {!previewUrl && !result && (
           <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
@@ -417,7 +431,7 @@ export function Workstation() {
             />
             <div className="mt-1 flex justify-between text-[11px] text-gray-500">
               <span>{formatEngineering(mpaFromPascals(legend.min))} MPa</span>
-              <span>von Mises</span>
+              <span>contour von Mises, including the support</span>
               <span>{formatEngineering(mpaFromPascals(legend.max))} MPa</span>
             </div>
           </div>
@@ -477,8 +491,16 @@ export function Workstation() {
           />
         </label>
         <p className="text-[11px] leading-4 text-gray-500">
-          The slider exaggerates displacement for display. 1× is the physical result.
+          1× is the physical displacement. Amplify only changes the picture.
         </p>
+        <div className="mt-2 flex gap-2">
+          <Button type="button" onClick={() => setVisualScale(1)}>
+            1× physical
+          </Button>
+          <Button type="button" onClick={() => setVisualScale(suggestedScale)} disabled={!result}>
+            Amplify view
+          </Button>
+        </div>
         <div className="mt-4 border-t border-gray-200 pt-3">
           <h2 className="text-xs font-semibold uppercase tracking-wider text-gray-500">Thickness study</h2>
           <div className="mt-2 grid grid-cols-2 gap-2">
@@ -555,8 +577,12 @@ function ResultReadout({ result }: { result: SimulationResult }) {
       <Row label="Mass" value={`${formatEngineering(result.mass_kg)} kg`} />
       <Row label="Max displacement" value={`${formatEngineering(mmFromMeters(result.max_displacement_m))} mm`} />
       <Row label="Governing von Mises" value={`${formatEngineering(mpaFromPascals(result.governing_von_mises_pa))} MPa`} />
-      <Row label="Peak von Mises" value={`${formatEngineering(mpaFromPascals(result.max_von_mises_pa))} MPa`} />
-      <Row label="Safety factor" value={formatEngineering(result.safety_factor, 3)} />
+      <Row label="Contour peak von Mises" value={`${formatEngineering(mpaFromPascals(result.max_von_mises_pa))} MPa`} />
+      <Row label="Exploratory factor" value={formatEngineering(result.safety_factor, 3)} />
+      <p className="pt-1 text-[11px] leading-4 text-amber-700">
+        The factor uses governing stress away from the fixed face. The contour peak can be higher because of the
+        support singularity. This is not a certified safety factor.
+      </p>
       <Row label="Validation" value={result.validation_status} />
       {benchmark.applicable && (
         <>

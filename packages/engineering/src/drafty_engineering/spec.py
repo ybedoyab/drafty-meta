@@ -1,5 +1,6 @@
 """Parametric design specification. Geometry is explicit; images do not fill it."""
 
+import math
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -100,6 +101,7 @@ class DesignSpec(BaseModel):
         if self.material_id not in MATERIALS:
             known = ", ".join(sorted(MATERIALS))
             raise ValueError(f"Unknown material '{self.material_id}'. Known materials: {known}")
+        self._require_finite()
         direction = self.loads[0].direction.magnitude
         if abs(direction - 1.0) > 1e-3:
             raise ValueError("Load direction must be a unit vector. Put the size of the load in magnitude.")
@@ -112,6 +114,27 @@ class DesignSpec(BaseModel):
         if self.mesh_size_m < smallest / 100.0:
             raise ValueError("Mesh size is finer than 1/100 of the smallest dimension. Coarsen it before solving.")
         return self
+
+    def _require_finite(self) -> None:
+        values = [
+            self.mesh_size_m,
+            self.loads[0].magnitude,
+            self.loads[0].direction.x,
+            self.loads[0].direction.y,
+            self.loads[0].direction.z,
+        ]
+        if self.beam:
+            values.extend([self.beam.length_m, self.beam.width_m, self.beam.height_m])
+        if self.plate:
+            values.extend([self.plate.length_m, self.plate.width_m, self.plate.thickness_m])
+        if self.bracket:
+            values.extend(
+                [self.bracket.leg_x_m, self.bracket.leg_z_m, self.bracket.thickness_m, self.bracket.width_m]
+            )
+        if self.holes:
+            values.extend([self.holes.radius_m, self.holes.margin_m, self.holes.count_x, self.holes.count_y])
+        if any(not math.isfinite(float(value)) for value in values):
+            raise ValueError("Dimensions, mesh size, and loads must be finite numbers.")
 
     def _require_geometry(self) -> None:
         if self.kind == "cantilever_beam":

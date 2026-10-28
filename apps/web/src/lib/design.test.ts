@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { benchmarkForm, formToSpec, mmFromMeters, mpaFromPascals, specToForm } from "./design";
+import { benchmarkForm, formIssues, formToSpec, mmFromMeters, mpaFromPascals, specToForm } from "./design";
 
 describe("design units", () => {
   it("converts the cantilever benchmark into SI", () => {
@@ -35,5 +35,15 @@ describe("design units", () => {
   it("displays millimeters and megapascals", () => {
     expect(mmFromMeters(0.012)).toBeCloseTo(12);
     expect(mpaFromPascals(31.25e6)).toBeCloseTo(31.25);
+  });
+
+  it("rejects non-finite dimensions and a shared support and load face", () => {
+    expect(formIssues({ ...benchmarkForm, lengthMm: Number.NaN })).toEqual([
+      "Dimensions, mesh size, and load magnitude must be finite and positive.",
+    ]);
+    expect(formIssues({ ...benchmarkForm, loadSurface: benchmarkForm.support })).toEqual([
+      "The support and the load must use different faces.",
+    ]);
+    expect(formIssues(benchmarkForm)).toEqual([]);
   });
 });

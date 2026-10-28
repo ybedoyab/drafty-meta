@@ -133,8 +133,7 @@ def tool_definitions() -> list[dict]:
             "function": {
                 "name": "propose_design",
                 "description": (
-                    "Submit a design specification using only numbers from the user. "
-                    "This does not run a solver."
+                    "Submit a design specification using only numbers from the user. This does not run a solver."
                 ),
                 "parameters": _design_schema(),
             },

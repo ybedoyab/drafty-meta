@@ -41,6 +41,16 @@ def test_missing_geometry_is_rejected():
         cantilever_benchmark_spec().model_validate(payload)
 
 
+def test_non_finite_dimensions_are_rejected():
+    payload = cantilever_benchmark_spec().model_dump()
+    payload["beam"]["length_m"] = float("nan")
+    with pytest.raises(ValidationError):
+        cantilever_benchmark_spec().model_validate(payload)
+    payload["beam"]["length_m"] = float("inf")
+    with pytest.raises(ValidationError):
+        cantilever_benchmark_spec().model_validate(payload)
+
+
 def test_perforated_holes_must_fit():
     spec = perforated_plate_spec().model_dump()
     spec["holes"]["radius_m"] = 0.05
