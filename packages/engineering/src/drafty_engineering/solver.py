@@ -275,6 +275,44 @@ def fields_from_frd(
     return displacement, von_mises
 
 
+# Printed reactions have about seven significant figures. 0.1% is looser than
+# that rounding and much tighter than the old 5% gate, which treated load on
+# the supported edge as a solver imbalance.
+EQUILIBRIUM_RELATIVE_TOLERANCE = 1e-3
+
+
+def support_equilibrium(
+    applied: np.ndarray,
+    applied_on_support: np.ndarray,
+    printed_reaction: np.ndarray,
+) -> dict:
+    """Balance the applied load against the force carried by the support.
+
+    CalculiX ``*NODE PRINT RF`` omits ``*CLOAD`` values written on constrained
+    nodes. Those loads are carried directly by the single-point constraints.
+    The support force is the printed reaction minus that omitted load.
+    """
+
+    applied = np.asarray(applied, dtype=float)
+    applied_on_support = np.asarray(applied_on_support, dtype=float)
+    printed_reaction = np.asarray(printed_reaction, dtype=float)
+    support = printed_reaction - applied_on_support
+    residual_vector = support + applied
+    residual = float(np.linalg.norm(residual_vector))
+    applied_norm = max(float(np.linalg.norm(applied)), 1e-9)
+    relative = residual / applied_norm
+    return {
+        "applied_force_n": [float(value) for value in applied],
+        "applied_on_support_n": [float(value) for value in applied_on_support],
+        "solver_reaction_n": [float(value) for value in printed_reaction],
+        "reaction_force_n": [float(value) for value in support],
+        "residual_n": residual,
+        "relative_residual": relative,
+        "tolerance": EQUILIBRIUM_RELATIVE_TOLERANCE,
+        "passed": relative <= EQUILIBRIUM_RELATIVE_TOLERANCE,
+    }
+
+
 def parse_reaction_sum(text: str) -> np.ndarray:
     """Sum support reaction forces written by *NODE PRINT RF."""
 

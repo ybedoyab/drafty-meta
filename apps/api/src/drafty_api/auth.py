@@ -1,5 +1,7 @@
 """Supabase JWT checks. Local development can leave authentication disabled."""
 
+from contextvars import ContextVar
+
 import jwt
 from fastapi import HTTPException, Request
 from jwt import PyJWKClient
@@ -7,15 +9,22 @@ from jwt import PyJWKClient
 from drafty_api.settings import settings
 
 _jwks: PyJWKClient | None = None
+_access_token: ContextVar[str | None] = ContextVar("drafty_access_token", default=None)
+
+
+def current_access_token() -> str | None:
+    return _access_token.get()
 
 
 def current_owner(request: Request) -> str:
     if settings.drafty_auth_mode != "supabase":
+        _access_token.set(None)
         return "local"
     header = request.headers.get("authorization", "")
     if not header.lower().startswith("bearer "):
         raise HTTPException(status_code=401, detail="A Supabase bearer token is required.")
     token = header.split(" ", 1)[1].strip()
+    _access_token.set(token)
     try:
         claims = _decode(token)
     except HTTPException:

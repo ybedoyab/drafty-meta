@@ -16,7 +16,7 @@ from drafty_engineering.analytical import (
     tip_deflection_components,
 )
 from drafty_engineering.cad import build_solid, cad_matches_spec, export_preview_glb, export_step, solid_volume
-from drafty_engineering.errors import DraftyError, GeometryError, SolverError
+from drafty_engineering.errors import GeometryError, SolverError
 from drafty_engineering.geometry_math import envelope, expected_face_area
 from drafty_engineering.materials import get_material
 from drafty_engineering.mesh import assess_mesh, mesh_step, tetra_cells
@@ -30,6 +30,7 @@ from drafty_engineering.solver import (
     parse_reaction_sum,
     run_calculix,
     select_surface_nodes,
+    support_equilibrium,
     write_input,
 )
 from drafty_engineering.spec import DesignSpec
@@ -121,20 +122,16 @@ def run_simulation(
     if not np.isfinite(displacement).all() or not np.isfinite(von_mises).all():
         raise SolverError("The solver returned a non-finite displacement or stress field.")
     applied = np.sum(np.stack(list(nodal_forces.values())), axis=0)
+    applied_on_support = np.zeros(3)
+    for node, force in nodal_forces.items():
+        if int(node) in fixed_set:
+            applied_on_support += force
     reaction = parse_reaction_sum(dat_text)
-    residual = float(np.linalg.norm(reaction + applied))
-    applied_norm = max(float(np.linalg.norm(applied)), 1e-9)
-    relative_residual = residual / applied_norm
-    equilibrium = {
-        "applied_force_n": [float(value) for value in applied],
-        "reaction_force_n": [float(value) for value in reaction],
-        "residual_n": residual,
-        "relative_residual": relative_residual,
-        "passed": relative_residual <= 0.05,
-    }
+    equilibrium = support_equilibrium(applied, applied_on_support, reaction)
     if not equilibrium["passed"]:
         raise SolverError(
-            f"Reaction forces do not balance the applied load. Relative residual is {relative_residual:.3f}."
+            "Reaction forces do not balance the applied load. "
+            f"Relative residual is {equilibrium['relative_residual']:.3f}."
         )
     surface = _surface_mesh(points, cells, displacement, von_mises)
     _write_vtu(workdir / "model.vtu", points, cells, cell_type, displacement, von_mises)
@@ -154,6 +151,7 @@ def run_simulation(
         solver_info,
         quality,
         equilibrium,
+        loaded_nodes,
     )
     (workdir / "results.json").write_text(json.dumps(result), encoding="utf-8")
     return result
@@ -173,22 +171,33 @@ def _result_payload(
     solver_info: dict,
     quality: dict,
     equilibrium: dict,
+    loaded_nodes: np.ndarray,
 ) -> dict:
     displacement_magnitude = np.linalg.norm(displacement, axis=1)
     peak_von_mises = float(np.max(von_mises))
-    governing_nodes = _outside_support_zone(points, spec)
+    excluded_m = exclusion_distance_m(spec, points, loaded_nodes)
+    governing_nodes = _outside_support_zone(points, spec, excluded_m)
     governing_von_mises = float(np.max(von_mises[governing_nodes]))
-    if governing_von_mises <= 0:
+    if peak_von_mises <= 0 or governing_von_mises <= 0:
         raise SolverError("The solver returned a zero stress field.")
+    stress_ratio = governing_von_mises / peak_von_mises
+    # A sample below 2% of the contour peak is the unloaded material left
+    # behind when the exclusion band swallowed the loaded wall.
+    stress_reliable = stress_ratio >= 0.02
     warnings = [
         "Von Mises values are the nodal stresses written by CalculiX to the .frd file.",
         "The contour is drawn on the corner triangles of each tetrahedron. "
         "It is not a full high-order stress interpolation.",
         "Peak von Mises includes the fixed face, where a fully fixed support can create a singularity. "
-        "Governing von Mises drops nodes within 1.5 section depths of that support.",
+        f"Governing von Mises drops nodes within {excluded_m:.4e} m of that support.",
         "The factor of safety is yield strength divided by that governing value. "
         "It is an exploratory check, not a certified safety factor.",
     ]
+    if not stress_reliable:
+        warnings.append(
+            "Governing von Mises is below 2% of the contour peak. That sample does not represent "
+            "the loaded wall, so the factor is not used to accept a design."
+        )
     benchmark = _benchmark(spec, points, displacement, von_mises)
     if benchmark["applicable"] and benchmark["passed"] is False:
         warnings.append("The finite element result is outside the documented beam-theory tolerance.")
@@ -230,13 +239,26 @@ def _result_payload(
             "peak_von_mises_pa": peak_von_mises,
             "measure_pa": governing_von_mises,
             "measure": "maximum extrapolated nodal von Mises outside the support zone",
-            "exclusion": "nodes within 1.5 section depths of the support",
-            "exclusion_reason": "A fully fixed face can create a constraint singularity.",
+            "exclusion_m": excluded_m,
+            "exclusion": f"nodes within {excluded_m:.4e} m of the support",
+            "exclusion_reason": (
+                "A fully fixed face can create a constraint singularity in the first elements. "
+                "The band is two element lengths, and never more than half the distance from "
+                "the support to the loaded face."
+            ),
             "displayed_surface": "corner triangles of the quadratic tetrahedra, not a high-order interpolation",
             "nodal_field": "extrapolated nodal stresses from the CalculiX .frd file",
             "integration_point_field": "element stresses in the .dat file; not used for the factor",
-            "safety_factor_status": "exploratory",
+            "peak_to_governing_ratio": stress_ratio,
+            "reliable": stress_reliable,
+            "safety_factor_status": "exploratory" if stress_reliable else "unreliable",
             "mesh_sensitivity": "Compare at least two element sizes. One completed solve is not a convergence proof.",
+        },
+        "quality_gates": {
+            "solver_completed": True,
+            "equilibrium_verified": bool(equilibrium["passed"]),
+            "stress_assessment": "exploratory" if stress_reliable else "unreliable",
+            "validated_feasibility": bool(benchmark["applicable"] and benchmark["passed"]),
         },
         "benchmark": benchmark,
         "warnings": warnings,
@@ -320,7 +342,31 @@ def _is_tip_loaded_cantilever(spec: DesignSpec) -> bool:
     )
 
 
-def _outside_support_zone(points: np.ndarray, spec: DesignSpec) -> np.ndarray:
+def exclusion_distance_m(spec: DesignSpec, points: np.ndarray, loaded_nodes: np.ndarray) -> float:
+    """Local band around a fully fixed face. It must not swallow the loaded wall."""
+
+    coordinate, axis = _support_axis(spec)
+    loaded = np.asarray(loaded_nodes, dtype=int)
+    if len(loaded) == 0:
+        return 0.0
+    far = float(np.max(np.abs(points[loaded, axis] - coordinate)))
+    if far <= 0:
+        return 0.0
+    element_band = 2.0 * spec.mesh_size_m
+    # Half the support-to-load distance keeps the outer part of a wall that is
+    # only one thickness deep. 1.5 thicknesses removed that entire wall.
+    return min(element_band, 0.5 * far)
+
+
+def _outside_support_zone(points: np.ndarray, spec: DesignSpec, distance_m: float) -> np.ndarray:
+    coordinate, axis = _support_axis(spec)
+    mask = np.abs(points[:, axis] - coordinate) >= distance_m
+    if not np.any(mask):
+        return np.ones(len(points), dtype=bool)
+    return mask
+
+
+def _support_axis(spec: DesignSpec) -> tuple[float, int]:
     bounds = envelope(spec)
     surface = spec.supports[0].surface
     coordinate = {
@@ -332,21 +378,7 @@ def _outside_support_zone(points: np.ndarray, spec: DesignSpec) -> np.ndarray:
         "zmax": bounds.zmax,
     }[surface]
     axis = {"xmin": 0, "xmax": 0, "ymin": 1, "ymax": 1, "zmin": 2, "zmax": 2}[surface]
-    depth = _section_depth(spec)
-    mask = np.abs(points[:, axis] - coordinate) >= 1.5 * depth
-    if not np.any(mask):
-        return np.ones(len(points), dtype=bool)
-    return mask
-
-
-def _section_depth(spec: DesignSpec) -> float:
-    if spec.beam:
-        return spec.beam.height_m
-    if spec.plate:
-        return spec.plate.thickness_m
-    if spec.bracket:
-        return spec.bracket.thickness_m
-    raise DraftyError("The design has no section depth.")
+    return coordinate, axis
 
 
 def _surface_mesh(

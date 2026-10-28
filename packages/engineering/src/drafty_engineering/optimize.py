@@ -101,7 +101,9 @@ def optimize_thickness(
                 low = sample
             continue
         displacement = _reported_displacement(candidate, result)
-        feasible = _is_feasible(result, min_safety_factor, displacement, max_displacement_m)
+        assessment = result.get("stress_assessment") or {}
+        reliable = assessment.get("reliable") is True
+        feasible = reliable and _is_feasible(result, min_safety_factor, displacement, max_displacement_m)
         record = {
             "index": index,
             "source": source,
@@ -112,17 +114,31 @@ def optimize_thickness(
             "governing_von_mises_pa": result["governing_von_mises_pa"],
             "max_von_mises_pa": result["max_von_mises_pa"],
             "validation_status": result["validation_status"],
-            "safety_factor_status": (result.get("stress_assessment") or {}).get("safety_factor_status", "exploratory"),
+            "safety_factor_status": assessment.get("safety_factor_status", "exploratory"),
+            "stress_reliable": reliable,
             "feasible": feasible,
             "accepted": False,
+            "acceptance": "not_accepted",
             "artifact_dir": iteration_dir.name,
         }
+        if not reliable:
+            record["acceptance"] = "exploratory_candidate"
+            record["note"] = (
+                "The governing stress is below 2% of the contour peak, so this solve is not an accepted design."
+            )
         iterations.append(record)
         if feasible and (best is None or record["mass_kg"] < best["mass_kg"]):
             best = record
             record["accepted"] = True
+            record["acceptance"] = (
+                "beam_theory_checked" if result["validation_status"] == "benchmark_passed" else "exploratory_candidate"
+            )
             for earlier in iterations[:-1]:
                 earlier["accepted"] = False
+                if earlier.get("feasible"):
+                    earlier["acceptance"] = "exploratory_candidate"
+        if not reliable:
+            continue
         if feasible:
             high = min(high, sample)
         else:
@@ -141,11 +157,20 @@ def optimize_thickness(
         "units": {"length": "m", "mass": "kg", "stress": "Pa"},
     }
     if best is None:
-        summary["message"] = "No solved iteration met the safety factor and displacement limits."
-    elif best.get("validation_status") != "benchmark_passed":
+        unreliable = any(item.get("stress_reliable") is False for item in iterations)
+        summary["design_status"] = "not_accepted"
         summary["message"] = (
-            "The accepted iteration finished in CalculiX. Its factor uses the exploratory governing stress "
-            "and is not a closed-form benchmark."
+            "Solves finished, but the governing stress sample is not reliable enough to accept a design."
+            if unreliable
+            else "No solved iteration met the force balance, stress, and displacement limits."
+        )
+    elif best.get("validation_status") == "benchmark_passed":
+        summary["design_status"] = "beam_theory_checked"
+    else:
+        summary["design_status"] = "exploratory_candidate"
+        summary["message"] = (
+            "The lightest solved iteration met the displacement limit and the exploratory stress check. "
+            "It is not a validated or certified design."
         )
     return summary
 
@@ -180,6 +205,8 @@ def _is_feasible(
     max_displacement_m: float | None,
 ) -> bool:
     if result.get("validation_status") == "benchmark_failed":
+        return False
+    if not (result.get("equilibrium") or {}).get("passed"):
         return False
     if result["safety_factor"] < min_safety_factor:
         return False

@@ -3,6 +3,7 @@ import react from "@vitejs/plugin-react";
 import { defineConfig } from "vitest/config";
 
 export default defineConfig({
+  envDir: fileURLToPath(new URL("../..", import.meta.url)),
   plugins: [react()],
   resolve: {
     alias: {

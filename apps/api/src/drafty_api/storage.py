@@ -26,7 +26,7 @@ def sync_job(job_dir: Path) -> str | None:
         return None
     job = json.loads((job_dir / "job.json").read_text(encoding="utf-8"))
     base = settings.supabase_url.rstrip("/")
-    key = settings.supabase_service_role_key
+    key = settings.supabase_secret
     headers = {
         "apikey": key,
         "Authorization": f"Bearer {key}",
@@ -45,6 +45,8 @@ def sync_job(job_dir: Path) -> str | None:
                 "spec": job["spec"],
                 "error": job.get("error"),
                 "summary": job.get("summary"),
+                "scenario_id": job.get("scenario_id"),
+                "optimization": job.get("optimization"),
             },
         )
         response.raise_for_status()
@@ -66,7 +68,7 @@ def signed_artifact_url(job_id: str, name: str) -> str | None:
     if not settings.supabase_configured:
         return None
     base = settings.supabase_url.rstrip("/")
-    key = settings.supabase_service_role_key
+    key = settings.supabase_secret
     response = httpx.post(
         f"{base}/storage/v1/object/sign/artifacts/{job_id}/{name}",
         headers={"apikey": key, "Authorization": f"Bearer {key}", "Content-Type": "application/json"},
@@ -81,6 +83,93 @@ def signed_artifact_url(job_id: str, name: str) -> str | None:
     if signed.startswith("http"):
         return signed
     return f"{base}/storage/v1{signed}"
+
+
+def mirror_scenario(session: dict, access_token: str | None, snapshot: bool = False) -> str | None:
+    """Save a scenario with the caller's Supabase token so RLS applies.
+
+    A missing token or publishable key leaves the local file as the only copy.
+    The service-role key is not sent on this request.
+    """
+
+    if not access_token or not settings.supabase_auth_configured:
+        return None
+    base = settings.supabase_url.rstrip("/")
+    headers = {
+        "apikey": settings.supabase_publishable_key,
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json",
+        "Prefer": "resolution=merge-duplicates",
+    }
+    state = {key: value for key, value in session.items() if key != "owner_id"}
+    row = {
+        "id": session["id"],
+        "owner_id": session["owner_id"],
+        "name": str(session.get("name") or "Untitled")[:120],
+        "version": int(session.get("version") or 1),
+        "state": state,
+        "updated_at": session.get("updated_at"),
+    }
+    with httpx.Client(timeout=30) as client:
+        response = client.post(f"{base}/rest/v1/scenarios?on_conflict=id", headers=headers, json=row)
+        response.raise_for_status()
+        if snapshot:
+            version = client.post(
+                f"{base}/rest/v1/scenario_versions",
+                headers=headers,
+                json={
+                    "scenario_id": session["id"],
+                    "owner_id": session["owner_id"],
+                    "version": row["version"],
+                    "inputs": session.get("inputs") or {},
+                    "studio_spec": session.get("studio_spec"),
+                    "studio_approval": session.get("studio_approval"),
+                },
+            )
+            version.raise_for_status()
+    return "mirrored"
+
+
+def fetch_scenario(scenario_id: str, access_token: str | None) -> dict | None:
+    if not access_token or not settings.supabase_auth_configured:
+        return None
+    base = settings.supabase_url.rstrip("/")
+    response = httpx.get(
+        f"{base}/rest/v1/scenarios",
+        headers={
+            "apikey": settings.supabase_publishable_key,
+            "Authorization": f"Bearer {access_token}",
+        },
+        params={"id": f"eq.{scenario_id}", "select": "id,owner_id,state,version"},
+        timeout=30,
+    )
+    response.raise_for_status()
+    rows = response.json()
+    if not rows:
+        return None
+    row = rows[0]
+    state = dict(row.get("state") or {})
+    state["id"] = row["id"]
+    state["owner_id"] = row["owner_id"]
+    state["version"] = row.get("version") or state.get("version") or 1
+    return state
+
+
+def list_remote_scenarios(access_token: str | None) -> list[dict]:
+    if not access_token or not settings.supabase_auth_configured:
+        return []
+    base = settings.supabase_url.rstrip("/")
+    response = httpx.get(
+        f"{base}/rest/v1/scenarios",
+        headers={
+            "apikey": settings.supabase_publishable_key,
+            "Authorization": f"Bearer {access_token}",
+        },
+        params={"select": "id,name,version,updated_at,state", "order": "updated_at.desc"},
+        timeout=30,
+    )
+    response.raise_for_status()
+    return list(response.json())
 
 
 def _upload(client: httpx.Client, base: str, key: str, job_id: str, name: str, path: Path) -> None:

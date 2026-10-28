@@ -610,6 +610,7 @@ export function Workstation() {
             <p>Submitted von Mises {optimization.data.submitted?.governing_von_mises_pa == null ? "—" : formatEngineering(mpaFromPascals(optimization.data.submitted.governing_von_mises_pa))} MPa</p>
             <p>Accepted von Mises {optimization.data.best?.governing_von_mises_pa == null ? "—" : formatEngineering(mpaFromPascals(optimization.data.best.governing_von_mises_pa))} MPa</p>
             <p>Exploratory factor {optimization.data.best?.safety_factor == null ? "—" : formatEngineering(optimization.data.best.safety_factor, 3)}. Not a certified safety factor.</p>
+            <p className="text-amber-700">{optimization.data.design_status ?? "exploratory candidate"}</p>
             <p className="text-amber-700">{optimization.data.optimality}</p>
             {optimization.data.message && <p className="text-amber-700">{optimization.data.message}</p>}
           </div>
@@ -764,12 +765,19 @@ function ResultReadout({ result }: { result: SimulationResult }) {
       {result.equilibrium && (
         <Row
           label="Force balance"
-          value={result.equilibrium.passed ? "reactions match the load" : "residual above 5%"}
+          value={
+            result.equilibrium.passed
+              ? "reactions match the load"
+              : "residual above the 0.1% balance check"
+          }
         />
       )}
-      <p className="pt-1 text-[11px] leading-4 text-amber-700">
-        The factor uses governing stress away from the fixed face. The contour peak can be higher because of the
-        support singularity. This is not a certified safety factor.
+        <p className="pt-1 text-[11px] leading-4 text-amber-700">
+        The factor uses governing stress away from the fixed face. The contour peak stays visible and can be higher
+        because of the support singularity.{" "}
+        {result.stress_assessment?.safety_factor_status === "unreliable"
+          ? "This governing sample is not reliable enough to accept a design."
+          : "This is not a certified safety factor."}
       </p>
       <Row label="Validation" value={result.validation_status} />
       {benchmark.applicable && (

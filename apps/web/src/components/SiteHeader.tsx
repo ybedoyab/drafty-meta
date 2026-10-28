@@ -13,8 +13,14 @@ export function SiteHeader({ trailing }: { trailing?: ReactNode }) {
           <Link to="/" className="rounded-md px-3 py-1.5 text-gray-600 hover:bg-indigo-50 hover:text-indigo-600">
             Home
           </Link>
+          <Link to="/projects" className="rounded-md px-3 py-1.5 text-gray-600 hover:bg-indigo-50 hover:text-indigo-600">
+            Projects
+          </Link>
           <Link to="/scenario/new" className="rounded-md px-3 py-1.5 text-gray-600 hover:bg-indigo-50 hover:text-indigo-600">
             Problem
+          </Link>
+          <Link to="/login" className="rounded-md px-3 py-1.5 text-gray-600 hover:bg-indigo-50 hover:text-indigo-600">
+            Sign in
           </Link>
           <Link to="/studio" className="rounded-md px-3 py-1.5 text-gray-600 hover:bg-indigo-50 hover:text-indigo-600">
             Studio

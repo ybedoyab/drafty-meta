@@ -2,7 +2,7 @@
 
 Drafty is an engineering workstation for parametric solids and static finite element analysis. You enter dimensions, a material, a support, and a load. The API builds a CadQuery solid, meshes the STEP file with Gmsh, solves it with CalculiX, and returns the solver's displacements and stresses to the 3D view.
 
-Natural-language design, Modal, and Supabase stay off until their environment variables are set. The manual beam workflow does not need them.
+Natural-language design stays off until `MODEL_API_KEY` is set. Supabase Auth turns on with `DRAFTY_AUTH_MODE=supabase` and a publishable key; the secret key stays on the server and is required only for private artifact upload. Modal is not configured in this phase. `DRAFTY_ENV=production` refuses to start while authentication is disabled. The manual beam workflow does not need any of those services.
 
 ## Layout
 

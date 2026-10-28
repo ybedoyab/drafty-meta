@@ -22,7 +22,7 @@ from drafty_api.jobs import (
 )
 from drafty_api.scenarios import attach_job, read_scenario
 from drafty_api.scenarios import router as scenario_router
-from drafty_api.settings import settings
+from drafty_api.settings import assert_production_auth, settings
 from drafty_api.storage import signed_artifact_url
 from drafty_engineering.geometry_math import envelope, expected_face_area
 from drafty_engineering.materials import MATERIALS
@@ -71,6 +71,7 @@ class InterpretRequest(BaseModel):
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    assert_production_auth()
     recover_interrupted_jobs()
     yield
 
@@ -101,6 +102,7 @@ def health() -> dict:
         "meta": settings.meta_configured,
         "modal": settings.drafty_compute == "modal" and settings.modal_configured,
         "supabase": settings.supabase_configured,
+        "supabase_auth": settings.supabase_auth_configured,
         "auth": settings.drafty_auth_mode,
         "compute": settings.drafty_compute,
     }

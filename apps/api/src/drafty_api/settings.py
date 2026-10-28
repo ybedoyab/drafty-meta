@@ -1,5 +1,6 @@
 """Process settings. Secrets stay in the environment and are never returned by the API."""
 
+import os
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -32,6 +33,8 @@ class Settings(BaseSettings):
     modal_token_secret: str = ""
     supabase_url: str = ""
     supabase_service_role_key: str = ""
+    supabase_secret_key: str = ""
+    supabase_publishable_key: str = ""
     supabase_jwt_secret: str = ""
     drafty_auth_mode: str = "disabled"
     ccx_bin: str = "ccx"
@@ -63,8 +66,35 @@ class Settings(BaseSettings):
         return bool(self.modal_token_id.strip() and self.modal_token_secret.strip())
 
     @property
+    def supabase_secret(self) -> str:
+        return self.supabase_secret_key.strip() or self.supabase_service_role_key.strip()
+
+    @property
     def supabase_configured(self) -> bool:
-        return bool(self.supabase_url.strip() and self.supabase_service_role_key.strip())
+        """Server-side storage writes. The publishable key alone cannot upload artifacts."""
+
+        return bool(self.supabase_url.strip() and self.supabase_secret)
+
+    @property
+    def supabase_auth_configured(self) -> bool:
+        return bool(self.supabase_url.strip() and self.supabase_publishable_key.strip())
+
+
+def assert_production_auth() -> None:
+    """A public deployment must not boot with authentication disabled."""
+
+    if os.getenv("DRAFTY_ENV", "").strip().lower() != "production":
+        return
+    if (
+        settings.drafty_auth_mode == "supabase"
+        and settings.supabase_url.strip()
+        and settings.supabase_publishable_key.strip()
+    ):
+        return
+    raise RuntimeError(
+        "DRAFTY_ENV=production requires DRAFTY_AUTH_MODE=supabase, SUPABASE_URL, "
+        "and SUPABASE_PUBLISHABLE_KEY. The service-role key stays on the server."
+    )
 
 
 load_local_env()

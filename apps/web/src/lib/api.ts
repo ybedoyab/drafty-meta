@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { DesignSpec } from "./design";
+import { accessToken, refreshAccessToken } from "./supabase";
 
 const apiBase = import.meta.env.VITE_API_URL ?? "";
 
@@ -43,6 +44,7 @@ export interface Health {
   meta: boolean;
   modal: boolean;
   supabase: boolean;
+  supabase_auth?: boolean;
   auth: string;
   compute: string;
 }
@@ -97,17 +99,28 @@ export interface SimulationResult {
 }
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await request(path, init, false);
+  return response.json() as Promise<T>;
+}
+
+async function request(path: string, init: RequestInit | undefined, retried: boolean): Promise<Response> {
+  const token = await accessToken();
   const response = await fetch(`${apiBase}${path}`, {
     ...init,
     headers: {
       ...(init?.body instanceof FormData ? {} : { "Content-Type": "application/json" }),
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...init?.headers,
     },
   });
+  if (response.status === 401 && token && !retried) {
+    const refreshed = await refreshAccessToken();
+    if (refreshed) return request(path, init, true);
+  }
   if (!response.ok) {
     throw new Error(await errorMessage(response));
   }
-  return response.json() as Promise<T>;
+  return response;
 }
 
 async function errorMessage(response: Response) {
@@ -122,6 +135,21 @@ async function errorMessage(response: Response) {
 }
 
 export const getHealth = () => api<Health>("/api/v1/health");
+
+export interface ScenarioSummary {
+  id: string;
+  name: string;
+  updated_at: string | null;
+  version: number;
+  workflow: string | null;
+  domain: string | null;
+  studio_approval: string | null;
+}
+
+export const listScenarios = async () => {
+  const body = await api<{ scenarios: ScenarioSummary[] }>("/api/v1/scenarios");
+  return body.scenarios;
+};
 
 export const getJobs = async () => {
   const body = await api<{ jobs: unknown[] }>("/api/v1/jobs");
@@ -178,18 +206,18 @@ export const getOptimization = (id: string) =>
     } | null;
     optimality?: string;
     message?: string;
+    design_status?: string;
     iterations: { index: number; accepted: boolean; feasible: boolean; error?: string; thickness_m: number }[];
   }>(`/api/v1/jobs/${id}/optimization`);
 
 export const getLog = (id: string) => api<{ solver: string; worker: string }>(`/api/v1/jobs/${id}/log`);
 
 export async function previewSpec(spec: DesignSpec) {
-  const response = await fetch(`${apiBase}/api/v1/designs/preview`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(spec),
-  });
-  if (!response.ok) throw new Error(await errorMessage(response));
+  const response = await request(
+    "/api/v1/designs/preview",
+    { method: "POST", body: JSON.stringify(spec) },
+    false,
+  );
   return URL.createObjectURL(await response.blob());
 }
 

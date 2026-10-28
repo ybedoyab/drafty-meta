@@ -12,9 +12,10 @@ from pydantic import BaseModel, Field
 
 from drafty_ai.client import configured
 from drafty_ai.scenario_agent import advance_scenario, blank_inputs
-from drafty_api.auth import current_owner
+from drafty_api.auth import current_access_token, current_owner
 from drafty_api.images import inspect_image
 from drafty_api.settings import settings
+from drafty_api.storage import fetch_scenario, list_remote_scenarios, mirror_scenario
 from drafty_engineering.beam_fem import analyze_simply_supported_udl
 from drafty_engineering.plan import build_scenario, evaluate_bracket, proposed_bracket_spec, workflow_stage
 from drafty_engineering.scenario import classroom_kwargs, evaluate_classroom
@@ -67,23 +68,92 @@ def scenario_dir(scenario_id: str) -> Path:
 def read_scenario(scenario_id: str, owner_id: str) -> dict:
     path = scenario_dir(scenario_id) / "session.json"
     if not path.exists():
-        raise HTTPException(status_code=404, detail="Scenario not found.")
+        remote = _remote_session(scenario_id, owner_id)
+        if remote is None:
+            raise HTTPException(status_code=404, detail="Scenario not found.")
+        _write(remote, mirror=False)
+        return remote
     session = json.loads(path.read_text(encoding="utf-8"))
     if session.get("owner_id") != owner_id:
         raise HTTPException(status_code=404, detail="Scenario not found.")
     return session
 
 
-def _write(session: dict) -> None:
+def _remote_session(scenario_id: str, owner_id: str) -> dict | None:
+    try:
+        remote = fetch_scenario(scenario_id, current_access_token())
+    except Exception:
+        return None
+    if remote is None or remote.get("owner_id") != owner_id:
+        return None
+    return remote
+
+
+def _write(session: dict, snapshot: bool = False, mirror: bool = True) -> None:
     directory = scenario_dir(session["id"])
     directory.mkdir(parents=True, exist_ok=True)
     (directory / "session.json").write_text(json.dumps(session), encoding="utf-8")
+    if not mirror:
+        return
+    try:
+        mirror_scenario(session, current_access_token(), snapshot=snapshot)
+    except Exception as exc:
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+        (directory / "sync.log").write_text(
+            f"scenario mirror failed: {status or type(exc).__name__}\n",
+            encoding="utf-8",
+        )
 
 
 def _public(session: dict) -> dict:
     shown = dict(session)
     shown.pop("owner_id", None)
     return shown
+
+
+@router.get("/api/v1/scenarios")
+def list_scenarios(request: Request) -> dict:
+    owner = current_owner(request)
+    found: dict[str, dict] = {}
+    root = settings.data_dir / "scenarios"
+    if root.exists():
+        for path in root.iterdir():
+            session_path = path / "session.json"
+            if not session_path.is_file():
+                continue
+            try:
+                session = json.loads(session_path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                continue
+            if session.get("owner_id") != owner:
+                continue
+            found[session["id"]] = _scenario_summary(session)
+    try:
+        for row in list_remote_scenarios(current_access_token()):
+            state = dict(row.get("state") or {})
+            state["id"] = row["id"]
+            state["owner_id"] = owner
+            state["version"] = row.get("version") or state.get("version")
+            state["updated_at"] = row.get("updated_at") or state.get("updated_at")
+            state["name"] = row.get("name") or state.get("name")
+            found[str(row["id"])] = _scenario_summary(state)
+    except Exception:
+        pass
+    rows = sorted(found.values(), key=lambda item: str(item.get("updated_at") or ""), reverse=True)
+    return {"scenarios": rows}
+
+
+def _scenario_summary(session: dict) -> dict:
+    inputs = session.get("inputs") or {}
+    return {
+        "id": session.get("id"),
+        "name": session.get("name") or "Untitled",
+        "updated_at": session.get("updated_at"),
+        "version": session.get("version") or 1,
+        "workflow": session.get("workflow"),
+        "domain": inputs.get("domain"),
+        "studio_approval": session.get("studio_approval"),
+    }
 
 
 @router.post("/api/v1/scenarios")
@@ -123,6 +193,7 @@ def create_scenario(request: Request) -> dict:
         "output_tokens": 0,
         "context_reset": False,
         "phase": "collecting",
+        "version": 1,
         "analysis": None,
         "comparison": None,
         "ai": "not called",
@@ -191,8 +262,9 @@ def approve_model(scenario_id: str, request: Request) -> dict:
         }
     )
     session["messages"] = messages[-40:]
+    session["version"] = int(session.get("version") or 1) + 1
     session["updated_at"] = datetime.now(UTC).isoformat()
-    _write(session)
+    _write(session, snapshot=True)
     return _public(session)
 
 
@@ -263,8 +335,9 @@ def confirm_faces(scenario_id: str, body: FaceBody, request: Request) -> dict:
         }
     )
     session["messages"] = messages[-40:]
+    session["version"] = int(session.get("version") or 1) + 1
     session["updated_at"] = datetime.now(UTC).isoformat()
-    _write(session)
+    _write(session, snapshot=True)
     return _public(session)
 
 
