@@ -14,7 +14,15 @@ import modal
 
 image = (
     modal.Image.debian_slim(python_version="3.12")
-    .apt_install("calculix-ccx", "libgl1", "libglib2.0-0", "libxrender1", "libsm6", "libxext6")
+    .apt_install(
+        "calculix-ccx",
+        "libgl1",
+        "libglu1-mesa",
+        "libglib2.0-0",
+        "libxrender1",
+        "libsm6",
+        "libxext6",
+    )
     .pip_install(
         "cadquery>=2.5",
         "gmsh>=4.13",

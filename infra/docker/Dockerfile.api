@@ -4,6 +4,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         calculix-ccx \
         libgl1 \
+        libglu1-mesa \
         libglib2.0-0 \
         libxrender1 \
         libsm6 \
