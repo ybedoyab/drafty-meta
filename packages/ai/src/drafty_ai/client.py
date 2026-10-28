@@ -3,6 +3,9 @@
 import os
 
 import httpx
+from dotenv import load_dotenv
+
+load_dotenv(override=False)
 
 PRIMARY_MODEL = "muse-spark-1.3"
 REASONING_MODEL = "muse-wonder-1.0"

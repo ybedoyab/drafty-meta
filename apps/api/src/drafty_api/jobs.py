@@ -4,7 +4,9 @@ import json
 import os
 import subprocess
 import sys
+import time
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -16,33 +18,64 @@ ACTIVE = {"queued", "geometry", "meshing", "solving", "postprocessing"}
 TERMINAL = {"completed", "failed", "cancelled"}
 
 
+@contextmanager
+def _job_lock():
+    path = settings.data_dir / ".jobs.lock"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    deadline = time.monotonic() + 5
+    while True:
+        try:
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            break
+        except FileExistsError:
+            try:
+                if time.time() - path.stat().st_mtime > 30:
+                    path.unlink()
+                    continue
+            except OSError:
+                pass
+            if time.monotonic() > deadline:
+                raise HTTPException(status_code=429, detail="The local worker is busy. Retry shortly.")
+            time.sleep(0.05)
+    try:
+        os.write(fd, str(os.getpid()).encode())
+        yield
+    finally:
+        os.close(fd)
+        path.unlink(missing_ok=True)
+
+
 def create_job(owner_id: str, kind: str, spec: dict, options: dict | None = None) -> dict:
-    _enforce_quota(owner_id)
-    job_id = str(uuid.uuid4())
-    now = _now()
-    job = {
-        "id": job_id,
-        "owner_id": owner_id,
-        "kind": kind,
-        "status": "queued",
-        "message": "Queued",
-        "spec": spec,
-        "options": options or {},
-        "error": None,
-        "summary": None,
-        "created_at": now,
-        "updated_at": now,
-    }
-    directory = job_dir(job_id)
-    directory.mkdir(parents=True, exist_ok=False)
-    _write(directory / "job.json", job)
+    with _job_lock():
+        _enforce_quota(owner_id)
+        job_id = str(uuid.uuid4())
+        now = _now()
+        job = {
+            "id": job_id,
+            "owner_id": owner_id,
+            "kind": kind,
+            "status": "queued",
+            "message": "Queued",
+            "spec": spec,
+            "options": options or {},
+            "error": None,
+            "summary": None,
+            "created_at": now,
+            "updated_at": now,
+        }
+        directory = job_dir(job_id)
+        directory.mkdir(parents=True, exist_ok=False)
+        _write(directory / "job.json", job)
     _spawn(directory)
     return job
 
 
 def job_dir(job_id: str) -> Path:
-    if "/" in job_id or "\\" in job_id or job_id in {"", ".", ".."}:
-        raise HTTPException(status_code=404, detail="Job not found.")
+    try:
+        if str(uuid.UUID(job_id)) != job_id:
+            raise ValueError
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="Job not found.") from exc
     return settings.data_dir / "jobs" / job_id
 
 
@@ -115,16 +148,31 @@ def update_job(directory: Path, **fields: object) -> dict:
 
 
 def _enforce_quota(owner_id: str) -> None:
-    jobs = list_jobs(owner_id)
-    active = [job for job in jobs if job.get("status") in ACTIVE]
+    owned = list_jobs(owner_id)
+    active = [job for job in owned if job.get("status") in ACTIVE]
     if len(active) >= settings.drafty_max_concurrent_jobs:
         raise HTTPException(
             status_code=429,
             detail=f"Concurrent job limit is {settings.drafty_max_concurrent_jobs}.",
         )
+    global_active = 0
+    root = settings.data_dir / "jobs"
+    if root.exists():
+        for directory in root.iterdir():
+            path = directory / "job.json"
+            if not path.exists():
+                continue
+            try:
+                job = json.loads(path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                continue
+            if job.get("status") in ACTIVE:
+                global_active += 1
+    if global_active >= settings.drafty_max_global_jobs:
+        raise HTTPException(status_code=429, detail="The local worker is already at capacity.")
     cutoff = datetime.now(timezone.utc) - timedelta(hours=1)
     recent = 0
-    for job in jobs:
+    for job in owned:
         created = _parse_time(job.get("created_at", ""))
         if created is not None and created >= cutoff:
             recent += 1

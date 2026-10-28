@@ -196,25 +196,30 @@ def get_artifact(job_id: str, name: str, request: Request):
 
 @app.post("/api/v1/uploads/reference")
 async def upload_reference(request: Request) -> dict:
-    current_owner(request)
+    import json
+    import uuid
+
+    owner = current_owner(request)
+    declared = request.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > 8 * 1024 * 1024:
+        raise HTTPException(status_code=422, detail="Reference images are limited to 8 MB.")
     form = await request.form()
     upload = form.get("file")
-    if upload is None or not hasattr(upload, "content_type"):
+    if upload is None or not hasattr(upload, "read"):
         raise HTTPException(status_code=422, detail="Attach an image file.")
-    extension = UPLOAD_TYPES.get(upload.content_type or "")
-    if extension is None:
-        raise HTTPException(status_code=422, detail="Reference images must be PNG, JPEG, or WebP.")
     data = await upload.read()
     if len(data) > 8 * 1024 * 1024:
         raise HTTPException(status_code=422, detail="Reference images are limited to 8 MB.")
-    import uuid
-
+    media = _image_media(data)
+    if media is None:
+        raise HTTPException(status_code=422, detail="Reference images must be PNG, JPEG, or WebP.")
+    extension = UPLOAD_TYPES[media]
     image_id = str(uuid.uuid4())
     directory = settings.data_dir / "uploads"
     directory.mkdir(parents=True, exist_ok=True)
     (directory / f"{image_id}{extension}").write_bytes(data)
     (directory / f"{image_id}.json").write_text(
-        '{"note":"Reference only. Dimensions are not inferred from this image."}',
+        json.dumps({"owner_id": owner, "note": "Reference only. Dimensions are not inferred from this image."}),
         encoding="utf-8",
     )
     return {
@@ -224,11 +229,12 @@ async def upload_reference(request: Request) -> dict:
 
 
 @app.post("/api/v1/ai/interpret")
-def interpret_design(body: InterpretRequest) -> dict:
+def interpret_design(body: InterpretRequest, request: Request) -> dict:
     from drafty_ai.agent import interpret
     from drafty_ai.client import MetaNotConfigured, MetaRequestError
 
-    image_url = _image_data_url(body.reference_image_id) if body.reference_image_id else None
+    owner = current_owner(request)
+    image_url = _image_data_url(body.reference_image_id, owner) if body.reference_image_id else None
     try:
         return interpret(body.message, image_url, body.model)
     except MetaNotConfigured as exc:
@@ -238,7 +244,8 @@ def interpret_design(body: InterpretRequest) -> dict:
 
 
 @app.post("/api/v1/ai/segment")
-def segment_image() -> None:
+def segment_image(request: Request) -> None:
+    current_owner(request)
     raise HTTPException(
         status_code=501,
         detail=(
@@ -270,20 +277,48 @@ def _tail(path: Path, limit: int = 20000) -> str:
     return text[-limit:]
 
 
-def _image_data_url(image_id: str) -> str | None:
-    if "/" in image_id or "\\" in image_id or ".." in image_id:
-        raise HTTPException(status_code=404, detail="Reference image not found.")
-    directory = settings.data_dir / "uploads"
-    matches = list(directory.glob(f"{image_id}.*")) if directory.exists() else []
-    binary = [path for path in matches if path.suffix in UPLOAD_TYPES.values()]
-    if not binary:
-        raise HTTPException(status_code=404, detail="Reference image not found.")
+def _image_data_url(image_id: str, owner_id: str) -> str | None:
     import base64
+    import json
+    import uuid
 
-    suffix = binary[0].suffix
-    media = {value: key for key, value in UPLOAD_TYPES.items()}[suffix]
-    encoded = base64.b64encode(binary[0].read_bytes()).decode("ascii")
+    try:
+        if str(uuid.UUID(image_id)) != image_id:
+            raise ValueError
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="Reference image not found.") from exc
+    directory = settings.data_dir / "uploads"
+    meta_path = directory / f"{image_id}.json"
+    if not meta_path.is_file():
+        raise HTTPException(status_code=404, detail="Reference image not found.")
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    if meta.get("owner_id") != owner_id:
+        raise HTTPException(status_code=404, detail="Reference image not found.")
+    binary = next(
+        (
+            directory / f"{image_id}{suffix}"
+            for suffix in UPLOAD_TYPES.values()
+            if (directory / f"{image_id}{suffix}").is_file()
+        ),
+        None,
+    )
+    if binary is None:
+        raise HTTPException(status_code=404, detail="Reference image not found.")
+    media = _image_media(binary.read_bytes())
+    if media is None:
+        raise HTTPException(status_code=422, detail="The stored reference is not a PNG, JPEG, or WebP image.")
+    encoded = base64.b64encode(binary.read_bytes()).decode("ascii")
     return f"data:{media};base64,{encoded}"
+
+
+def _image_media(data: bytes) -> str | None:
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if len(data) >= 12 and data.startswith(b"RIFF") and data[8:12] == b"WEBP":
+        return "image/webp"
+    return None
 
 
 def run() -> None:

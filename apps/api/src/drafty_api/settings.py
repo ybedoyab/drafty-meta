@@ -2,9 +2,18 @@
 
 from pathlib import Path
 
+from dotenv import load_dotenv
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ROOT = Path(__file__).resolve().parents[4]
+
+
+def load_local_env(path: Path | None = None) -> None:
+    """Load a .env file without replacing variables already exported by the shell."""
+
+    target = path or (ROOT / ".env")
+    if target.exists():
+        load_dotenv(target, override=False)
 
 
 class Settings(BaseSettings):
@@ -30,6 +39,7 @@ class Settings(BaseSettings):
     drafty_use_docker_ccx: str = "auto"
     drafty_solver_timeout_s: int = 300
     drafty_max_concurrent_jobs: int = 1
+    drafty_max_global_jobs: int = 2
     drafty_max_jobs_per_hour: int = 30
     drafty_max_nodes: int = 250_000
     drafty_data_dir: str = ""
@@ -54,4 +64,5 @@ class Settings(BaseSettings):
         return bool(self.supabase_url.strip() and self.supabase_service_role_key.strip())
 
 
+load_local_env()
 settings = Settings()
