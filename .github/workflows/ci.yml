@@ -39,3 +39,36 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run build
+
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install CalculiX
+        run: sudo apt-get update && sudo apt-get install -y calculix-ccx libgl1 libglu1-mesa libglib2.0-0
+      - name: Install package
+        run: pip install -e ".[dev]"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+      - name: Install web
+        working-directory: apps/web
+        run: npm ci
+      - name: Install browser
+        working-directory: apps/web
+        run: npx playwright install --with-deps chromium
+      - name: Start API without Meta
+        run: |
+          MODEL_API_KEY=' ' nohup python -m uvicorn drafty_api.main:app --host 127.0.0.1 --port 8000 > /tmp/drafty-api.log &
+          for _ in $(seq 1 30); do curl -sf http://127.0.0.1:8000/api/v1/health && exit 0; sleep 1; done
+          exit 1
+      - name: Browser tests
+        working-directory: apps/web
+        env:
+          DRAFTY_LIVE_META: "0"
+        run: npx playwright test e2e/scenario.spec.ts e2e/bracket-fem.spec.ts --reporter=line

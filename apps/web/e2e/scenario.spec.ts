@@ -86,6 +86,11 @@ test("an aluminum bracket opens in Studio and does not start CalculiX", async ({
     "Design an aluminum bracket. Force 200 N. Legs 80 mm by 80 mm. Thickness 8 mm. Bracket width 40 mm. Displacement limit 1 mm.",
   );
   await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByText("Choose the fixed face")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Approve and open Studio" })).toHaveCount(0);
+  await page.getByLabel("Fixed face").selectOption("xmin");
+  await page.getByLabel("Load face").selectOption("zmax");
+  await page.getByRole("button", { name: "Confirm faces" }).click();
   await expect(page.getByRole("button", { name: "Approve and open Studio" })).toBeVisible();
   await expect(page.getByText("CalculiX solid FEM, not started")).toBeVisible();
   await expect(page.getByText("3D simulation is not available")).toHaveCount(0);
@@ -95,6 +100,9 @@ test("an aluminum bracket opens in Studio and does not start CalculiX", async ({
   await page.getByRole("button", { name: "Approve and open Studio" }).click();
   await expect(page.getByLabel("Part")).toHaveValue("l_bracket");
   await expect(page.getByLabel("Material")).toHaveValue("aluminum_6061_t6");
+  await expect(page.getByLabel("Support")).toHaveValue("xmin");
+  await expect(page.getByLabel("Load face")).toHaveValue("zmax");
+  await expect(page.getByRole("link", { name: "Back to scenario" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Run analysis" })).toBeVisible();
   expect(pageErrors).toEqual([]);
 });

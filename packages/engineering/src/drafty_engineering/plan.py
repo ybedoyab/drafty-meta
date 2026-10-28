@@ -37,6 +37,7 @@ TOOL_NAMES = {
 }
 STRUCTURAL_TOOLS = {"calculate_section_properties", "evaluate_beam"}
 MECHANICAL_TOOLS = {"create_supported_cad", "run_supported_simulation"}
+_FACES = {"xmin", "xmax", "ymin", "ymax", "zmin", "zmax"}
 
 _MECHANICAL = re.compile(r"\b(bracket|aluminum|aluminium|aluminio|masa|mass)\b", re.I)
 _STRUCTURAL = re.compile(
@@ -191,12 +192,12 @@ def proposed_bracket_spec(inputs: dict) -> dict | None:
     material_id = str(inputs.get("material_id") or "")
     if material_id not in MATERIALS:
         return None
+    support = str(inputs.get("support_face") or "").strip()
+    load_face = str(inputs.get("load_face") or "").strip()
+    if support not in _FACES or load_face not in _FACES or support == load_face:
+        return None
     smallest = min(float(inputs[key]) for key in keys[:4])
-    mesh = smallest / 4.0
-    support = str(inputs.get("support_face") or "xmin")
-    load_face = str(inputs.get("load_face") or "zmax")
-    if support == load_face:
-        load_face = "zmax" if support != "zmax" else "xmax"
+    mesh = smallest * 0.3
     try:
         spec = DesignSpec(
             name="aluminum-bracket",

@@ -8,6 +8,8 @@ import { Button } from "@/components/ui/button";
 import {
   analyzeScenario,
   approveScenario,
+  confirmScenarioFaces,
+  getJob,
   rejectScenario,
   createScenario,
   deleteScenarioEvidence,
@@ -53,6 +55,9 @@ export function Scenario() {
   const [error, setError] = useState<string | null>(null);
   const [metaReady, setMetaReady] = useState(false);
   const [segmentPrompt, setSegmentPrompt] = useState("bracket");
+  const [supportFace, setSupportFace] = useState("");
+  const [loadFace, setLoadFace] = useState("");
+  const [linkedJobs, setLinkedJobs] = useState<Awaited<ReturnType<typeof getJob>>[]>([]);
   const turnAbort = useRef<AbortController | null>(null);
   const navigate = useNavigate();
 
@@ -97,6 +102,21 @@ export function Scenario() {
       cancel = true;
     };
   }, []);
+
+  useEffect(() => {
+    const ids = session?.jobs ?? [];
+    if (!ids.length) {
+      setLinkedJobs([]);
+      return;
+    }
+    let cancel = false;
+    Promise.all(ids.map((item) => getJob(item.id).catch(() => null))).then((jobs) => {
+      if (!cancel) setLinkedJobs(jobs.filter((job) => job !== null));
+    });
+    return () => {
+      cancel = true;
+    };
+  }, [session?.jobs]);
 
   async function submit(message: string, patch?: Partial<ScenarioForm>) {
     if (!session) return;
@@ -194,6 +214,19 @@ export function Scenario() {
     }
   }
 
+  async function confirmFaces() {
+    if (!session || !supportFace || !loadFace || supportFace === loadFace) return;
+    setBusy(true);
+    setError(null);
+    try {
+      setSession(await confirmScenarioFaces(session.id, supportFace, loadFace));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "The faces could not be confirmed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function approve() {
     if (!session?.studio_spec) return;
     setBusy(true);
@@ -201,7 +234,7 @@ export function Scenario() {
     try {
       const next = await approveScenario(session.id);
       stageStudioSpec(localStorage, next.studio_spec);
-      navigate("/studio");
+      navigate(`/studio?scenario=${next.id}`);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "The model could not be approved.");
       setBusy(false);
@@ -288,9 +321,16 @@ export function Scenario() {
             ))}
           </ol>
           {session?.tool_trace?.[0] && (
-            <p className="border-b border-slate-200 px-4 py-2 text-xs text-slate-600">
-              {session.tool_trace[0].tool}: {session.tool_trace[0].detail}
-            </p>
+            <div className="border-b border-slate-200 px-4 py-2 text-xs text-slate-700">
+              <p>
+                Tool {session.tool_trace[0].tool} · status {session.tool_trace[0].status}
+                {session.tool_trace[0].authorization === "user_confirmation" ? " · approval required" : ""}
+              </p>
+              <p className="text-slate-600">{session.tool_trace[0].detail}</p>
+              <p className="text-slate-500">
+                Simulator: {session.engineering?.simulator ?? "none"}. A selected tool name is not a finished solve.
+              </p>
+            </div>
           )}
           <div className="flex-1 space-y-3 overflow-auto px-4 py-4">
             {(session?.messages ?? []).map((entry, index) => (
@@ -337,7 +377,7 @@ export function Scenario() {
             {error && <p className="mt-3 text-sm text-amber-800">{error}</p>}
             {busy && (
               <div className="mt-3 flex items-center gap-3 text-sm text-slate-600">
-                <p>Working. The saved scenario stays if this request fails.</p>
+                <p>Working. Cancel stops this browser wait. It does not cancel a solver.</p>
                 <Button type="button" onClick={cancelTurn}>
                   Cancel
                 </Button>
@@ -541,7 +581,10 @@ export function Scenario() {
             {domain === "mechanical" && session?.studio_spec && (
               <div className="space-y-2 text-sm">
                 <p>Parametric L-bracket, CAD schema. Simulator: CalculiX solid FEM, not started.</p>
-                <p>Faces are a candidate until you approve them in Studio. This is not a minimum-mass result.</p>
+                <p>
+                  Fixed face {session.inputs.support_face || "unset"}, load face {session.inputs.load_face || "unset"}.
+                  These faces were confirmed here. This is not a minimum-mass result.
+                </p>
                 {session.studio_approval === "rejected" ? (
                   <p>This proposal was rejected. Revise the description and send again. CalculiX has not started.</p>
                 ) : (
@@ -556,8 +599,46 @@ export function Scenario() {
                 )}
               </div>
             )}
-            {domain === "mechanical" && !session?.studio_spec && (
+            {domain === "mechanical" && !session?.studio_spec && session?.missing.includes("fixed face and load face") && session.missing.length === 1 && (
+              <div className="space-y-2 text-sm">
+                <p>Choose the fixed face and the load face. Drafty does not assume them.</p>
+                <label className="block">
+                  Fixed face
+                  <select className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1" value={supportFace} onChange={(event) => setSupportFace(event.target.value)}>
+                    <option value="">Choose a face</option>
+                    {["xmin", "xmax", "ymin", "ymax", "zmin", "zmax"].map((face) => (
+                      <option key={face} value={face}>{face}</option>
+                    ))}
+                  </select>
+                </label>
+                <label className="block">
+                  Load face
+                  <select className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1" value={loadFace} onChange={(event) => setLoadFace(event.target.value)}>
+                    <option value="">Choose a face</option>
+                    {["xmin", "xmax", "ymin", "ymax", "zmin", "zmax"].map((face) => (
+                      <option key={face} value={face}>{face}</option>
+                    ))}
+                  </select>
+                </label>
+                <Button type="button" disabled={busy || !supportFace || !loadFace || supportFace === loadFace} onClick={() => void confirmFaces()}>
+                  Confirm faces
+                </Button>
+              </div>
+            )}
+            {domain === "mechanical" && !session?.studio_spec && !(session?.missing.length === 1 && session.missing.includes("fixed face and load face")) && (
               <p className="text-sm">The bracket is missing geometry or a force. No mesh was created.</p>
+            )}
+            {linkedJobs.length > 0 && (
+              <ul className="mt-3 space-y-2 text-sm">
+                {linkedJobs.map((job) => (
+                  <li key={job.id}>
+                    {job.kind} · {job.status}
+                    {job.status === "completed" && job.summary ? ` · mass ${job.summary.mass_kg ?? "—"} kg · displacement ${job.summary.max_displacement_m ?? "—"} m` : ""}
+                    {job.status === "failed" ? ` · failed: ${job.error ?? "the solver did not finish"}` : ""}
+                    <span className="block text-xs text-slate-500">CalculiX solid FEM. Not a certification. Scenario {session?.id}.</span>
+                  </li>
+                ))}
+              </ul>
             )}
             {domain === "structural" && session && (
               <BeamResults

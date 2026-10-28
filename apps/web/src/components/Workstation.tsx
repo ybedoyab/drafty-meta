@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import logo from "@/assets/logo.png";
 import { Suspense, useEffect, useMemo, useState } from "react";
 import { Viewport, type CameraView, type Shade } from "@/components/Viewport";
@@ -10,6 +10,7 @@ import {
   createJob,
   getHealth,
   getJob,
+  getScenario,
   getJobs,
   getLog,
   getMaterials,
@@ -49,14 +50,32 @@ const MATERIALS = [
 
 export function Workstation() {
   const queryClient = useQueryClient();
+  const [params] = useSearchParams();
+  const scenarioId = params.get("scenario");
   const [form, setForm] = useState<DesignForm>(benchmarkForm);
+  const [displacementLimitM, setDisplacementLimitM] = useState<number | null>(null);
 
   useEffect(() => {
-    const pending = takeStudioSpec(localStorage);
-    if (pending && typeof pending === "object") {
-      setForm((current) => specToForm(pending as DesignSpec, current));
+    if (!scenarioId) {
+      const pending = takeStudioSpec(localStorage);
+      if (pending && typeof pending === "object") {
+        setForm((current) => specToForm(pending as DesignSpec, current));
+      }
+      return;
     }
-  }, []);
+    let cancel = false;
+    getScenario(scenarioId)
+      .then((scenario) => {
+        if (cancel || scenario.studio_approval !== "confirmed" || !scenario.studio_spec) return;
+        setForm((current) => specToForm(scenario.studio_spec as unknown as DesignSpec, current));
+        const limit = scenario.inputs.displacement_limit_m;
+        if (typeof limit === "number") setDisplacementLimitM(limit);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancel = true;
+    };
+  }, [scenarioId]);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [message, setMessage] = useState("");
@@ -159,7 +178,14 @@ export function Workstation() {
               max_iterations: iterationCap,
             }
           : undefined;
-      return createJob(kind, spec, optimization);
+      return createJob(
+        kind,
+        spec,
+        kind === "optimization" && displacementLimitM
+          ? { ...optimization, max_displacement_m: displacementLimitM }
+          : optimization,
+        scenarioId,
+      );
     },
     onSuccess: async (created) => {
       setActiveId(created.id);
@@ -246,7 +272,7 @@ export function Workstation() {
               Home
             </Link>
             <Link to="/scenario/new" className="rounded-md px-3 py-1.5 text-gray-600 hover:bg-indigo-50 hover:text-indigo-600">
-              Problem
+              {scenarioId ? "Back to scenario" : "Problem"}
             </Link>
             <Link to="/studio" className="rounded-md bg-indigo-50 px-3 py-1.5 text-indigo-700">
               Studio
@@ -579,6 +605,11 @@ export function Workstation() {
             <p>Accepted thickness {optimization.data.best?.thickness_m == null ? "—" : formatEngineering(optimization.data.best.thickness_m * 1000, 3)} mm</p>
             <p>Submitted mass {optimization.data.submitted?.mass_kg == null ? "—" : formatEngineering(optimization.data.submitted.mass_kg)} kg</p>
             <p>Accepted mass {optimization.data.best?.mass_kg == null ? "—" : formatEngineering(optimization.data.best.mass_kg)} kg</p>
+            <p>Submitted displacement {optimization.data.submitted?.displacement_m == null ? "—" : formatEngineering(optimization.data.submitted.displacement_m * 1000, 3)} mm</p>
+            <p>Accepted displacement {optimization.data.best?.displacement_m == null ? "—" : formatEngineering(optimization.data.best.displacement_m * 1000, 3)} mm</p>
+            <p>Submitted von Mises {optimization.data.submitted?.governing_von_mises_pa == null ? "—" : formatEngineering(mpaFromPascals(optimization.data.submitted.governing_von_mises_pa))} MPa</p>
+            <p>Accepted von Mises {optimization.data.best?.governing_von_mises_pa == null ? "—" : formatEngineering(mpaFromPascals(optimization.data.best.governing_von_mises_pa))} MPa</p>
+            <p>Exploratory factor {optimization.data.best?.safety_factor == null ? "—" : formatEngineering(optimization.data.best.safety_factor, 3)}. Not a certified safety factor.</p>
             <p className="text-amber-700">{optimization.data.optimality}</p>
             {optimization.data.message && <p className="text-amber-700">{optimization.data.message}</p>}
           </div>

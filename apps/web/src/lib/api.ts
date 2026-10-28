@@ -29,6 +29,7 @@ export const jobSchema = z.object({
     })
     .nullable(),
   spec: z.unknown().nullable(),
+  scenario_id: z.string().nullable().optional(),
   created_at: z.string().nullable(),
   updated_at: z.string().nullable(),
   active: z.boolean(),
@@ -129,10 +130,15 @@ export const getJobs = async () => {
 
 export const getJob = async (id: string) => jobSchema.parse(await api(`/api/v1/jobs/${id}`));
 
-export const createJob = (kind: "simulation" | "optimization", spec: DesignSpec, optimization?: object) =>
+export const createJob = (
+  kind: "simulation" | "optimization",
+  spec: DesignSpec,
+  optimization?: object,
+  scenarioId?: string | null,
+) =>
   api<Job>("/api/v1/jobs", {
     method: "POST",
-    body: JSON.stringify({ kind, spec, optimization: optimization ?? null }),
+    body: JSON.stringify({ kind, spec, optimization: optimization ?? null, scenario_id: scenarioId ?? null }),
   }).then((job) => jobSchema.parse(job));
 
 export const cancelJob = (id: string) =>
@@ -156,8 +162,20 @@ export const getMaterials = () =>
 
 export const getOptimization = (id: string) =>
   api<{
-    best: { mass_kg?: number; displacement_m?: number; safety_factor?: number; thickness_m?: number } | null;
-    submitted: { mass_kg?: number; displacement_m?: number; safety_factor?: number; thickness_m?: number } | null;
+    best: {
+      mass_kg?: number;
+      displacement_m?: number;
+      safety_factor?: number;
+      thickness_m?: number;
+      governing_von_mises_pa?: number;
+    } | null;
+    submitted: {
+      mass_kg?: number;
+      displacement_m?: number;
+      safety_factor?: number;
+      thickness_m?: number;
+      governing_von_mises_pa?: number;
+    } | null;
     optimality?: string;
     message?: string;
     iterations: { index: number; accepted: boolean; feasible: boolean; error?: string; thickness_m: number }[];
@@ -234,7 +252,8 @@ export interface ScenarioSession {
     simulator: string;
     quantities: { name: string; value_si: number | null; unit: string; status: string; source: string }[];
   };
-  tool_trace?: { tool: string; status: string; detail: string }[];
+  tool_trace?: { tool: string; status: string; detail: string; authorization?: string; output?: Record<string, unknown> }[];
+  jobs?: { id: string; kind: string }[];
   studio_spec?: Record<string, unknown> | null;
   studio_approval?: string;
   session_usage?: { input_tokens: number; output_tokens: number; requests: number };
@@ -298,6 +317,12 @@ export const dismissScenario = (id: string) =>
 
 export const approveScenario = (id: string) =>
   api<ScenarioSession>(`/api/v1/scenarios/${id}/approve`, { method: "POST" });
+
+export const confirmScenarioFaces = (id: string, supportFace: string, loadFace: string) =>
+  api<ScenarioSession>(`/api/v1/scenarios/${id}/faces`, {
+    method: "POST",
+    body: JSON.stringify({ support_face: supportFace, load_face: loadFace }),
+  });
 
 export const rejectScenario = (id: string) =>
   api<ScenarioSession>(`/api/v1/scenarios/${id}/reject`, { method: "POST" });

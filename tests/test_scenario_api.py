@@ -202,10 +202,22 @@ def test_rejecting_a_bracket_proposal_does_not_start_calculix(tmp_path, monkeypa
             f"/api/v1/scenarios/{scenario_id}/turn",
             json={"message": message, "inputs": {}},
         )
+        unconfirmed = client.post(f"/api/v1/scenarios/{scenario_id}/approve")
+        faces = client.post(
+            f"/api/v1/scenarios/{scenario_id}/faces",
+            json={"support_face": "xmin", "load_face": "zmax"},
+        )
         rejected = client.post(f"/api/v1/scenarios/{scenario_id}/reject")
+        blocked = client.post(f"/api/v1/scenarios/{scenario_id}/approve")
     assert turned.status_code == 200
-    assert turned.json()["studio_spec"]["kind"] == "l_bracket"
+    assert turned.json()["studio_spec"] is None
     assert turned.json()["ai"] == "not called"
+    assert unconfirmed.status_code == 422
+    assert faces.status_code == 200
+    assert faces.json()["studio_spec"]["supports"][0]["surface"] == "xmin"
+    assert faces.json()["studio_spec"]["loads"][0]["surface"] == "zmax"
+    assert faces.json()["tool_trace"][0]["status"] == "proposed"
     assert rejected.status_code == 200
     assert rejected.json()["studio_approval"] == "rejected"
+    assert blocked.status_code == 409
     assert list(tmp_path.glob("jobs/**")) == []

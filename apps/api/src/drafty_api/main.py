@@ -20,6 +20,7 @@ from drafty_api.jobs import (
     recover_interrupted_jobs,
     request_cancel,
 )
+from drafty_api.scenarios import attach_job, read_scenario
 from drafty_api.scenarios import router as scenario_router
 from drafty_api.settings import settings
 from drafty_api.storage import signed_artifact_url
@@ -59,6 +60,7 @@ class CreateJobRequest(BaseModel):
     kind: str = "simulation"
     spec: DesignSpec
     optimization: OptimizationOptions | None = None
+    scenario_id: str | None = None
 
 
 class InterpretRequest(BaseModel):
@@ -177,7 +179,11 @@ def post_job(body: CreateJobRequest, request: Request) -> dict:
         if body.optimization.upper_m <= body.optimization.lower_m:
             raise HTTPException(status_code=422, detail="The upper bound must exceed the lower bound.")
         options = body.optimization.model_dump()
-    job = create_job(owner, body.kind, body.spec.model_dump(), options)
+    if body.scenario_id:
+        read_scenario(body.scenario_id, owner)
+    job = create_job(owner, body.kind, body.spec.model_dump(), options, scenario_id=body.scenario_id)
+    if body.scenario_id:
+        attach_job(body.scenario_id, owner, job["id"], job["kind"])
     return _public_job(job)
 
 
@@ -333,6 +339,7 @@ def _public_job(job: dict) -> dict:
         "error": job.get("error"),
         "summary": job.get("summary"),
         "spec": job.get("spec"),
+        "scenario_id": job.get("scenario_id"),
         "created_at": job.get("created_at"),
         "updated_at": job.get("updated_at"),
         "active": job.get("status") in ACTIVE,

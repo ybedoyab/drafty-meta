@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 
 from drafty_ai.client import MetaNotConfigured, MetaRequestError, configured
 from drafty_ai.responses import create_response
-from drafty_ai.tools import describe_tool
+from drafty_ai.tools import execute_tool
 from drafty_engineering.plan import (
     build_scenario,
     classify_problem,
@@ -62,6 +62,8 @@ _LIMIT = re.compile(
 _LEG = re.compile(r"\blegs?\s+(\d+(?:\.\d+)?)\s*mm(?:\s*(?:by|x|and|y)\s*(\d+(?:\.\d+)?)\s*mm)?", re.I)
 _THICK = re.compile(r"\b(?:thickness|espesor)\s+(\d+(?:\.\d+)?)\s*mm\b", re.I)
 _BWIDTH = re.compile(r"\b(?:bracket width|ancho)\s+(\d+(?:\.\d+)?)\s*mm\b", re.I)
+_SUPPORT_FACE = re.compile(r"\b(?:fixed|support)\s+face\s+(xmin|xmax|ymin|ymax|zmin|zmax)\b", re.I)
+_LOAD_FACE = re.compile(r"\bload\s+face\s+(xmin|xmax|ymin|ymax|zmin|zmax)\b", re.I)
 _NUMBER = re.compile(r"\d+(?:\.\d+)?")
 _MEASURED = re.compile(r"\d.*\b(mm|cm|mpa|kn|n|metre|meter|dimension)\b|\b(mm|cm|mpa)\b.*\d", re.I)
 
@@ -171,6 +173,12 @@ def _absorb_bracket(found: dict, message: str) -> None:
         found["bracket_width_m"] = float(width.group(1)) / 1000.0
     if re.search(r"\b(aluminum|aluminium|aluminio)\b", message, re.I) and not found.get("material_id"):
         found["material_id"] = "aluminum_6061_t6"
+    support = _SUPPORT_FACE.search(message)
+    if support and not str(found.get("support_face") or "").strip():
+        found["support_face"] = support.group(1).lower()
+    load_face = _LOAD_FACE.search(message)
+    if load_face and not str(found.get("load_face") or "").strip():
+        found["load_face"] = load_face.group(1).lower()
 
 
 def advance_scenario(
@@ -287,7 +295,7 @@ def advance_scenario(
     )
     sources = _merge_sources(study["sources"], state.get("sources") or [], search_sources)
     studio_spec = proposed_bracket_spec(inputs) if domain == "mechanical" else None
-    if studio_spec and not inputs.get("support_face"):
+    if studio_spec:
         studio_spec = {**studio_spec, "approval": "pending"}
     known = _known_numbers(inputs, study)
     rejected_claims = _rejected_claims(accepted, parsed_claims, known)
@@ -295,7 +303,7 @@ def advance_scenario(
         accepted = (
             f"{accepted} A number in that explanation was not stored as an engineering result."
         ).strip()
-    tool = describe_tool(
+    tool = execute_tool(
         requested_tool or None,
         domain=domain,
         system=str(inputs.get("physical_system") or "unknown"),
@@ -303,6 +311,12 @@ def advance_scenario(
         has_analysis=bool(analysis) and not analysis.get("stale"),
         has_spec=studio_spec is not None,
         searched=bool(search_sources),
+        inputs=inputs,
+        study=study,
+        sources=sources,
+        analysis=analysis if analysis and not analysis.get("stale") else None,
+        comparison=comparison,
+        studio_spec=studio_spec,
     )
     engineering = build_scenario(
         description=message,

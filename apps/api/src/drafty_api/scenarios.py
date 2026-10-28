@@ -16,6 +16,7 @@ from drafty_api.auth import current_owner
 from drafty_api.images import inspect_image
 from drafty_api.settings import settings
 from drafty_engineering.beam_fem import analyze_simply_supported_udl
+from drafty_engineering.plan import build_scenario, evaluate_bracket, proposed_bracket_spec, workflow_stage
 from drafty_engineering.scenario import classroom_kwargs, evaluate_classroom
 
 router = APIRouter()
@@ -159,9 +160,22 @@ class SegmentBody(BaseModel):
     prompt: str = ""
 
 
+class FaceBody(BaseModel):
+    support_face: str
+    load_face: str
+
+
+_FACES = {"xmin", "xmax", "ymin", "ymax", "zmin", "zmax"}
+
+
 @router.post("/api/v1/scenarios/{scenario_id}/approve")
 def approve_model(scenario_id: str, request: Request) -> dict:
     session = read_scenario(scenario_id, current_owner(request))
+    if session.get("studio_approval") == "rejected":
+        raise HTTPException(
+            status_code=409,
+            detail="This proposal was rejected. Confirm the faces again before approval.",
+        )
     if not session.get("studio_spec"):
         raise HTTPException(status_code=422, detail="There is no CAD model to approve.")
     session["studio_approval"] = "confirmed"
@@ -180,6 +194,87 @@ def approve_model(scenario_id: str, request: Request) -> dict:
     session["updated_at"] = datetime.now(UTC).isoformat()
     _write(session)
     return _public(session)
+
+
+@router.post("/api/v1/scenarios/{scenario_id}/faces")
+def confirm_faces(scenario_id: str, body: FaceBody, request: Request) -> dict:
+    session = read_scenario(scenario_id, current_owner(request))
+    support = body.support_face.strip().lower()
+    load_face = body.load_face.strip().lower()
+    if support not in _FACES or load_face not in _FACES or support == load_face:
+        raise HTTPException(status_code=422, detail="Choose two different bounding-box faces.")
+    if session.get("inputs", {}).get("domain") != "mechanical":
+        raise HTTPException(status_code=422, detail="Faces apply to a mechanical bracket, not the classroom beam.")
+    inputs = dict(session["inputs"])
+    inputs["support_face"] = support
+    inputs["load_face"] = load_face
+    spec = proposed_bracket_spec(inputs)
+    if spec is None:
+        raise HTTPException(
+            status_code=422,
+            detail="The bracket still lacks a dimension, a force, or a library material.",
+        )
+    study = evaluate_bracket(inputs)
+    session["inputs"] = inputs
+    session["studio_spec"] = {**spec, "approval": "pending"}
+    session["studio_approval"] = "pending"
+    session["missing"] = study["missing"]
+    session["assumptions"] = study["assumptions"]
+    session["verification"] = study["verification"]
+    session["model_proposal"] = {
+        "family": "parametric L-bracket, pending approval",
+        "ready_for_3d_simulation": False,
+        "ready_for_beam_elements": False,
+        "reason": study["reason"],
+    }
+    engineering = build_scenario(
+        description="Confirmed bracket faces",
+        inputs=inputs,
+        study=study,
+        sources=list(session.get("sources") or []),
+        evidence_count=len(session.get("evidence") or []),
+        analysis=None,
+        comparison=None,
+    )
+    session["engineering"] = engineering.model_dump()
+    session["workflow"] = workflow_stage(
+        domain="mechanical",
+        missing=study["missing"],
+        searched=False,
+        has_model=True,
+        has_analysis=False,
+        has_comparison=False,
+    )
+    session["tool_trace"] = [
+        {
+            "tool": "create_supported_cad",
+            "status": "proposed",
+            "detail": "The user confirmed the faces. CalculiX has not started.",
+            "authorization": "user_confirmation",
+            "output": {"support": support, "load": load_face, "started": False},
+        }
+    ]
+    messages = list(session.get("messages") or [])
+    messages.append({"role": "user", "text": f"Fixed face {support}. Load face {load_face}."})
+    messages.append(
+        {
+            "role": "assistant",
+            "text": "Those faces are stored as confirmed. The solid solve still waits for Studio.",
+        }
+    )
+    session["messages"] = messages[-40:]
+    session["updated_at"] = datetime.now(UTC).isoformat()
+    _write(session)
+    return _public(session)
+
+
+def attach_job(scenario_id: str, owner_id: str, job_id: str, kind: str) -> None:
+    session = read_scenario(scenario_id, owner_id)
+    jobs = [item for item in (session.get("jobs") or []) if item.get("id") != job_id]
+    jobs.append({"id": job_id, "kind": kind})
+    session["jobs"] = jobs[-12:]
+    session["updated_at"] = datetime.now(UTC).isoformat()
+    _write(session)
 
 
 @router.post("/api/v1/scenarios/{scenario_id}/reject")

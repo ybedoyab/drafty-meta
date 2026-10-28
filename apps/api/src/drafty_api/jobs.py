@@ -45,7 +45,13 @@ def _job_lock():
         path.unlink(missing_ok=True)
 
 
-def create_job(owner_id: str, kind: str, spec: dict, options: dict | None = None) -> dict:
+def create_job(
+    owner_id: str,
+    kind: str,
+    spec: dict,
+    options: dict | None = None,
+    scenario_id: str | None = None,
+) -> dict:
     with _job_lock():
         _enforce_quota(owner_id)
         job_id = str(uuid.uuid4())
@@ -60,6 +66,7 @@ def create_job(owner_id: str, kind: str, spec: dict, options: dict | None = None
             "options": options or {},
             "error": None,
             "summary": None,
+            "scenario_id": scenario_id,
             "created_at": now,
             "updated_at": now,
         }

@@ -64,12 +64,26 @@ def test_a_complete_bracket_builds_cad_and_does_not_solve():
             "Thickness 8 mm. Bracket width 40 mm. Displacement limit 1 mm."
         ),
     )
-    spec = DesignSpec.model_validate({key: value for key, value in result["studio_spec"].items() if key != "approval"})
+    assert result["studio_spec"] is None
+    assert "fixed face and load face" in result["missing"]
+    assert result["tool_trace"][0]["status"] == "proposed"
+    assert result["tool_trace"][0]["status"] != "executed"
+    confirmed = advance_scenario(
+        {"inputs": result["inputs"], "messages": [], "evidence": []},
+        "Fixed face xmin. Load face zmax.",
+    )
+    spec = DesignSpec.model_validate(
+        {key: value for key, value in confirmed["studio_spec"].items() if key != "approval"}
+    )
     assert spec.kind == "l_bracket"
     assert spec.material_id == "aluminum_6061_t6"
     assert spec.loads[0].magnitude == 200
-    assert result["tool_trace"][0]["status"] != "ok" or result["tool_trace"][0]["tool"] != "run_supported_simulation"
-    assert result["model_proposal"]["ready_for_3d_simulation"] is False
+    assert spec.supports[0].surface == "xmin"
+    assert spec.loads[0].surface == "zmax"
+    assert spec.element_order == 2
+    assert confirmed["tool_trace"][0]["status"] == "proposed"
+    assert confirmed["tool_trace"][0]["output"].get("started") is not True
+    assert confirmed["model_proposal"]["ready_for_3d_simulation"] is False
 
 
 def test_the_model_cannot_run_a_beam_tool_on_a_bracket():
@@ -171,6 +185,54 @@ def test_planning_rubric_rejects_an_invented_number():
         }
     )
     assert clean["passed"] == clean["total"]
+
+
+def test_section_properties_execute_only_when_the_dimensions_exist():
+    def responder(**_kwargs):
+        return {
+            "id": "resp_test",
+            "model": "muse-spark-1.3",
+            "text": json.dumps(
+                {
+                    "message": "Check the section.",
+                    "questions": [],
+                    "observations": [],
+                    "domain": "structural",
+                    "physical_system": "simply_supported_ibeam",
+                    "tool": "calculate_section_properties",
+                    "claims": [],
+                }
+            ),
+            "citations": [],
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+        }
+
+    missing = advance_scenario(
+        {"inputs": blank_inputs(), "messages": [], "evidence": []},
+        "I need an I-beam for a classroom floor.",
+        responder=responder,
+    )
+    assert missing["tool_trace"][0]["status"] == "failed"
+    assert "area_m2" not in missing["tool_trace"][0]["output"]
+    inputs = blank_inputs()
+    inputs.update(
+        {
+            "domain": "structural",
+            "physical_system": "simply_supported_ibeam",
+            "depth_m": 0.2,
+            "flange_width_m": 0.1,
+            "flange_thickness_m": 0.01,
+            "web_thickness_m": 0.006,
+        }
+    )
+    ready = advance_scenario(
+        {"inputs": inputs, "messages": [], "evidence": []},
+        "Review the current section.",
+        responder=responder,
+    )
+    assert ready["tool_trace"][0]["status"] == "executed"
+    assert ready["tool_trace"][0]["output"]["formula"] == "i_section_properties"
+    assert ready["tool_trace"][0]["output"]["area_m2"] > 0
 
 
 def test_classification_covers_both_languages():

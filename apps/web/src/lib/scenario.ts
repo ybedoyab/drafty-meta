@@ -11,6 +11,9 @@ export interface ScenarioInputs {
   web_thickness_m: number | null;
   student_count: number | null;
   supports: string;
+  displacement_limit_m?: number | null;
+  support_face?: string;
+  load_face?: string;
 }
 
 export interface ScenarioForm {
