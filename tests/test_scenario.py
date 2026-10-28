@@ -68,7 +68,9 @@ def test_responses_search_uses_the_responses_endpoint(monkeypatch):
     monkeypatch.setattr("drafty_ai.responses.httpx.post", post)
     result = responses_with_search("classroom live load")
     assert calls["url"].endswith("/responses")
-    assert calls["body"]["tools"] == [{"type": "web_search"}]
+    assert calls["body"]["tools"] == [{"type": "web_search", "search_context_size": "low"}]
+    assert calls["body"]["include"] == ["web_search_call.results"]
+    assert calls["body"]["reasoning"] == {"effort": "minimal"}
     assert calls["body"]["max_tool_calls"] == 2
     assert calls["body"]["input"][0]["content"][0]["type"] == "input_text"
     assert calls["body"]["text"]["format"]["type"] == "json_schema"
@@ -164,6 +166,7 @@ def test_model_wording_cannot_supply_a_stress_or_an_uncited_source():
     assert result["sources"][-1]["url"] == "https://example.test/page"
     follow = advance_scenario(result, "What did you find?", responder=responder)
     assert seen[1]["previous_response_id"] == "resp_test"
+    assert seen[0]["max_output_tokens"] == 2000
     assert follow["previous_response_id"] == "resp_test"
     assert len([item for item in follow["sources"] if item.get("url") == "https://example.test/page"]) == 1
 
@@ -317,6 +320,59 @@ def test_image_urls_must_be_supported_data_urls(monkeypatch):
         create_response(
             instructions="Look.", user_text="What is visible?", image_data_urls=["https://example.test/a.png"]
         )
+
+
+def test_retrieved_pages_are_capped_and_a_citation_is_kept():
+    from drafty_ai.scenario_agent import advance_scenario, blank_inputs
+
+    citations = [
+        {"url": f"https://example.test/hit-{index}", "title": "Same title", "kind": "retrieved", "span": ""}
+        for index in range(8)
+    ]
+    citations.append(
+        {"url": "https://example.test/cited", "title": "Cited page", "kind": "url_citation", "span": "span"}
+    )
+
+    def responder(**_kwargs):
+        return {
+            "id": "resp_test",
+            "model": "muse-spark-1.3",
+            "text": (
+                '{"message": "The span is still missing.", "questions": ["What is the support-to-support span?"], '
+                '"observations": ["A dark beam line is visible"]}'
+            ),
+            "citations": citations,
+            "usage": {"output_tokens": 20},
+        }
+
+    result = advance_scenario(
+        {"inputs": blank_inputs(), "messages": [], "evidence": []},
+        "Review the sketches.",
+        responder=responder,
+    )
+    web = [item for item in result["sources"] if item.get("origin") == "meta web_search"]
+    urls = [item.get("url") for item in web]
+    assert "https://example.test/cited" in urls
+    assert sum(1 for item in web if item.get("status") == "retrieved page, not a url_citation" and item.get("url")) == 5
+    assert any("additional retrieved pages" in item["title"] for item in web)
+    assert result["inputs"]["span_m"] is None
+    from drafty_ai.client import MetaRequestError
+    from drafty_ai.scenario_agent import advance_scenario, blank_inputs
+
+    inputs = blank_inputs()
+    inputs["span_m"] = 6.0
+
+    def responder(**_kwargs):
+        raise MetaRequestError("The Meta Responses request timed out. No citation was stored.")
+
+    result = advance_scenario(
+        {"inputs": inputs, "messages": [], "evidence": []},
+        "Review the span.",
+        responder=responder,
+    )
+    assert result["inputs"]["span_m"] == 6.0
+    assert "timed out" in result["messages"][-1]["text"]
+    assert result["calculation"] is None
 
 
 def test_chat_completions_do_not_receive_web_search(monkeypatch):

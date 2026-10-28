@@ -61,6 +61,21 @@ test("a classroom scenario asks for missing data and does not open a 3D solve", 
   expect(pageErrors).toEqual([]);
 });
 
+test("a failed send leaves the scenario and the typed span in place", async ({ page }) => {
+  const pageErrors: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  await page.route("**/api/v1/scenarios/*/turn", (route) => route.abort());
+  await page.goto("/scenario/new");
+  await expect(page.getByRole("heading", { name: "Scenario assistant" })).toBeVisible();
+  await page.getByLabel("Span m").fill("6");
+  await page.getByLabel("Describe the problem").fill("Review the span I typed.");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByText(/failed|network|abort|unavailable/i).first()).toBeVisible();
+  await expect(page.getByLabel("Span m")).toHaveValue("6");
+  await expect(page.getByRole("heading", { name: "Scenario assistant" })).toBeVisible();
+  expect(pageErrors).toEqual([]);
+});
+
 test("landing screenshots", async ({ page }) => {
   await page.setViewportSize({ width: 1366, height: 768 });
   await page.goto("/");

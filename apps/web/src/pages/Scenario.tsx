@@ -9,7 +9,9 @@ import {
   analyzeScenario,
   createScenario,
   deleteScenarioEvidence,
+  dismissScenario,
   downloadScenarioReport,
+  getHealth,
   getScenario,
   scenarioEvidenceUrl,
   turnScenario,
@@ -43,6 +45,21 @@ export function Scenario() {
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [metaReady, setMetaReady] = useState(false);
+
+  useEffect(() => {
+    let cancel = false;
+    getHealth()
+      .then((health) => {
+        if (!cancel) setMetaReady(health.meta);
+      })
+      .catch(() => {
+        if (!cancel) setMetaReady(false);
+      });
+    return () => {
+      cancel = true;
+    };
+  }, []);
 
   useEffect(() => {
     let cancel = false;
@@ -156,6 +173,19 @@ export function Scenario() {
     }
   }
 
+  async function dismiss() {
+    if (!session) return;
+    setBusy(true);
+    setError(null);
+    try {
+      setSession(await dismissScenario(session.id));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "The suggestion could not be dismissed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const connected = session?.mode === "meta-responses";
   const questions = session?.model_questions ?? [];
   return (
@@ -167,7 +197,11 @@ export function Scenario() {
             <div>
               <p className="text-xs font-medium uppercase tracking-[0.14em] text-slate-500">
                 {PHASE_LABEL[session?.phase ?? "collecting"] ?? "Collecting the problem"}
-                {connected ? ` · Muse ${session?.model ?? "Spark"} · Responses API` : " · AI not connected"}
+                {connected
+                  ? ` · ${session?.model ?? "muse-spark-1.3"} · Responses API`
+                  : metaReady
+                    ? " · Muse Spark ready"
+                    : " · AI not connected"}
               </p>
               <h1 className="text-xl font-semibold">Scenario assistant</h1>
             </div>
@@ -238,11 +272,16 @@ export function Scenario() {
               <p className="text-sm text-slate-600">The preliminary record has the inputs it knows how to use.</p>
             )}
             {questions.length > 0 && (
-              <ul className="mt-3 list-disc space-y-1 pl-4 text-sm">
-                {questions.map((item) => (
-                  <li key={item}>{item}</li>
-                ))}
-              </ul>
+              <div className="mt-3">
+                <ul className="list-disc space-y-1 pl-4 text-sm">
+                  {questions.map((item) => (
+                    <li key={item}>{item}</li>
+                  ))}
+                </ul>
+                <Button className="mt-3" type="button" disabled={busy} onClick={() => void dismiss()}>
+                  Reject suggestion
+                </Button>
+              </div>
             )}
           </Panel>
           <Panel title="Inputs">
@@ -363,8 +402,8 @@ export function Scenario() {
             </Panel>
             <Panel title="Sources">
               <ul className="space-y-3 text-sm">
-                {(session?.sources ?? []).map((item) => (
-                  <li key={`${item.origin}-${item.title}`}>
+                {(session?.sources ?? []).map((item, index) => (
+                  <li key={`${item.origin}-${item.url ?? item.title}-${index}`}>
                     <p className="font-medium">{item.title}</p>
                     <p className="text-slate-600">{item.status}. {item.limit}</p>
                     {item.url && (

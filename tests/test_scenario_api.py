@@ -151,3 +151,22 @@ def test_confirmed_beam_elements_run_and_a_solid_model_stays_closed(tmp_path, mo
     assert stale.json()["analysis"]["stale"] is True
     assert stale_report.status_code == 404
     assert list(tmp_path.glob("jobs/**")) == []
+
+
+def test_rejecting_a_suggestion_keeps_the_typed_span(tmp_path, monkeypatch):
+    with _client(tmp_path, monkeypatch) as client:
+        created = client.post("/api/v1/scenarios")
+        scenario_id = created.json()["id"]
+        reviewed = client.post(
+            f"/api/v1/scenarios/{scenario_id}/turn",
+            json={"message": "Review the span.", "inputs": {"span_m": 6}},
+        )
+        dismissed = client.post(f"/api/v1/scenarios/{scenario_id}/dismiss")
+    assert reviewed.status_code == 200
+    assert reviewed.json()["ai"] == "not called"
+    body = dismissed.json()
+    assert dismissed.status_code == 200
+    assert body["inputs"]["span_m"] == 6
+    assert body["model_questions"] == []
+    assert "set aside" in body["messages"][-1]["text"]
+    assert body["ai"] == "not called"

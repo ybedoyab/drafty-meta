@@ -12,15 +12,15 @@ from drafty_ai.responses import create_response
 from drafty_engineering.scenario import evaluate_classroom
 
 INSTRUCTIONS = """You are Drafty's scenario assistant.
-One reply covers understanding, research, assumptions, a physical model, numerical verification, and criticism.
-Use web_search only for published codes, standards, or material sources.
-Do not search in order to do arithmetic.
 Return only the JSON object required by the schema: message, questions, and observations.
-observations may name visible objects. They must not state a dimension, a load, or a stress.
+message is at most 80 words. Ask for missing physical inputs. Name visible objects without measuring them.
+questions has at most four short questions. observations has at most three items and no numbers.
+Use web_search once, only for a published load, code, or material reference.
+Do not paste URLs, snippets, or arithmetic into the JSON.
 Do not claim that a design is safe, approved, or certified.
-Do not invent finite-element stresses, displacements, or safety factors.
+Do not invent stresses, displacements, or safety factors.
 Do not write Python, shell, or solver input.
-The server replaces every load and section number with its own calculation.
+The server calculates every load and section number.
 """
 
 MAX_META_TURNS = 8
@@ -142,6 +142,7 @@ def advance_scenario(
                 user_text=_model_prompt(message, inputs, image_count, study["missing"]),
                 image_data_urls=(image_data_urls or [])[:8],
                 previous_response_id=response_id,
+                max_output_tokens=2000,
             )
         except MetaNotConfigured:
             result = None
@@ -166,7 +167,14 @@ def advance_scenario(
             if usage_payload:
                 usage = usage_payload
             parsed = _parse_model(str(result.get("text") or ""))
-            if parsed is None:
+            if result.get("incomplete_reason") and not str(result.get("text") or "").strip():
+                withheld = (
+                    "The model stopped before a visible reply "
+                    f"({result.get('incomplete_reason')}). No wording from that attempt was used. "
+                    "The numbers below are the local calculation."
+                )
+                parsed = None
+            elif parsed is None:
                 withheld = (
                     "The model reply was not a valid engineering record, so its wording was not used. "
                     "The numbers below are the local calculation."
@@ -175,20 +183,7 @@ def advance_scenario(
                 accepted = parsed.message
                 questions = parsed.questions[:6]
                 observations = parsed.observations[:6]
-            for item in result.get("citations") or []:
-                if not isinstance(item, dict) or not item.get("url"):
-                    continue
-                search_sources.append(
-                    {
-                        "title": item.get("title") or item["url"],
-                        "url": item["url"],
-                        "span": item.get("span") or "",
-                        "status": "search result, not a compliance finding",
-                        "origin": "meta web_search",
-                        "retrieved_at": datetime.now(UTC).isoformat(),
-                        "limit": "A retrieved page is not a checked code provision and it is not a certification.",
-                    }
-                )
+            search_sources = _search_sources(result.get("citations") or [])
             if context_reset:
                 withheld = (
                     "The previous Meta conversation could not be resumed, so this turn started a new one. "
@@ -238,6 +233,49 @@ def advance_scenario(
     }
 
 
+def _search_sources(citations: list) -> list[dict]:
+    """Keep cited URLs and a short list of retrieved pages. Extra hits stay unlisted."""
+
+    kept: list[dict] = []
+    retrieved = 0
+    omitted = 0
+    for item in citations:
+        if not isinstance(item, dict) or not item.get("url"):
+            continue
+        cited = item.get("kind") != "retrieved"
+        if not cited:
+            if retrieved >= 5:
+                omitted += 1
+                continue
+            retrieved += 1
+        kept.append(
+            {
+                "title": item.get("title") or item["url"],
+                "url": item["url"],
+                "span": item.get("span") or "",
+                "status": (
+                    "search result, not a compliance finding"
+                    if cited
+                    else "retrieved page, not a url_citation"
+                ),
+                "origin": "meta web_search",
+                "retrieved_at": datetime.now(UTC).isoformat(),
+                "limit": "A retrieved page is not a checked code provision and it is not a certification.",
+            }
+        )
+    if omitted:
+        kept.append(
+            {
+                "title": f"{omitted} additional retrieved pages were left off this list.",
+                "status": "retrieved page, not a url_citation",
+                "origin": "meta web_search",
+                "span": "",
+                "limit": "A retrieved page is not a checked code provision and it is not a certification.",
+            }
+        )
+    return kept
+
+
 def _model_prompt(message: str, inputs: dict, image_count: int, missing: list[str]) -> str:
     return (
         f"User message: {message or 'Review the current inputs.'}\n"
@@ -262,7 +300,7 @@ def _parse_model(text: str) -> ModelReply | None:
         if _FORBIDDEN.search(reply.message):
             reply.message = ""
         reply.message = reply.message.strip()[:1200]
-        reply.observations = [item for item in reply.observations if item and not _MEASURED.search(item)][:6]
+        reply.observations = [item for item in reply.observations if item and not re.search(r"\d", item)][:6]
         reply.questions = [
             item.strip()[:240]
             for item in reply.questions

@@ -153,6 +153,25 @@ def scenario_turn(scenario_id: str, body: TurnBody, request: Request) -> dict:
     return _public(session)
 
 
+@router.post("/api/v1/scenarios/{scenario_id}/dismiss")
+def dismiss_suggestion(scenario_id: str, request: Request) -> dict:
+    session = read_scenario(scenario_id, current_owner(request))
+    session["model_questions"] = []
+    session["observations"] = []
+    messages = list(session.get("messages") or [])
+    messages.append({"role": "user", "text": "The suggestion was rejected."})
+    messages.append(
+        {
+            "role": "assistant",
+            "text": "The suggestion was set aside. Typed inputs and calculated numbers were kept.",
+        }
+    )
+    session["messages"] = messages[-40:]
+    session["updated_at"] = datetime.now(UTC).isoformat()
+    _write(session)
+    return _public(session)
+
+
 @router.post("/api/v1/scenarios/{scenario_id}/analyze")
 def analyze_scenario(scenario_id: str, body: AnalyzeBody, request: Request) -> dict:
     session = read_scenario(scenario_id, current_owner(request))

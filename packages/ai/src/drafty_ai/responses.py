@@ -59,19 +59,28 @@ def create_response(
         "input": [{"role": "user", "content": content}],
         "max_output_tokens": max_output_tokens,
         "max_tool_calls": max_tool_calls,
-        "tools": [{"type": "web_search"}],
+        "tools": [{"type": "web_search", "search_context_size": "low"}],
+        "include": ["web_search_call.results"],
         "text": {"format": REPLY_FORMAT},
+        # Reasoning shares max_output_tokens. Minimal leaves room for the visible JSON reply.
+        "reasoning": {"effort": "minimal"},
     }
     if previous_response_id:
         body["previous_response_id"] = previous_response_id
     payload, context_reset = _post_response(body)
+    output_types = _output_types(payload)
+    incomplete = payload.get("incomplete_details") if isinstance(payload.get("incomplete_details"), dict) else {}
     return {
         "id": payload.get("id"),
+        "status": payload.get("status"),
         "text": _output_text(payload),
         "citations": _citations(payload),
         "usage": payload.get("usage") or {},
         "model": selected,
         "context_reset": context_reset,
+        "output_types": output_types,
+        "searched": "web_search_call" in output_types,
+        "incomplete_reason": incomplete.get("reason"),
     }
 
 
@@ -134,6 +143,14 @@ def _image_data_url(url: str) -> str:
     return url
 
 
+def _output_types(payload: dict) -> list[str]:
+    types: list[str] = []
+    for item in payload.get("output") or []:
+        if isinstance(item, dict) and item.get("type"):
+            types.append(str(item["type"]))
+    return types
+
+
 def _output_text(payload: dict) -> str:
     parts: list[str] = []
     for item in payload.get("output") or []:
@@ -170,12 +187,28 @@ def _citations(payload: dict) -> list[dict]:
                     span = text[start:end]
                 current = found.get(url)
                 if current is None:
-                    found[url] = {"url": url, "title": note.get("title") or "", "span": span}
+                    found[url] = {"url": url, "title": note.get("title") or "", "span": span, "kind": "url_citation"}
                     order.append(url)
                 elif span and len(span) > len(current["span"]):
                     current["span"] = span
+                    current["kind"] = "url_citation"
                     if note.get("title"):
                         current["title"] = note["title"]
+        if item.get("type") != "web_search_call":
+            continue
+        for hit in item.get("results") or []:
+            if not isinstance(hit, dict):
+                continue
+            url = str(hit.get("url") or "")
+            if not url.startswith(("https://", "http://")) or url in found:
+                continue
+            found[url] = {
+                "url": url,
+                "title": hit.get("title") or "",
+                "span": str(hit.get("snippet") or "")[:240],
+                "kind": "retrieved",
+            }
+            order.append(url)
     return [found[url] for url in order]
 
 

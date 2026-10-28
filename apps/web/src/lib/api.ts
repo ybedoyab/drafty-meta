@@ -270,6 +270,9 @@ export const turnScenario = (id: string, body: object) =>
 export const analyzeScenario = (id: string, body: object) =>
   api<ScenarioSession>(`/api/v1/scenarios/${id}/analyze`, { method: "POST", body: JSON.stringify(body) });
 
+export const dismissScenario = (id: string) =>
+  api<ScenarioSession>(`/api/v1/scenarios/${id}/dismiss`, { method: "POST" });
+
 export async function downloadScenarioReport(id: string) {
   const report = await api<unknown>(`/api/v1/scenarios/${id}/report`);
   const blob = new Blob([JSON.stringify(report, null, 2)], { type: "application/json" });
