@@ -19,8 +19,41 @@ REPLY_FORMAT = {
             "message": {"type": "string"},
             "questions": {"type": "array", "items": {"type": "string"}},
             "observations": {"type": "array", "items": {"type": "string"}},
+            "domain": {"type": "string", "enum": ["structural", "mechanical", "unknown"]},
+            "physical_system": {
+                "type": "string",
+                "enum": ["simply_supported_ibeam", "l_bracket", "unknown"],
+            },
+            "tool": {
+                "type": "string",
+                "enum": [
+                    "inspect_scenario",
+                    "research_engineering_reference",
+                    "propose_engineering_model",
+                    "validate_model_inputs",
+                    "calculate_section_properties",
+                    "evaluate_beam",
+                    "create_supported_cad",
+                    "run_supported_simulation",
+                    "compare_design_variants",
+                    "explain_results",
+                ],
+            },
+            "claims": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "name": {"type": "string"},
+                        "statement": {"type": "string"},
+                        "source": {"type": "string"},
+                    },
+                    "required": ["name", "statement", "source"],
+                },
+            },
         },
-        "required": ["message", "questions", "observations"],
+        "required": ["message", "questions", "observations", "domain", "physical_system", "tool", "claims"],
     },
 }
 
@@ -34,6 +67,7 @@ def create_response(
     model: str | None = None,
     max_output_tokens: int = 1200,
     max_tool_calls: int = 2,
+    search: bool = True,
 ) -> dict:
     """One Responses API turn. Instructions, tools, and the JSON schema are sent again."""
 
@@ -58,13 +92,13 @@ def create_response(
         "instructions": instructions,
         "input": [{"role": "user", "content": content}],
         "max_output_tokens": max_output_tokens,
-        "max_tool_calls": max_tool_calls,
-        "tools": [{"type": "web_search", "search_context_size": "low"}],
-        "include": ["web_search_call.results"],
         "text": {"format": REPLY_FORMAT},
-        # Reasoning shares max_output_tokens. Minimal leaves room for the visible JSON reply.
         "reasoning": {"effort": "minimal"},
     }
+    if search:
+        body["max_tool_calls"] = max_tool_calls
+        body["tools"] = [{"type": "web_search", "search_context_size": "low"}]
+        body["include"] = ["web_search_call.results"]
     if previous_response_id:
         body["previous_response_id"] = previous_response_id
     payload, context_reset = _post_response(body)

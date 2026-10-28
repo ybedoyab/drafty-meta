@@ -170,3 +170,42 @@ def test_rejecting_a_suggestion_keeps_the_typed_span(tmp_path, monkeypatch):
     assert body["model_questions"] == []
     assert "set aside" in body["messages"][-1]["text"]
     assert body["ai"] == "not called"
+
+
+def test_segment_without_a_key_does_not_call_the_provider(tmp_path, monkeypatch):
+    with _client(tmp_path, monkeypatch) as client:
+        scenario_id = client.post("/api/v1/scenarios").json()["id"]
+        uploaded = client.post(
+            f"/api/v1/scenarios/{scenario_id}/evidence",
+            files={"file": ("part.png", io.BytesIO(PNG), "image/png")},
+            data={"role": "photo", "note": ""},
+        )
+        evidence_id = uploaded.json()["evidence"][0]["id"]
+        segmented = client.post(
+            f"/api/v1/scenarios/{scenario_id}/segment",
+            json={"evidence_id": evidence_id, "prompt": "bracket"},
+        )
+        approved = client.post(f"/api/v1/scenarios/{scenario_id}/approve")
+    assert segmented.status_code == 503
+    assert "MODEL_API_KEY" in segmented.json()["detail"]
+    assert approved.status_code == 422
+
+
+def test_rejecting_a_bracket_proposal_does_not_start_calculix(tmp_path, monkeypatch):
+    message = (
+        "Design an aluminum bracket. Force 200 N. Legs 80 mm by 80 mm. "
+        "Thickness 8 mm. Bracket width 40 mm. Displacement limit 1 mm."
+    )
+    with _client(tmp_path, monkeypatch) as client:
+        scenario_id = client.post("/api/v1/scenarios").json()["id"]
+        turned = client.post(
+            f"/api/v1/scenarios/{scenario_id}/turn",
+            json={"message": message, "inputs": {}},
+        )
+        rejected = client.post(f"/api/v1/scenarios/{scenario_id}/reject")
+    assert turned.status_code == 200
+    assert turned.json()["studio_spec"]["kind"] == "l_bracket"
+    assert turned.json()["ai"] == "not called"
+    assert rejected.status_code == 200
+    assert rejected.json()["studio_approval"] == "rejected"
+    assert list(tmp_path.glob("jobs/**")) == []

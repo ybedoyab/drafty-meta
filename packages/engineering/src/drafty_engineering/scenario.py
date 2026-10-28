@@ -162,6 +162,31 @@ def classroom_line_load(
     }
 
 
+CLASSROOM_FIELDS = (
+    "jurisdiction",
+    "span_m",
+    "tributary_width_m",
+    "dead_n_per_m2",
+    "live_n_per_m2",
+    "beam_self_weight_n_per_m",
+    "depth_m",
+    "flange_width_m",
+    "flange_thickness_m",
+    "web_thickness_m",
+    "student_count",
+    "supports",
+)
+
+
+def classroom_kwargs(payload: dict) -> dict:
+    """Pass only the classroom fields. Extra design keys stay out of this solver."""
+
+    values = {key: payload.get(key) for key in CLASSROOM_FIELDS}
+    values["jurisdiction"] = str(values.get("jurisdiction") or "")
+    values["supports"] = str(values.get("supports") or "")
+    return values
+
+
 def evaluate_classroom(
     *,
     jurisdiction: str = "",
@@ -207,6 +232,7 @@ def evaluate_classroom(
                 ),
                 "status": "assumed",
                 "provenance": "cited code",
+                "source": NSR10_CLASSROOM_CITATION["title"],
             }
         )
     elif live_n_per_m2 is None:
@@ -325,6 +351,7 @@ def evaluate_classroom(
         "retrieved_at": None,
         "span": "Educational classrooms 2.0 kN/m2",
         "origin": "checked template",
+        "evidence_class": "verified",
     }
     if not use_nsr:
         citation = {

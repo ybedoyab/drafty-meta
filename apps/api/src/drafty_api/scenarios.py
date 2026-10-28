@@ -16,7 +16,7 @@ from drafty_api.auth import current_owner
 from drafty_api.images import inspect_image
 from drafty_api.settings import settings
 from drafty_engineering.beam_fem import analyze_simply_supported_udl
-from drafty_engineering.scenario import evaluate_classroom
+from drafty_engineering.scenario import classroom_kwargs, evaluate_classroom
 
 router = APIRouter()
 MAX_IMAGES = 8
@@ -97,7 +97,8 @@ def create_scenario(request: Request) -> dict:
         "inputs": blank_inputs(),
         "messages": [],
         "evidence": [],
-        "missing": ["jurisdiction", "span", "tributary width", "dead load", "live load", "supports"],
+        "missing": [],
+        "workflow": "understand",
         "errors": [],
         "assumptions": [],
         "sources": [],
@@ -148,6 +149,80 @@ def scenario_turn(scenario_id: str, body: TurnBody, request: Request) -> dict:
     if withheld and updated["messages"]:
         updated["messages"][-1]["text"] += " The images stayed in storage because this turn's vision cap is 4 MB."
     session.update(updated)
+    session["updated_at"] = datetime.now(UTC).isoformat()
+    _write(session)
+    return _public(session)
+
+
+class SegmentBody(BaseModel):
+    evidence_id: str
+    prompt: str = ""
+
+
+@router.post("/api/v1/scenarios/{scenario_id}/approve")
+def approve_model(scenario_id: str, request: Request) -> dict:
+    session = read_scenario(scenario_id, current_owner(request))
+    if not session.get("studio_spec"):
+        raise HTTPException(status_code=422, detail="There is no CAD model to approve.")
+    session["studio_approval"] = "confirmed"
+    messages = list(session.get("messages") or [])
+    messages.append({"role": "user", "text": "The CAD model was approved for Studio."})
+    messages.append(
+        {
+            "role": "assistant",
+            "text": (
+                "The L-bracket was handed to Studio. CalculiX has not started. "
+                "Run the solid solve there if the faces and the force are the ones you want."
+            ),
+        }
+    )
+    session["messages"] = messages[-40:]
+    session["updated_at"] = datetime.now(UTC).isoformat()
+    _write(session)
+    return _public(session)
+
+
+@router.post("/api/v1/scenarios/{scenario_id}/reject")
+def reject_model(scenario_id: str, request: Request) -> dict:
+    session = read_scenario(scenario_id, current_owner(request))
+    if not session.get("studio_spec"):
+        raise HTTPException(status_code=422, detail="There is no CAD model to reject.")
+    session["studio_approval"] = "rejected"
+    messages = list(session.get("messages") or [])
+    messages.append({"role": "user", "text": "The proposed CAD model was rejected."})
+    messages.append(
+        {
+            "role": "assistant",
+            "text": "The proposal stays on this page and was not sent to CalculiX. Revise the inputs and send again.",
+        }
+    )
+    session["messages"] = messages[-40:]
+    session["updated_at"] = datetime.now(UTC).isoformat()
+    _write(session)
+    return _public(session)
+
+
+@router.post("/api/v1/scenarios/{scenario_id}/segment")
+def segment_evidence(scenario_id: str, body: SegmentBody, request: Request) -> dict:
+    from drafty_ai.client import MetaNotConfigured, MetaRequestError
+    from drafty_ai.segmentation import segment_image
+
+    session = read_scenario(scenario_id, current_owner(request))
+    item = next((entry for entry in session["evidence"] if entry["id"] == body.evidence_id), None)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Image not found.")
+    urls, _withheld = _vision_urls({"id": session["id"], "evidence": [item]})
+    if not urls:
+        raise HTTPException(status_code=422, detail="That image could not be prepared for segmentation.")
+    try:
+        result = segment_image(body.prompt, urls[0])
+    except MetaNotConfigured as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except MetaRequestError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail="The segmentation output could not be read.") from exc
+    session["segmentation"] = {**result, "evidence_id": body.evidence_id}
     session["updated_at"] = datetime.now(UTC).isoformat()
     _write(session)
     return _public(session)
@@ -306,7 +381,7 @@ def _merge_inputs(session: dict, incoming: dict) -> dict:
 
 
 def _beam_record(inputs: dict, elements: int) -> dict:
-    study = evaluate_classroom(**inputs)
+    study = evaluate_classroom(**classroom_kwargs(inputs))
     if study["errors"]:
         raise ValueError(study["errors"][0])
     if not study["ready_for_beam_elements"] or study["beam"] is None or study["line"] is None:
@@ -349,7 +424,7 @@ def _beam_record(inputs: dict, elements: int) -> dict:
 
 
 def _apply_study(session: dict, inputs: dict) -> None:
-    study = evaluate_classroom(**inputs)
+    study = evaluate_classroom(**classroom_kwargs(inputs))
     kept = [item for item in session.get("sources") or [] if item.get("origin") != "checked template"]
     session["calculation"] = study["line"]
     session["section"] = study["section"]

@@ -209,8 +209,8 @@ export interface ScenarioSession {
   }[];
   missing: string[];
   errors: string[];
-  assumptions: { name: string; statement: string; status: string; provenance: string }[];
-  sources: { title: string; url?: string; status: string; limit?: string; origin?: string; span?: string; retrieved_at?: string | null }[];
+  assumptions: { name: string; statement: string; status: string; provenance: string; source?: string }[];
+  sources: { title: string; url?: string; status: string; limit?: string; origin?: string; span?: string; evidence_class?: string; retrieved_at?: string | null }[];
   calculation: { q_line_n_per_m: number; live_n_per_m2: number; trace?: { formula?: string } } | null;
   section: { area_m2: number; inertia_x_m4: number; inertia_y_m4: number } | null;
   beam: { max_moment_n_m: number; end_shear_n: number; midspan_deflection_m: number; material?: { name: string; source: string } } | null;
@@ -223,6 +223,29 @@ export interface ScenarioSession {
   phase?: string;
   analysis: BeamAnalysis | null;
   comparison: BeamAnalysis | null;
+  workflow?: string;
+  engineering?: {
+    domain: string;
+    physical_system: string;
+    missing: string[];
+    suitable_methods: string[];
+    unsupported: string[];
+    validation_status: string;
+    simulator: string;
+    quantities: { name: string; value_si: number | null; unit: string; status: string; source: string }[];
+  };
+  tool_trace?: { tool: string; status: string; detail: string }[];
+  studio_spec?: Record<string, unknown> | null;
+  studio_approval?: string;
+  session_usage?: { input_tokens: number; output_tokens: number; requests: number };
+  segmentation?: {
+    prompt: string;
+    evidence_id: string;
+    width?: number | null;
+    height?: number | null;
+    objects: { object_id: string; left: number; top: number; right: number; bottom: number; path: string }[];
+    limit: string;
+  };
   ai: string;
 }
 
@@ -264,14 +287,26 @@ export const createScenario = () => api<ScenarioSession>("/api/v1/scenarios", { 
 
 export const getScenario = (id: string) => api<ScenarioSession>(`/api/v1/scenarios/${id}`);
 
-export const turnScenario = (id: string, body: object) =>
-  api<ScenarioSession>(`/api/v1/scenarios/${id}/turn`, { method: "POST", body: JSON.stringify(body) });
+export const turnScenario = (id: string, body: object, signal?: AbortSignal) =>
+  api<ScenarioSession>(`/api/v1/scenarios/${id}/turn`, { method: "POST", body: JSON.stringify(body), signal });
 
 export const analyzeScenario = (id: string, body: object) =>
   api<ScenarioSession>(`/api/v1/scenarios/${id}/analyze`, { method: "POST", body: JSON.stringify(body) });
 
 export const dismissScenario = (id: string) =>
   api<ScenarioSession>(`/api/v1/scenarios/${id}/dismiss`, { method: "POST" });
+
+export const approveScenario = (id: string) =>
+  api<ScenarioSession>(`/api/v1/scenarios/${id}/approve`, { method: "POST" });
+
+export const rejectScenario = (id: string) =>
+  api<ScenarioSession>(`/api/v1/scenarios/${id}/reject`, { method: "POST" });
+
+export const segmentScenario = (id: string, evidenceId: string, prompt: string) =>
+  api<ScenarioSession>(`/api/v1/scenarios/${id}/segment`, {
+    method: "POST",
+    body: JSON.stringify({ evidence_id: evidenceId, prompt }),
+  });
 
 export async function downloadScenarioReport(id: string) {
   const report = await api<unknown>(`/api/v1/scenarios/${id}/report`);

@@ -33,8 +33,10 @@ import {
   mpaFromPascals,
   specToForm,
   type DesignForm,
+  type DesignSpec,
   type PartKind,
 } from "@/lib/design";
+import { takeStudioSpec } from "@/lib/scenario";
 
 const STAGES = ["queued", "geometry", "meshing", "solving", "postprocessing", "completed"] as const;
 const MATERIALS = [
@@ -48,6 +50,13 @@ const MATERIALS = [
 export function Workstation() {
   const queryClient = useQueryClient();
   const [form, setForm] = useState<DesignForm>(benchmarkForm);
+
+  useEffect(() => {
+    const pending = takeStudioSpec(localStorage);
+    if (pending && typeof pending === "object") {
+      setForm((current) => specToForm(pending as DesignSpec, current));
+    }
+  }, []);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [message, setMessage] = useState("");

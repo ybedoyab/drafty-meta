@@ -1,12 +1,14 @@
 import { OrbitControls } from "@react-three/drei";
 import { Canvas } from "@react-three/fiber";
-import { Link } from "react-router-dom";
-import { useEffect, useState, type ReactNode } from "react";
+import { Link, useNavigate } from "react-router-dom";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { SiteHeader } from "@/components/SiteHeader";
 import { BeamResults } from "@/components/BeamResults";
 import { Button } from "@/components/ui/button";
 import {
   analyzeScenario,
+  approveScenario,
+  rejectScenario,
   createScenario,
   deleteScenarioEvidence,
   dismissScenario,
@@ -14,6 +16,7 @@ import {
   getHealth,
   getScenario,
   scenarioEvidenceUrl,
+  segmentScenario,
   turnScenario,
   uploadScenarioEvidence,
   type ScenarioSession,
@@ -25,6 +28,7 @@ import {
   inputsFromForm,
   recallScenarioId,
   rememberScenarioId,
+  stageStudioSpec,
   type ScenarioForm,
 } from "@/lib/scenario";
 
@@ -37,6 +41,8 @@ const PHASE_LABEL: Record<string, string> = {
   verifying: "Beam-element results ready",
 };
 
+const WORKFLOW = ["understand", "research", "model", "validate", "simulate", "optimize"] as const;
+
 export function Scenario() {
   const [session, setSession] = useState<ScenarioSession | null>(null);
   const [form, setForm] = useState<ScenarioForm>(emptyForm);
@@ -46,6 +52,9 @@ export function Scenario() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [metaReady, setMetaReady] = useState(false);
+  const [segmentPrompt, setSegmentPrompt] = useState("bracket");
+  const turnAbort = useRef<AbortController | null>(null);
+  const navigate = useNavigate();
 
   useEffect(() => {
     let cancel = false;
@@ -93,18 +102,30 @@ export function Scenario() {
     if (!session) return;
     const nextForm = { ...form, ...patch };
     setForm(nextForm);
+    turnAbort.current?.abort();
+    const controller = new AbortController();
+    turnAbort.current = controller;
     setBusy(true);
     setError(null);
     try {
-      const next = await turnScenario(session.id, { message, inputs: inputsFromForm(nextForm) });
+      const next = await turnScenario(session.id, { message, inputs: inputsFromForm(nextForm) }, controller.signal);
+      if (controller.signal.aborted) return;
       setSession(next);
       setForm(formFromInputs(next.inputs));
       setDraft("");
     } catch (reason) {
+      if (controller.signal.aborted) {
+        setError("This browser stopped waiting. A request already at the server may still finish.");
+        return;
+      }
       setError(reason instanceof Error ? reason.message : "The turn failed.");
     } finally {
-      setBusy(false);
+      if (turnAbort.current === controller) setBusy(false);
     }
+  }
+
+  function cancelTurn() {
+    turnAbort.current?.abort();
   }
 
   async function startFresh() {
@@ -173,6 +194,46 @@ export function Scenario() {
     }
   }
 
+  async function approve() {
+    if (!session?.studio_spec) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const next = await approveScenario(session.id);
+      stageStudioSpec(localStorage, next.studio_spec);
+      navigate("/studio");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "The model could not be approved.");
+      setBusy(false);
+    }
+  }
+
+  async function reject() {
+    if (!session?.studio_spec) return;
+    setBusy(true);
+    setError(null);
+    try {
+      setSession(await rejectScenario(session.id));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "The proposal could not be rejected.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function segment(evidenceId: string) {
+    if (!session) return;
+    setBusy(true);
+    setError(null);
+    try {
+      setSession(await segmentScenario(session.id, evidenceId, segmentPrompt));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Segmentation did not run.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function dismiss() {
     if (!session) return;
     setBusy(true);
@@ -188,6 +249,8 @@ export function Scenario() {
 
   const connected = session?.mode === "meta-responses";
   const questions = session?.model_questions ?? [];
+  const domain = session?.engineering?.domain ?? "unknown";
+  const workflow = session?.workflow ?? "understand";
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">
       <SiteHeader />
@@ -214,6 +277,21 @@ export function Scenario() {
               </Link>
             </div>
           </header>
+          <ol className="flex flex-wrap gap-2 border-b border-slate-200 px-4 py-2 text-xs">
+            {WORKFLOW.map((stage) => (
+              <li
+                key={stage}
+                className={stage === workflow ? "rounded bg-slate-900 px-2 py-1 font-medium text-white" : "rounded bg-slate-100 px-2 py-1 text-slate-600"}
+              >
+                {stage}
+              </li>
+            ))}
+          </ol>
+          {session?.tool_trace?.[0] && (
+            <p className="border-b border-slate-200 px-4 py-2 text-xs text-slate-600">
+              {session.tool_trace[0].tool}: {session.tool_trace[0].detail}
+            </p>
+          )}
           <div className="flex-1 space-y-3 overflow-auto px-4 py-4">
             {(session?.messages ?? []).map((entry, index) => (
               <p key={`${entry.role}-${index}`} className="text-sm leading-6">
@@ -257,6 +335,20 @@ export function Scenario() {
               </Button>
             </div>
             {error && <p className="mt-3 text-sm text-amber-800">{error}</p>}
+            {busy && (
+              <div className="mt-3 flex items-center gap-3 text-sm text-slate-600">
+                <p>Working. The saved scenario stays if this request fails.</p>
+                <Button type="button" onClick={cancelTurn}>
+                  Cancel
+                </Button>
+              </div>
+            )}
+            {session?.session_usage && session.session_usage.requests > 0 && (
+              <p className="mt-3 text-xs text-slate-500">
+                This session used {session.session_usage.input_tokens} input tokens and {session.session_usage.output_tokens} output tokens.
+                No dollar amount is available.
+              </p>
+            )}
           </form>
         </section>
 
@@ -284,6 +376,7 @@ export function Scenario() {
               </div>
             )}
           </Panel>
+          {domain !== "mechanical" && (
           <Panel title="Inputs">
             <div className="grid gap-2 sm:grid-cols-2">
               <Field label="Jurisdiction" value={form.jurisdiction} onChange={(jurisdiction) => setForm({ ...form, jurisdiction })} />
@@ -307,6 +400,7 @@ export function Scenario() {
               Use Colombia NSR-10 classroom minimum
             </Button>
           </Panel>
+          )}
           <Panel title="Evidence">
             <div
               className="rounded-md border border-dashed border-slate-300 p-3"
@@ -353,12 +447,36 @@ export function Scenario() {
                     {item.name}
                     <span className="block text-xs text-slate-500">{item.role}. Not a measured drawing.</span>
                   </span>
+                  <button type="button" onClick={() => void segment(item.id)} disabled={busy}>
+                    Segment
+                  </button>
                   <button type="button" onClick={() => void removeImage(item.id)}>
                     Remove
                   </button>
                 </li>
               ))}
             </ul>
+            <label className="mt-3 block text-sm">
+              Object to segment
+              <input
+                className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1"
+                value={segmentPrompt}
+                onChange={(event) => setSegmentPrompt(event.target.value)}
+              />
+            </label>
+            {session?.segmentation && (
+              <p className="mt-2 text-sm">{session.segmentation.limit}</p>
+            )}
+            {session?.segmentation?.objects.map((object) => {
+              const width = session.segmentation?.width || Math.max(object.right, 1);
+              const height = session.segmentation?.height || Math.max(object.bottom, 1);
+              return (
+                <svg key={object.object_id} viewBox={`0 0 ${width} ${height}`} className="mt-2 h-40 w-full rounded border border-slate-200 bg-slate-50">
+                  <rect x={object.left} y={object.top} width={Math.max(object.right - object.left, 1)} height={Math.max(object.bottom - object.top, 1)} fill="none" stroke="#4f46e5" />
+                  {object.path && <path d={object.path} transform={`translate(${object.left} ${object.top})`} fill="rgba(79,70,229,0.25)" />}
+                </svg>
+              );
+            })}
           </Panel>
         </div>
 
@@ -396,6 +514,9 @@ export function Scenario() {
                 {(session?.assumptions ?? []).map((item) => (
                   <li key={item.name}>
                     <span className="font-medium">{item.status}.</span> {item.statement}
+                    {(item.source || item.provenance) && (
+                      <span className="mt-1 block text-xs text-slate-500">Source: {item.source || item.provenance}</span>
+                    )}
                   </li>
                 ))}
               </ul>
@@ -405,7 +526,7 @@ export function Scenario() {
                 {(session?.sources ?? []).map((item, index) => (
                   <li key={`${item.origin}-${item.url ?? item.title}-${index}`}>
                     <p className="font-medium">{item.title}</p>
-                    <p className="text-slate-600">{item.status}. {item.limit}</p>
+                    <p className="text-slate-600">{item.evidence_class ? `${item.evidence_class}. ` : ""}{item.status}. {item.limit}</p>
                     {item.url && (
                       <a className="underline" href={item.url}>
                         {item.url}
@@ -417,7 +538,28 @@ export function Scenario() {
             </Panel>
           </div>
           <Panel title="Simulation gate">
-            {session ? (
+            {domain === "mechanical" && session?.studio_spec && (
+              <div className="space-y-2 text-sm">
+                <p>Parametric L-bracket, CAD schema. Simulator: CalculiX solid FEM, not started.</p>
+                <p>Faces are a candidate until you approve them in Studio. This is not a minimum-mass result.</p>
+                {session.studio_approval === "rejected" ? (
+                  <p>This proposal was rejected. Revise the description and send again. CalculiX has not started.</p>
+                ) : (
+                  <div className="flex flex-wrap gap-2">
+                    <Button type="button" disabled={busy} onClick={() => void approve()}>
+                      Approve and open Studio
+                    </Button>
+                    <Button type="button" disabled={busy} onClick={() => void reject()}>
+                      Reject proposal
+                    </Button>
+                  </div>
+                )}
+              </div>
+            )}
+            {domain === "mechanical" && !session?.studio_spec && (
+              <p className="text-sm">The bracket is missing geometry or a force. No mesh was created.</p>
+            )}
+            {domain === "structural" && session && (
               <BeamResults
                 session={session}
                 busy={busy}
@@ -425,9 +567,9 @@ export function Scenario() {
                 onCompare={() => void runBeam(true)}
                 onDownload={() => void downloadReport()}
               />
-            ) : (
-              <p className="text-sm">The scenario is still loading.</p>
             )}
+            {domain === "unknown" && <p className="text-sm">No solver is selected yet.</p>}
+            {!session && <p className="text-sm">The scenario is still loading.</p>}
             <ul className="mt-3 list-disc space-y-1 pl-4 text-sm text-slate-700">
               {(session?.verification ?? []).map((item) => (
                 <li key={item}>{item}</li>

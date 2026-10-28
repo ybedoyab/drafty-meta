@@ -45,6 +45,22 @@ export const CLASSROOM_PROMPT =
   "I need a steel I-beam supporting a classroom floor for approximately 30 students. Research the applicable loads, ask me for the missing dimensions, propose a preliminary structural model, and explain the checks required.";
 
 const KEY = "drafty.scenario.v2";
+const STUDIO_KEY = "drafty.studio.pending";
+
+export function stageStudioSpec(storage: Storage, spec: unknown) {
+  storage.setItem(STUDIO_KEY, JSON.stringify(spec));
+}
+
+export function takeStudioSpec(storage: Storage): unknown | null {
+  const raw = storage.getItem(STUDIO_KEY);
+  if (!raw) return null;
+  storage.removeItem(STUDIO_KEY);
+  try {
+    return JSON.parse(raw) as unknown;
+  } catch {
+    return null;
+  }
+}
 
 export function rememberScenarioId(storage: Storage, id: string) {
   storage.setItem(KEY, JSON.stringify({ version: 2, id }));

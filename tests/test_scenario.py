@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from drafty_ai.client import MetaNotConfigured
@@ -158,11 +160,13 @@ def test_model_wording_cannot_supply_a_stress_or_an_uncited_source():
         "classroom floor",
         responder=responder,
     )
-    assert "safe" not in result["messages"][-1]["text"].lower()
-    assert "MPa" not in result["messages"][-1]["text"]
+    assert "10" not in json.dumps(result["engineering"]["quantities"])
+    assert result["rejected_claims"]
     assert result["observations"] == []
     assert result["calculation"] is None
-    assert result["sources"][-1]["status"] == "search result, not a compliance finding"
+    assert result["beam"] is None
+    assert result["sources"][-1]["status"] == "model citation, not a compliance finding"
+    assert result["sources"][-1]["evidence_class"] == "cited"
     assert result["sources"][-1]["url"] == "https://example.test/page"
     follow = advance_scenario(result, "What did you find?", responder=responder)
     assert seen[1]["previous_response_id"] == "resp_test"

@@ -76,6 +76,29 @@ test("a failed send leaves the scenario and the typed span in place", async ({ p
   expect(pageErrors).toEqual([]);
 });
 
+test("an aluminum bracket opens in Studio and does not start CalculiX", async ({ page }) => {
+  const pageErrors: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/scenario/new");
+  await expect(page.getByText("AI not connected")).toBeVisible();
+  await page.getByLabel("Describe the problem").fill(
+    "Design an aluminum bracket. Force 200 N. Legs 80 mm by 80 mm. Thickness 8 mm. Bracket width 40 mm. Displacement limit 1 mm.",
+  );
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByRole("button", { name: "Approve and open Studio" })).toBeVisible();
+  await expect(page.getByText("CalculiX solid FEM, not started")).toBeVisible();
+  await expect(page.getByText("3D simulation is not available")).toHaveCount(0);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.getByRole("button", { name: "Approve and open Studio" })).toBeVisible();
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.getByRole("button", { name: "Approve and open Studio" }).click();
+  await expect(page.getByLabel("Part")).toHaveValue("l_bracket");
+  await expect(page.getByLabel("Material")).toHaveValue("aluminum_6061_t6");
+  await expect(page.getByRole("button", { name: "Run analysis" })).toBeVisible();
+  expect(pageErrors).toEqual([]);
+});
+
 test("landing screenshots", async ({ page }) => {
   await page.setViewportSize({ width: 1366, height: 768 });
   await page.goto("/");
