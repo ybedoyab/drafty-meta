@@ -193,3 +193,54 @@ export async function uploadReference(file: File) {
 export function artifactUrl(jobId: string, name: string) {
   return `${apiBase}/api/v1/jobs/${jobId}/artifacts/${name}`;
 }
+
+export interface ScenarioSession {
+  id: string;
+  messages: { role: "user" | "assistant"; text: string }[];
+  inputs: import("./scenario").ScenarioInputs;
+  evidence: {
+    id: string;
+    name: string;
+    media_type: string;
+    role: string;
+    note: string;
+    byte_length: number;
+    sha256: string;
+  }[];
+  missing: string[];
+  errors: string[];
+  assumptions: { name: string; statement: string; status: string; provenance: string }[];
+  sources: { title: string; url?: string; status: string; limit?: string; origin?: string; span?: string; retrieved_at?: string | null }[];
+  calculation: { q_line_n_per_m: number; live_n_per_m2: number; trace?: { formula?: string } } | null;
+  section: { area_m2: number; inertia_x_m4: number; inertia_y_m4: number } | null;
+  beam: { max_moment_n_m: number; end_shear_n: number; midspan_deflection_m: number; material?: { name: string; source: string } } | null;
+  model_proposal: { family: string; ready_for_3d_simulation: boolean; reason: string };
+  verification: string[];
+  model_questions: string[];
+  observations: string[];
+  mode: string;
+  model: string | null;
+  ai: string;
+}
+
+export const createScenario = () => api<ScenarioSession>("/api/v1/scenarios", { method: "POST" });
+
+export const getScenario = (id: string) => api<ScenarioSession>(`/api/v1/scenarios/${id}`);
+
+export const turnScenario = (id: string, body: object) =>
+  api<ScenarioSession>(`/api/v1/scenarios/${id}/turn`, { method: "POST", body: JSON.stringify(body) });
+
+export async function uploadScenarioEvidence(id: string, file: File, role: string, note: string) {
+  const body = new FormData();
+  body.append("file", file);
+  body.append("role", role);
+  body.append("note", note);
+  return api<ScenarioSession>(`/api/v1/scenarios/${id}/evidence`, { method: "POST", body });
+}
+
+export const deleteScenarioEvidence = (id: string, evidenceId: string) =>
+  api<ScenarioSession>(`/api/v1/scenarios/${id}/evidence/${evidenceId}`, { method: "DELETE" });
+
+export function scenarioEvidenceUrl(scenarioId: string, evidenceId: string) {
+  return `${apiBase}/api/v1/scenarios/${scenarioId}/evidence/${evidenceId}`;
+}

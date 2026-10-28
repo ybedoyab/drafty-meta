@@ -69,5 +69,96 @@ def test_responses_search_uses_the_responses_endpoint(monkeypatch):
     result = responses_with_search("classroom live load")
     assert calls["url"].endswith("/responses")
     assert calls["body"]["tools"] == [{"type": "web_search"}]
-    assert result["citations"] == [{"url": "https://example.test/nsr", "title": "NSR-10"}]
+    assert calls["body"]["max_tool_calls"] == 2
+    assert calls["body"]["input"][0]["content"][0]["type"] == "input_text"
+    assert result["citations"][0]["url"] == "https://example.test/nsr"
+    assert result["citations"][0]["title"] == "NSR-10"
     assert calls["authorization"] == "Bearer contract-test"
+
+
+def test_students_do_not_become_a_width_or_a_solve():
+    from drafty_ai.scenario_agent import advance_scenario, blank_inputs
+
+    result = advance_scenario(
+        {"inputs": blank_inputs(), "messages": [], "evidence": []},
+        "I need a steel I-beam supporting a classroom floor for approximately 30 students.",
+    )
+    assert result["inputs"]["student_count"] == 30
+    assert result["inputs"]["tributary_width_m"] is None
+    assert result["calculation"] is None
+    assert result["ai"] == "not called"
+    assert result["model_proposal"]["ready_for_3d_simulation"] is False
+    assert "headcount" in result["messages"][-1]["text"]
+
+
+def test_confirmed_colombia_inputs_stay_a_preliminary_beam():
+    from drafty_ai.scenario_agent import advance_scenario, blank_inputs
+
+    inputs = blank_inputs()
+    inputs.update(
+        jurisdiction="Colombia",
+        span_m=6,
+        tributary_width_m=2.5,
+        dead_n_per_m2=3000,
+        depth_m=0.2,
+        flange_width_m=0.1,
+        flange_thickness_m=0.01,
+        web_thickness_m=0.006,
+    )
+    result = advance_scenario({"inputs": inputs, "messages": [], "evidence": []}, "Review the current inputs.")
+    assert result["calculation"]["q_line_n_per_m"] == pytest.approx(12500)
+    assert result["beam"]["max_moment_n_m"] == pytest.approx(12500 * 36 / 8)
+    assert result["beam"]["left_reaction_n"] == pytest.approx(12500 * 6 / 2)
+    assert result["model_proposal"]["ready_for_3d_simulation"] is False
+    assert result["sources"][0]["status"] == "verified reference"
+    assert result["sources"][0]["origin"] == "checked template"
+
+
+def test_a_fixed_description_is_not_the_cantilever_solver():
+    from drafty_ai.scenario_agent import advance_scenario, blank_inputs
+
+    inputs = blank_inputs()
+    inputs.update(
+        jurisdiction="Colombia",
+        span_m=6,
+        tributary_width_m=2.5,
+        dead_n_per_m2=3000,
+        supports="fixed at one end",
+    )
+    result = advance_scenario({"inputs": inputs, "messages": [], "evidence": []}, "Review")
+    assert result["beam"] is None
+    assert "cantilever" in result["messages"][-1]["text"].lower()
+
+
+def test_model_wording_cannot_supply_a_stress_or_an_uncited_source():
+    from drafty_ai.scenario_agent import advance_scenario, blank_inputs
+
+    seen: list[dict] = []
+
+    def responder(**kwargs):
+        seen.append(kwargs)
+        return {
+            "id": "resp_test",
+            "model": "muse-spark-1.3",
+            "text": (
+                '{"message": "The beam is safe at 10 MPa.", "questions": ["What is the span?"], '
+                '"observations": ["The beam is 300 mm deep."], "max_von_mises_pa": 1}'
+            ),
+            "citations": [{"url": "https://example.test/page", "title": "Page", "span": "2.0 kN/m2"}],
+            "usage": {"input_tokens": 3, "output_tokens": 4},
+        }
+
+    result = advance_scenario(
+        {"inputs": blank_inputs(), "messages": [], "evidence": []},
+        "classroom floor",
+        responder=responder,
+    )
+    assert "safe" not in result["messages"][-1]["text"].lower()
+    assert "MPa" not in result["messages"][-1]["text"]
+    assert result["observations"] == []
+    assert result["calculation"] is None
+    assert result["sources"][-1]["status"] == "search result, not a compliance finding"
+    assert result["sources"][-1]["url"] == "https://example.test/page"
+    follow = advance_scenario(result, "What did you find?", responder=responder)
+    assert seen[1]["previous_response_id"] == "resp_test"
+    assert follow["previous_response_id"] == "resp_test"

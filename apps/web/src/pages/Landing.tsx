@@ -22,7 +22,7 @@ export function Landing() {
               to="/scenario/new"
               className="rounded-md bg-slate-950 px-5 py-3 text-sm font-semibold text-white hover:bg-slate-800"
             >
-              Start with a problem
+              Start with AI
             </Link>
             <Link
               to="/studio"

@@ -3,7 +3,7 @@ import { test, expect } from "@playwright/test";
 test("the landing page opens the studio example", async ({ page }) => {
   await page.goto("/");
   await expect(page.getByRole("heading", { name: /Describe the problem/ })).toBeVisible();
-  await expect(page.getByRole("link", { name: "Start with a problem" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Start with AI" })).toBeVisible();
   await page.getByRole("link", { name: "Open Studio" }).click();
   await expect(page.getByRole("button", { name: "Load cantilever example" })).toBeVisible();
   await page.getByLabel("Length mm").fill("280");

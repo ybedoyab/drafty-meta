@@ -1,39 +1,25 @@
 # Scenario workstation
 
-Drafty has two entries. **Start with a problem** opens `/scenario/new`. **Open Studio** opens `/studio` and does not need an AI key.
+Two entries stay on the homepage. **Start with AI** opens `/scenario/new`. **Open Studio** opens `/studio` and does not need a key.
 
-The scenario wizard is a guided template stored in `localStorage` under `drafty.scenario.v1`. It does not call Meta. The status on the page says the AI is not connected. A citation shown there is the checked NSR-10 classroom card, not a web-search result.
+`/scenario/new` is one workspace: conversation, evidence, inputs, sources, a 2D load-path diagram, and an optional I-section preview. The preview is geometry only. The session lives on the API under `data/scenarios/` and the browser remembers the id in `drafty.scenario.v2`.
 
-## Supported in this pass
+One orchestration handles understanding, research, assumptions, modeling, verification, and criticism. Physics is `evaluate_classroom` in Python. The model cannot replace those numbers.
 
-- Describe a goal, a domain, and a jurisdiction typed by the user.
-- Attach up to eight PNG, JPEG, or WebP files as evidence. The browser keeps names only. An image is not measured.
-- Ask for span, tributary width, dead load, and beam self-weight.
-- Show NSR-10 Title B, Table B.4.2.1-1, educational classrooms, 2.0 kN/m², as an illustrative published minimum.
-- Calculate `q_line = (q_dead + q_live) * tributary_width + beam_self_weight` when the width is a positive finite number. Self-weight is added once.
-- Elastic I-section area and second moments, and the simply supported uniform-load moment, end shear, and midspan deflection, through `POST /api/v1/scenarios/classroom`.
-- A scenario brief that says 3D simulation is not available for this floor beam.
-- Studio solids that already solve: cantilever beam, plate, L-bracket, perforated plate. One encastre face and one loaded face. CalculiX remains the source of the 3D numbers.
-- Viewport fit from the part bounding sphere, orthographic or perspective, views iso / front / top / right, labeled fixed-support and load arrows on the six bounding-box faces.
+## Offline, no Meta key
+
+The page says **AI not connected**. A classroom note of 30 students does not become a load. NSR-10 Title B Table B.4.2.1-1, 2.0 kN/m², is applied only after the jurisdiction is Colombia, and it is marked assumed. The line load is `(q_dead + q_live) * tributary width + self-weight`. A simple-span elastic moment, reaction, and deflection are shown when the I-section is valid. `ready_for_3d_simulation` stays false.
+
+## With a Meta key
+
+The turn calls `POST /v1/responses` on `muse-spark-1.3`, or `muse-wonder-1.0` when that model is requested. Each turn resends `instructions` and `tools: [{type: web_search}]`, chains `previous_response_id`, and may attach up to eight `input_image` data URLs within a 4 MB cap. Stored citations are `url_citation` annotations only. A reply that claims safety or a stress is dropped. This path was contract-tested, not called with a live key.
 
 ## Not supported
 
-- Turning a classroom floor into the cantilever example.
-- A distributed floor load or a simply supported I-beam inside the current solid solver.
-- B-rep face picking. The six faces are bounding-box presets.
-- Measuring drawings, inferring jurisdiction, or treating a headcount as a live load.
-- Ultimate combinations, strength, buckling, connections, bearing, vibration, or a safe / approved badge.
-- Live Meta web search or multi-image understanding. The Responses adapter exists and is covered by a contract test. It is not called without `MODEL_API_KEY`.
-- Supabase draft sync and Modal solves.
+- A distributed floor load or a simply supported I-beam inside CalculiX.
+- Turning the classroom case into the cantilever example.
+- B-rep face picking, code combinations, strength, buckling, connections, bearing, vibration, or a certification.
+- SAM 3.1.
+- Supabase session sync and Modal solves.
 
-## Checklist
-
-- [x] Two entry paths and a manual Studio escape
-- [x] Progressive scenario steps with back, edit, and local resume
-- [x] Missing tributary width blocks the line load
-- [x] Unsupported floor beam ends in a brief instead of a fake solve
-- [x] Camera fit and labeled support / load markers
-- [x] Solver log hidden until opened
-- [ ] Real Muse Spark multi-image pass
-- [ ] Real Responses `web_search` with `url_citation`
-- [ ] I-beam solid in the CalculiX path
+Images are PNG, JPEG, or WebP, at most eight, 8 MB each, decoded before they are stored. They are not measured.

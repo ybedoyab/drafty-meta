@@ -1,0 +1,244 @@
+"""Scenario sessions. Images stay on disk. Numbers come from the engineering package."""
+
+import hashlib
+import json
+import uuid
+from datetime import UTC, datetime
+from pathlib import Path
+
+from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse
+from pydantic import BaseModel, Field
+
+from drafty_ai.client import configured
+from drafty_ai.scenario_agent import advance_scenario, blank_inputs
+from drafty_api.auth import current_owner
+from drafty_api.images import inspect_image
+from drafty_api.settings import settings
+
+router = APIRouter()
+MAX_IMAGES = 8
+MAX_IMAGE_BYTES = 8 * 1024 * 1024
+MAX_VISION_BYTES = 4 * 1024 * 1024
+ROLES = {"context", "drawing", "photo", "screenshot"}
+EXTENSIONS = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp"}
+
+
+class ScenarioInputs(BaseModel):
+    jurisdiction: str = ""
+    span_m: float | None = None
+    tributary_width_m: float | None = None
+    dead_n_per_m2: float | None = None
+    live_n_per_m2: float | None = None
+    beam_self_weight_n_per_m: float | None = None
+    depth_m: float | None = None
+    flange_width_m: float | None = None
+    flange_thickness_m: float | None = None
+    web_thickness_m: float | None = None
+    student_count: int | None = None
+    supports: str = ""
+
+
+class TurnBody(BaseModel):
+    message: str = ""
+    inputs: ScenarioInputs = Field(default_factory=ScenarioInputs)
+    model: str | None = None
+
+
+def scenario_dir(scenario_id: str) -> Path:
+    try:
+        if str(uuid.UUID(scenario_id)) != scenario_id:
+            raise ValueError
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="Scenario not found.") from exc
+    return settings.data_dir / "scenarios" / scenario_id
+
+
+def read_scenario(scenario_id: str, owner_id: str) -> dict:
+    path = scenario_dir(scenario_id) / "session.json"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Scenario not found.")
+    session = json.loads(path.read_text(encoding="utf-8"))
+    if session.get("owner_id") != owner_id:
+        raise HTTPException(status_code=404, detail="Scenario not found.")
+    return session
+
+
+def _write(session: dict) -> None:
+    directory = scenario_dir(session["id"])
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "session.json").write_text(json.dumps(session), encoding="utf-8")
+
+
+def _public(session: dict) -> dict:
+    shown = dict(session)
+    shown.pop("owner_id", None)
+    return shown
+
+
+@router.post("/api/v1/scenarios")
+def create_scenario(request: Request) -> dict:
+    owner = current_owner(request)
+    scenario_id = str(uuid.uuid4())
+    session = {
+        "id": scenario_id,
+        "owner_id": owner,
+        "created_at": datetime.now(UTC).isoformat(),
+        "updated_at": datetime.now(UTC).isoformat(),
+        "inputs": blank_inputs(),
+        "messages": [],
+        "evidence": [],
+        "missing": ["jurisdiction", "span", "tributary width", "dead load", "live load", "supports"],
+        "errors": [],
+        "assumptions": [],
+        "sources": [],
+        "calculation": None,
+        "section": None,
+        "beam": None,
+        "model_proposal": {
+            "family": "unset",
+            "ready_for_3d_simulation": False,
+            "reason": "Describe the problem before any model is proposed.",
+        },
+        "verification": [],
+        "model_questions": [],
+        "observations": [],
+        "mode": "offline-template",
+        "model": None,
+        "previous_response_id": None,
+        "usage": None,
+        "ai": "not called",
+    }
+    _write(session)
+    return _public(session)
+
+
+@router.get("/api/v1/scenarios/{scenario_id}")
+def get_scenario(scenario_id: str, request: Request) -> dict:
+    return _public(read_scenario(scenario_id, current_owner(request)))
+
+
+@router.post("/api/v1/scenarios/{scenario_id}/turn")
+def scenario_turn(scenario_id: str, body: TurnBody, request: Request) -> dict:
+    session = read_scenario(scenario_id, current_owner(request))
+    incoming = body.inputs.model_dump()
+    merged = dict(session.get("inputs") or blank_inputs())
+    for key, value in incoming.items():
+        if key == "student_count":
+            continue
+        merged[key] = value
+    urls, withheld = _vision_urls(session) if configured() else ([], False)
+    updated = advance_scenario(
+        {**session, "inputs": merged},
+        body.message,
+        image_data_urls=urls,
+        model=body.model,
+    )
+    if withheld and updated["messages"]:
+        updated["messages"][-1]["text"] += " The images stayed in storage because this turn's vision cap is 4 MB."
+    session.update(updated)
+    session["updated_at"] = datetime.now(UTC).isoformat()
+    _write(session)
+    return _public(session)
+
+
+@router.post("/api/v1/scenarios/{scenario_id}/evidence")
+async def add_evidence(
+    scenario_id: str,
+    request: Request,
+    file: UploadFile = File(...),
+    role: str = Form("context"),
+    note: str = Form(""),
+) -> dict:
+    owner = current_owner(request)
+    session = read_scenario(scenario_id, owner)
+    if role not in ROLES:
+        raise HTTPException(status_code=422, detail="Image role must be context, drawing, photo, or screenshot.")
+    if len(session["evidence"]) >= MAX_IMAGES:
+        raise HTTPException(status_code=422, detail="A scenario keeps at most eight images.")
+    data = await file.read()
+    if len(data) > MAX_IMAGE_BYTES:
+        raise HTTPException(status_code=422, detail="Each image is limited to 8 MB.")
+    try:
+        media, width, height = inspect_image(data)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    evidence_id = str(uuid.uuid4())
+    directory = scenario_dir(scenario_id) / "evidence"
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / f"{evidence_id}{EXTENSIONS[media]}").write_bytes(data)
+    item = {
+        "id": evidence_id,
+        "name": Path(file.filename or "image").name[:120],
+        "media_type": media,
+        "byte_length": len(data),
+        "width_px": width,
+        "height_px": height,
+        "sha256": hashlib.sha256(data).hexdigest(),
+        "role": role,
+        "note": note.strip()[:200],
+        "limit": "An image is evidence. It is not a dimensional survey.",
+    }
+    (directory / f"{evidence_id}.json").write_text(json.dumps({"owner_id": owner}), encoding="utf-8")
+    session["evidence"].append(item)
+    session["updated_at"] = datetime.now(UTC).isoformat()
+    _write(session)
+    return _public(session)
+
+
+@router.delete("/api/v1/scenarios/{scenario_id}/evidence/{evidence_id}")
+def remove_evidence(scenario_id: str, evidence_id: str, request: Request) -> dict:
+    session = read_scenario(scenario_id, current_owner(request))
+    _evidence_id(evidence_id)
+    kept = [item for item in session["evidence"] if item["id"] != evidence_id]
+    if len(kept) == len(session["evidence"]):
+        raise HTTPException(status_code=404, detail="Image not found.")
+    directory = scenario_dir(scenario_id) / "evidence"
+    for path in directory.glob(f"{evidence_id}.*"):
+        path.unlink(missing_ok=True)
+    session["evidence"] = kept
+    session["updated_at"] = datetime.now(UTC).isoformat()
+    _write(session)
+    return _public(session)
+
+
+@router.get("/api/v1/scenarios/{scenario_id}/evidence/{evidence_id}")
+def get_evidence(scenario_id: str, evidence_id: str, request: Request) -> FileResponse:
+    session = read_scenario(scenario_id, current_owner(request))
+    _evidence_id(evidence_id)
+    item = next((entry for entry in session["evidence"] if entry["id"] == evidence_id), None)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Image not found.")
+    path = scenario_dir(scenario_id) / "evidence" / f"{evidence_id}{EXTENSIONS[item['media_type']]}"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Image not found.")
+    return FileResponse(path, media_type=item["media_type"], filename=item["name"])
+
+
+def _evidence_id(evidence_id: str) -> None:
+    try:
+        if str(uuid.UUID(evidence_id)) != evidence_id:
+            raise ValueError
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="Image not found.") from exc
+
+
+def _vision_urls(session: dict) -> tuple[list[str], bool]:
+    import base64
+
+    urls: list[str] = []
+    total = 0
+    withheld = False
+    directory = scenario_dir(session["id"]) / "evidence"
+    for item in session["evidence"]:
+        path = directory / f"{item['id']}{EXTENSIONS[item['media_type']]}"
+        if not path.exists():
+            continue
+        data = path.read_bytes()
+        if total + len(data) > MAX_VISION_BYTES:
+            withheld = True
+            break
+        total += len(data)
+        encoded = base64.b64encode(data).decode("ascii")
+        urls.append(f"data:{item['media_type']};base64,{encoded}")
+    return urls, withheld

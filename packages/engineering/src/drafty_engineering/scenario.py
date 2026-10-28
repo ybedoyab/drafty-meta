@@ -160,3 +160,195 @@ def classroom_line_load(
             "A uniform load on a simply supported I-beam is not that model, so no CalculiX job is created."
         ),
     }
+
+
+def evaluate_classroom(
+    *,
+    jurisdiction: str = "",
+    span_m: float | None = None,
+    tributary_width_m: float | None = None,
+    dead_n_per_m2: float | None = None,
+    live_n_per_m2: float | None = None,
+    beam_self_weight_n_per_m: float | None = None,
+    depth_m: float | None = None,
+    flange_width_m: float | None = None,
+    flange_thickness_m: float | None = None,
+    web_thickness_m: float | None = None,
+    student_count: int | None = None,
+    supports: str = "",
+) -> dict:
+    """Authoritative classroom record. Missing data stays missing."""
+
+    from drafty_engineering.materials import MATERIALS
+
+    errors: list[str] = []
+    missing: list[str] = []
+    assumptions: list[dict] = []
+    if student_count is not None:
+        assumptions.append(
+            {
+                "name": "occupancy",
+                "statement": f"{student_count} students were noted. A headcount is not a floor load.",
+                "status": "unknown",
+                "provenance": "user",
+            }
+        )
+    if not jurisdiction.strip():
+        missing.append("jurisdiction")
+    place = jurisdiction.strip().lower()
+    use_nsr = live_n_per_m2 is None and "colombia" in place
+    if use_nsr:
+        assumptions.append(
+            {
+                "name": "live load",
+                "statement": (
+                    "NSR-10 Title B Table B.4.2.1-1 classroom minimum, 2.0 kN/m2, "
+                    "used as an illustrative service live load."
+                ),
+                "status": "assumed",
+                "provenance": "cited code",
+            }
+        )
+    elif live_n_per_m2 is None:
+        missing.append("live load")
+    else:
+        assumptions.append(
+            {
+                "name": "live load",
+                "statement": "The live load was entered by the user and is not a checked code combination.",
+                "status": "confirmed",
+                "provenance": "user",
+            }
+        )
+    if span_m is None:
+        missing.append("span")
+    if tributary_width_m is None:
+        missing.append("tributary width")
+    if dead_n_per_m2 is None:
+        missing.append("dead load")
+    self_weight = 0.0 if beam_self_weight_n_per_m is None else beam_self_weight_n_per_m
+    if beam_self_weight_n_per_m is None:
+        assumptions.append(
+            {
+                "name": "self-weight",
+                "statement": "Beam self-weight is omitted until you enter it. Do not also include it in the dead load.",
+                "status": "assumed",
+                "provenance": "documented assumption",
+            }
+        )
+    kind = _support_kind(supports)
+    if kind == "unspecified":
+        missing.append("supports")
+        assumptions.append(
+            {
+                "name": "supports",
+                "statement": "Simple supports are a candidate model only. They are not confirmed.",
+                "status": "assumed",
+                "provenance": "documented assumption",
+            }
+        )
+    elif kind == "simple":
+        assumptions.append(
+            {
+                "name": "supports",
+                "statement": "The user described simple supports.",
+                "status": "confirmed",
+                "provenance": "user",
+            }
+        )
+    elif kind == "fixed":
+        assumptions.append(
+            {
+                "name": "supports",
+                "statement": "A fixed description is not sent to the cantilever solid solver.",
+                "status": "confirmed",
+                "provenance": "user",
+            }
+        )
+    else:
+        missing.append("supports")
+    line = None
+    if tributary_width_m is not None and dead_n_per_m2 is not None and (live_n_per_m2 is not None or use_nsr):
+        try:
+            line = classroom_line_load(
+                dead_n_per_m2,
+                tributary_width_m,
+                self_weight,
+                None if use_nsr else live_n_per_m2,
+            )
+        except ValueError as exc:
+            errors.append(str(exc))
+    section_values = (depth_m, flange_width_m, flange_thickness_m, web_thickness_m)
+    section = None
+    if any(value is not None for value in section_values):
+        if any(value is None for value in section_values):
+            missing.append("complete I-section")
+        else:
+            try:
+                section = i_section_properties(depth_m, flange_width_m, flange_thickness_m, web_thickness_m)
+            except ValueError as exc:
+                errors.append(str(exc))
+    else:
+        missing.append("I-section dimensions for elastic deflection")
+    beam = None
+    if line and section and span_m and kind in {"simple", "unspecified"}:
+        steel = MATERIALS["steel_s235"]
+        try:
+            beam = simply_supported_udl(
+                line["q_line_n_per_m"], span_m, steel.youngs_modulus_pa, section["inertia_x_m4"]
+            )
+            beam = {
+                **beam,
+                "left_reaction_n": beam["end_shear_n"],
+                "right_reaction_n": beam["end_shear_n"],
+                "material": steel.model_dump(),
+            }
+        except ValueError as exc:
+            errors.append(str(exc))
+    elif kind == "fixed":
+        errors.append("This fixed description stays unsolved. It is not converted into the studio cantilever.")
+    citation = {
+        **NSR10_CLASSROOM_CITATION,
+        "retrieved_at": None,
+        "span": "Educational classrooms 2.0 kN/m2",
+        "origin": "checked template",
+    }
+    if not use_nsr:
+        citation = {
+            **citation,
+            "status": "not applied",
+            "limit": "Confirm Colombia before this minimum is used. It is not a design combination.",
+        }
+    sources = [citation]
+    return {
+        "missing": missing,
+        "errors": errors,
+        "assumptions": assumptions,
+        "sources": sources,
+        "line": line,
+        "section": section,
+        "beam": beam,
+        "ready_for_3d_simulation": False,
+        "reason": (
+            "The current solid solver applies one face load to one supported solid. "
+            "A uniform load on a simply supported I-beam is not that model, so no CalculiX job is created."
+        ),
+        "verification": [
+            "The service line load is not an ultimate combination.",
+            "Bending and shear strength are not checked.",
+            "Lateral-torsional buckling, local buckling, connections, bearing, and vibration are not checked.",
+            "A citation is not a certification, and a search result is not proof of compliance.",
+            "An image is evidence. It is not a dimensional survey.",
+        ],
+    }
+
+
+def _support_kind(text: str) -> str:
+    lowered = text.lower()
+    if any(word in lowered for word in ("cantilever", "encastre", "fixed")):
+        return "fixed"
+    if any(word in lowered for word in ("simple", "simply", "pinned", "roller")):
+        return "simple"
+    if not text.strip():
+        return "unspecified"
+    return "other"

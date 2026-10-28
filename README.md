@@ -33,7 +33,7 @@ npm install
 npm run dev
 ```
 
-Open http://localhost:5173. The homepage has two paths: **Start with a problem** (`/scenario/new`) and **Open Studio** (`/studio`). The classroom path is a guided template. It cites a published live-load minimum, calculates a tributary line load only when the width is known, and does not send that floor beam to CalculiX. Studio still runs the cantilever, plate, bracket, and perforated plate without an AI key.
+Open http://localhost:5173. The homepage offers **Start with AI** (`/scenario/new`) and **Open Studio** (`/studio`). The scenario assistant keeps a server-side session. Without `MODEL_API_KEY` it is a labeled guided template: it asks for missing data, cites the checked NSR-10 classroom minimum only after Colombia is confirmed, and calculates the line load in Python. It does not call Meta and it does not send that floor beam to CalculiX. With a key, the same turn uses the Responses API (`muse-spark-1.3` by default, optional `muse-wonder-1.0`) with `web_search` and `previous_response_id`. Citations are the `url_citation` annotations from that response, not compliance findings.
 
 Docker Compose publishes the web app on port 15173 and the API on port 18080.
 

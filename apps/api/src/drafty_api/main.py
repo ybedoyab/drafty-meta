@@ -20,6 +20,7 @@ from drafty_api.jobs import (
     recover_interrupted_jobs,
     request_cancel,
 )
+from drafty_api.scenarios import router as scenario_router
 from drafty_api.settings import settings
 from drafty_api.storage import signed_artifact_url
 from drafty_engineering.geometry_math import envelope, expected_face_area
@@ -86,6 +87,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(scenario_router)
 
 
 @app.get("/api/v1/health")

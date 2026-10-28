@@ -1,83 +1,103 @@
-export const CLASSROOM_LIVE_N_PER_M2 = 2000;
-
-export const NSR10_CLASSROOM = {
-  title: "NSR-10 Title B, Table B.4.2.1-1",
-  section: "Educational classrooms",
-  value: "2.0 kN/m² minimum live load",
-  status: "verified reference" as const,
-  url: "https://camacol.co/sites/default/files/descargables/T%C3%ADtulo%20B%20NSR-10%20del%20Decreto%20926%20del%2019032010.pdf",
-  limit: "This citation is an illustrative published minimum. It is not a design combination or an approval.",
-};
-
-export interface LineLoad {
-  qLineNPerM: number;
-  liveNPerM2: number;
-  liveStatus: "assumed" | "confirmed";
-  formula: string;
+export interface ScenarioInputs {
+  jurisdiction: string;
+  span_m: number | null;
+  tributary_width_m: number | null;
+  dead_n_per_m2: number | null;
+  live_n_per_m2: number | null;
+  beam_self_weight_n_per_m: number | null;
+  depth_m: number | null;
+  flange_width_m: number | null;
+  flange_thickness_m: number | null;
+  web_thickness_m: number | null;
+  student_count: number | null;
+  supports: string;
 }
 
-export function classroomLineLoad(
-  deadNPerM2: number,
-  tributaryWidthM: number | null,
-  selfWeightNPerM = 0,
-  liveNPerM2: number | null = null,
-): LineLoad {
-  if (tributaryWidthM == null || !Number.isFinite(tributaryWidthM) || !(tributaryWidthM > 0)) {
-    throw new Error("Tributary width is required. A headcount is not a floor load.");
+export interface ScenarioForm {
+  jurisdiction: string;
+  spanM: string;
+  tributaryM: string;
+  deadKn: string;
+  liveKn: string;
+  selfWeight: string;
+  depthMm: string;
+  flangeWidthMm: string;
+  flangeThicknessMm: string;
+  webThicknessMm: string;
+  supports: string;
+}
+
+export const emptyForm = (): ScenarioForm => ({
+  jurisdiction: "",
+  spanM: "",
+  tributaryM: "",
+  deadKn: "",
+  liveKn: "",
+  selfWeight: "",
+  depthMm: "",
+  flangeWidthMm: "",
+  flangeThicknessMm: "",
+  webThicknessMm: "",
+  supports: "",
+});
+
+export const CLASSROOM_PROMPT =
+  "I need a steel I-beam supporting a classroom floor for approximately 30 students. Research the applicable loads, ask me for the missing dimensions, propose a preliminary structural model, and explain the checks required.";
+
+const KEY = "drafty.scenario.v2";
+
+export function rememberScenarioId(storage: Storage, id: string) {
+  storage.setItem(KEY, JSON.stringify({ version: 2, id }));
+}
+
+export function recallScenarioId(storage: Storage): string | null {
+  try {
+    const parsed = JSON.parse(storage.getItem(KEY) || "") as { version?: number; id?: string };
+    return parsed.version === 2 && parsed.id ? parsed.id : null;
+  } catch {
+    return null;
   }
-  if (!Number.isFinite(deadNPerM2) || !Number.isFinite(selfWeightNPerM) || deadNPerM2 < 0 || selfWeightNPerM < 0) {
-    throw new Error("Dead load and self-weight cannot be negative.");
-  }
-  const live = liveNPerM2 == null ? CLASSROOM_LIVE_N_PER_M2 : liveNPerM2;
-  if (live < 0) throw new Error("Live load cannot be negative.");
+}
+
+function scaled(value: string, factor: number): number | null {
+  if (value.trim() === "") return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed * factor : null;
+}
+
+function shown(value: number | null, factor: number): string {
+  return value == null ? "" : String(value * factor);
+}
+
+export function inputsFromForm(form: ScenarioForm): ScenarioInputs {
   return {
-    qLineNPerM: (deadNPerM2 + live) * tributaryWidthM + selfWeightNPerM,
-    liveNPerM2: live,
-    liveStatus: liveNPerM2 == null ? "assumed" : "confirmed",
-    formula: "q = (q_dead + q_live) × tributary width + beam self-weight",
+    jurisdiction: form.jurisdiction.trim(),
+    span_m: scaled(form.spanM, 1),
+    tributary_width_m: scaled(form.tributaryM, 1),
+    dead_n_per_m2: scaled(form.deadKn, 1000),
+    live_n_per_m2: scaled(form.liveKn, 1000),
+    beam_self_weight_n_per_m: scaled(form.selfWeight, 1),
+    depth_m: scaled(form.depthMm, 0.001),
+    flange_width_m: scaled(form.flangeWidthMm, 0.001),
+    flange_thickness_m: scaled(form.flangeThicknessMm, 0.001),
+    web_thickness_m: scaled(form.webThicknessMm, 0.001),
+    student_count: null,
+    supports: form.supports.trim(),
   };
 }
 
-export interface ScenarioDraft {
-  version: 1;
-  goal: string;
-  domain: "mechanical" | "structural" | "other";
-  jurisdiction: string;
-  template: "classroom-beam" | "custom";
-  spanM: string;
-  tributaryM: string;
-  deadKPa: string;
-  selfWeightNPerM: string;
-  evidence: { id: string; name: string; role: string }[];
-}
-
-export const emptyDraft = (): ScenarioDraft => ({
-  version: 1,
-  goal: "",
-  domain: "structural",
-  jurisdiction: "",
-  template: "custom",
-  spanM: "",
-  tributaryM: "",
-  deadKPa: "",
-  selfWeightNPerM: "0",
-  evidence: [],
-});
-
-const KEY = "drafty.scenario.v1";
-
-export function loadDraft(): ScenarioDraft {
-  try {
-    const raw = localStorage.getItem(KEY);
-    if (!raw) return emptyDraft();
-    const parsed = JSON.parse(raw) as ScenarioDraft;
-    if (parsed.version !== 1) return emptyDraft();
-    return { ...emptyDraft(), ...parsed, evidence: parsed.evidence ?? [] };
-  } catch {
-    return emptyDraft();
-  }
-}
-
-export function saveDraft(draft: ScenarioDraft) {
-  localStorage.setItem(KEY, JSON.stringify(draft));
+export function formFromInputs(inputs: ScenarioInputs): ScenarioForm {
+  return {
+    jurisdiction: inputs.jurisdiction || "",
+    spanM: shown(inputs.span_m, 1),
+    tributaryM: shown(inputs.tributary_width_m, 1),
+    deadKn: shown(inputs.dead_n_per_m2, 0.001),
+    liveKn: shown(inputs.live_n_per_m2, 0.001),
+    selfWeight: shown(inputs.beam_self_weight_n_per_m, 1),
+    depthMm: shown(inputs.depth_m, 1000),
+    flangeWidthMm: shown(inputs.flange_width_m, 1000),
+    flangeThicknessMm: shown(inputs.flange_thickness_m, 1000),
+    webThicknessMm: shown(inputs.web_thickness_m, 1000),
+    supports: inputs.supports || "",
+  };
 }

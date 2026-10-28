@@ -5,11 +5,26 @@ const png = Buffer.from(
   "hex",
 );
 
-test("the classroom template stays a brief when the solid solver cannot represent it", async ({ page }) => {
+test("a classroom scenario asks for missing data and does not open a 3D solve", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/scenario/new");
   await expect(page.getByText("AI not connected")).toBeVisible();
-  await page.getByRole("button", { name: "Use the classroom beam template" }).click();
-  await page.getByRole("button", { name: "2. Evidence" }).click();
+  await page.getByRole("button", { name: "Use the classroom example" }).click();
+  await expect(page.getByText("headcount is not a floor load").first()).toBeVisible();
+  await expect(page.getByText("12500.0 N/m")).toHaveCount(0);
+  await page.getByLabel("Span m").fill("6");
+  await page.getByLabel("Tributary width m").fill("2.5");
+  await page.getByLabel(/Dead load/).fill("3");
+  await page.getByLabel("Depth mm").fill("200");
+  await page.getByLabel("Flange width mm").fill("100");
+  await page.getByLabel("Flange thickness mm").fill("10");
+  await page.getByLabel("Web thickness mm").fill("6");
+  await page.getByRole("button", { name: "Use Colombia NSR-10 classroom minimum" }).click();
+  await expect(page.getByText("NSR-10 Title B, Table B.4.2.1-1").first()).toBeVisible();
+  await expect(page.getByText("12500.0 N/m").first()).toBeVisible();
+  await expect(page.getByText("not finite-element results").first()).toBeVisible();
+  await expect(page.getByText("3D simulation is not available").first()).toBeVisible();
+  await expect(page.getByRole("button", { name: "Run 3D simulation" })).toBeDisabled();
   await page.getByLabel("Evidence images").setInputFiles([
     { name: "plan.png", mimeType: "image/png", buffer: png },
     { name: "photo.png", mimeType: "image/png", buffer: png },
@@ -18,36 +33,23 @@ test("the classroom template stays a brief when the solid solver cannot represen
   await expect(page.getByText("photo.png")).toBeVisible();
   await page.getByRole("button", { name: "Remove" }).first().click();
   await expect(page.getByText("plan.png")).toHaveCount(0);
-  await page.getByRole("button", { name: "3. Clarify" }).click();
-  await page.getByLabel("Tributary width m").fill("");
-  await page.getByRole("button", { name: "5. Model" }).click();
-  await expect(page.getByText("Tributary width is still missing")).toBeVisible();
-  await page.getByRole("button", { name: "3. Clarify" }).click();
-  await page.getByLabel("Span m").fill("6");
-  await page.getByLabel("Tributary width m").fill("2.5");
-  await page.getByLabel(/Dead load/).fill("3");
-  await page.getByRole("button", { name: "4. Research" }).click();
-  await expect(page.getByText("NSR-10 Title B, Table B.4.2.1-1")).toBeVisible();
-  await expect(page.getByText("No web search ran")).toBeVisible();
-  await page.getByRole("button", { name: "5. Model" }).click();
-  await expect(page.getByText("12500.0 N/m")).toBeVisible();
-  await page.getByRole("button", { name: "6. Brief" }).click();
-  await expect(page.getByText("3D simulation is not available")).toBeVisible();
-  await expect(page.getByRole("link", { name: "Open Studio manually" }).first()).toBeVisible();
+  await page.getByRole("heading", { name: "Load path" }).scrollIntoViewIfNeeded();
+  await page.screenshot({ path: "../../docs/screenshots/scenario-model-1440x900.png" });
+  await page.reload();
+  await expect(page.getByText("12500.0 N/m").first()).toBeVisible();
+  await expect(page.getByText("photo.png")).toBeVisible();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.screenshot({ path: "../../docs/screenshots/scenario-model-mobile.png" });
+  await page.getByRole("link", { name: "Open Studio manually" }).click();
+  await expect(page.getByRole("button", { name: "Load cantilever example" })).toBeVisible();
 });
 
-for (const [name, size] of [
-  ["1366x768", { width: 1366, height: 768 }],
-  ["1440x900", { width: 1440, height: 900 }],
-  ["mobile", { width: 390, height: 844 }],
-] as const) {
-  test(`scenario brief at ${name}`, async ({ page }) => {
-    await page.setViewportSize(size);
-    await page.goto("/scenario/new");
-    await page.getByRole("button", { name: "Use the classroom beam template" }).click();
-    await page.getByRole("button", { name: "6. Brief" }).click();
-    await page.screenshot({ path: `../../docs/screenshots/scenario-brief-${name}.png`, fullPage: true });
-    await page.goto("/");
-    await page.screenshot({ path: `../../docs/screenshots/landing-${name}.png`, fullPage: true });
-  });
-}
+test("landing screenshots", async ({ page }) => {
+  await page.setViewportSize({ width: 1366, height: 768 });
+  await page.goto("/");
+  await page.screenshot({ path: "../../docs/screenshots/landing-1366x768.png", fullPage: true });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.screenshot({ path: "../../docs/screenshots/landing-1440x900.png", fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.screenshot({ path: "../../docs/screenshots/landing-mobile.png", fullPage: true });
+});
