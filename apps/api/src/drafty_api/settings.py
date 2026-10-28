@@ -42,6 +42,9 @@ class Settings(BaseSettings):
     drafty_max_global_jobs: int = 2
     drafty_max_jobs_per_hour: int = 30
     drafty_max_nodes: int = 250_000
+    drafty_max_previews_per_hour: int = 30
+    drafty_spawn_local: str = "auto"
+    drafty_heartbeat_stale_s: int = 45
     drafty_data_dir: str = ""
     frontend_origin: str = "http://localhost:5173"
 

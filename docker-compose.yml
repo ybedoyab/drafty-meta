@@ -1,10 +1,13 @@
+# Host ports stay off 8000 and 5173 so this stack can run beside the local studio.
+# API does not spawn solvers and does not receive the Docker socket. The worker does.
+
 services:
   api:
     build:
       context: .
       dockerfile: infra/docker/Dockerfile.api
     ports:
-      - "8000:8000"
+      - "18080:8000"
     env_file:
       - path: .env
         required: false
@@ -12,6 +15,27 @@ services:
       CCX_BIN: ccx
       DRAFTY_USE_DOCKER_CCX: never
       DRAFTY_DATA_DIR: /data
+      DRAFTY_SPAWN_LOCAL: never
+      FRONTEND_ORIGIN: http://localhost:15173
+    cpus: "1.0"
+    mem_limit: 1g
+    volumes:
+      - drafty-data:/data
+
+  worker:
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile.api
+    command: ["python", "-m", "drafty_api.worker"]
+    environment:
+      CCX_BIN: ccx
+      DRAFTY_USE_DOCKER_CCX: never
+      DRAFTY_DATA_DIR: /data
+      DRAFTY_SPAWN_LOCAL: never
+      DRAFTY_IN_WORKER: "1"
+    cpus: "2.0"
+    mem_limit: 4g
+    pids_limit: 256
     volumes:
       - drafty-data:/data
 
@@ -20,9 +44,9 @@ services:
       context: .
       dockerfile: infra/docker/Dockerfile.web
     ports:
-      - "5173:5173"
+      - "15173:5173"
     environment:
-      VITE_API_URL: http://localhost:8000
+      VITE_API_URL: http://localhost:18080
     depends_on:
       - api
 

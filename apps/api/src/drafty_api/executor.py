@@ -2,11 +2,13 @@
 
 import argparse
 import json
+import os
 import shutil
+import threading
 import traceback
 from pathlib import Path
 
-from drafty_api.jobs import update_job
+from drafty_api.jobs import acquire_claim, touch_claim, update_job
 from drafty_api.settings import settings
 from drafty_api.storage import sync_job
 from drafty_engineering.errors import Cancelled, DraftyError
@@ -19,14 +21,40 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--job-dir", required=True)
     args = parser.parse_args()
-    directory = Path(args.job_dir)
+    execute(Path(args.job_dir))
+
+
+def execute(directory: Path) -> None:
+    if not acquire_claim(directory):
+        return
+    stop = threading.Event()
+
+    def beat() -> None:
+        while not stop.wait(2):
+            try:
+                touch_claim(directory)
+                update_job(directory, heartbeat_at=_utc(), worker_pid=os.getpid())
+            except Exception:
+                return
+
+    thread = threading.Thread(target=beat, daemon=True)
+    thread.start()
+    try:
+        _run(directory)
+    finally:
+        stop.set()
+        touch_claim(directory)
+
+
+def _run(directory: Path) -> None:
     job = json.loads((directory / "job.json").read_text(encoding="utf-8"))
     cancel_file = directory / "cancel"
 
     def on_status(stage: str, message: str) -> None:
         if cancel_file.exists():
             raise Cancelled("The job was cancelled.")
-        update_job(directory, status=stage, message=message, error=None)
+        touch_claim(directory)
+        update_job(directory, status=stage, message=message, error=None, heartbeat_at=_utc())
 
     try:
         spec = DesignSpec.model_validate(job["spec"])
@@ -39,7 +67,7 @@ def main() -> None:
         else:
             result = run_simulation(spec, directory, on_status, cancel_file)
         summary = _summary(result, job["kind"])
-        update_job(directory, status="completed", message="Completed", error=None, summary=summary)
+        update_job(directory, status="completed", message="Completed", error=None, summary=summary, heartbeat_at=_utc())
         _sync(directory)
     except Cancelled as exc:
         update_job(directory, status="cancelled", message="Cancelled", error=str(exc))
@@ -48,6 +76,12 @@ def main() -> None:
         message = str(exc) if isinstance(exc, DraftyError) else f"{exc.__class__.__name__}: {exc}"
         update_job(directory, status="failed", message="Failed", error=message)
         _sync(directory)
+
+
+def _utc() -> str:
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).isoformat()
 
 
 def _optimize(directory: Path, spec: DesignSpec, job: dict, on_status, cancel_file: Path) -> dict:
@@ -68,9 +102,11 @@ def _optimize(directory: Path, spec: DesignSpec, job: dict, on_status, cancel_fi
     (directory / "optimization.json").write_text(json.dumps(result), encoding="utf-8")
     best = result.get("best")
     if best and best.get("artifact_dir"):
-        source = directory / best["artifact_dir"] / "results.json"
-        if source.exists():
-            shutil.copy(source, directory / "results.json")
+        source_dir = directory / best["artifact_dir"]
+        for name in ("results.json", "model.step", "model.dat", "model.frd", "preview.glb", "results.glb", "model.inp"):
+            source = source_dir / name
+            if source.exists():
+                shutil.copy(source, directory / name)
     return result
 
 

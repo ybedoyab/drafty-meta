@@ -19,7 +19,12 @@ image = (
         "libgl1",
         "libglu1-mesa",
         "libglib2.0-0",
+        "libgomp1",
         "libxrender1",
+        "libxcursor1",
+        "libxft2",
+        "libxinerama1",
+        "libfontconfig1",
         "libsm6",
         "libxext6",
     )

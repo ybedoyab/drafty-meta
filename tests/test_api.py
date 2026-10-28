@@ -6,7 +6,12 @@ from drafty_api.main import app
 from drafty_api.settings import settings
 from drafty_engineering.spec import cantilever_benchmark_spec
 
-PNG = b"\x89PNG\r\n\x1a\n" + b"drafty-reference"
+PNG = bytes.fromhex(
+    "89504e470d0a1a0a"
+    "0000000d4948445200000001000000010802000000907753de"
+    "0000000c4944415408d763f8cfc0000000030001c7e4e3d3"
+    "0000000049454e44ae426082"
+)
 
 
 def _client(tmp_path, monkeypatch):

@@ -10,7 +10,16 @@ from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
 from drafty_api.auth import current_owner
-from drafty_api.jobs import ACTIVE, create_job, job_dir, list_jobs, read_job, recover_interrupted_jobs, request_cancel
+from drafty_api.jobs import (
+    ACTIVE,
+    charge_preview,
+    create_job,
+    job_dir,
+    list_jobs,
+    read_job,
+    recover_interrupted_jobs,
+    request_cancel,
+)
 from drafty_api.settings import settings
 from drafty_api.storage import signed_artifact_url
 from drafty_engineering.geometry_math import envelope, expected_face_area
@@ -29,6 +38,8 @@ ARTIFACTS = {
     "model.scad": "text/plain",
     "results.json": "application/json",
     "optimization.json": "application/json",
+    "report.json": "application/json",
+    "report.pdf": "application/pdf",
     "solver.log": "text/plain",
 }
 UPLOAD_TYPES = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp"}
@@ -107,9 +118,10 @@ def validate_design(spec: DesignSpec) -> dict:
 
 
 @app.post("/api/v1/designs/preview")
-def preview_design(spec: DesignSpec) -> FileResponse:
+def preview_design(spec: DesignSpec, request: Request) -> FileResponse:
     from drafty_engineering.cad import build_solid, export_preview_glb
 
+    charge_preview(current_owner(request))
     digest = hashlib.sha256(spec.model_dump_json().encode()).hexdigest()[:20]
     path = settings.data_dir / "previews" / f"{digest}.glb"
     if not path.exists():
@@ -183,6 +195,8 @@ def get_log(job_id: str, request: Request) -> dict:
 @app.get("/api/v1/jobs/{job_id}/artifacts/{name}")
 def get_artifact(job_id: str, name: str, request: Request):
     read_job(job_id, current_owner(request))
+    if name in {"report.json", "report.pdf"}:
+        return _report_file(job_id, name)
     if name not in ARTIFACTS:
         raise HTTPException(status_code=404, detail="Unknown artifact.")
     path = job_dir(job_id) / name
@@ -192,6 +206,25 @@ def get_artifact(job_id: str, name: str, request: Request):
     if remote:
         return RedirectResponse(remote)
     raise HTTPException(status_code=404, detail="The artifact is not on disk.")
+
+
+def _report_file(job_id: str, name: str):
+    from drafty_engineering.report import build_report, report_text, text_pdf
+
+    directory = job_dir(job_id)
+    try:
+        report = build_report(directory)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if name == "report.json":
+        return report
+    from fastapi.responses import Response
+
+    return Response(
+        content=text_pdf(report_text(report)),
+        media_type="application/pdf",
+        headers={"Content-Disposition": "attachment; filename=report.pdf"},
+    )
 
 
 @app.post("/api/v1/uploads/reference")
@@ -210,7 +243,7 @@ async def upload_reference(request: Request) -> dict:
     data = await upload.read()
     if len(data) > 8 * 1024 * 1024:
         raise HTTPException(status_code=422, detail="Reference images are limited to 8 MB.")
-    media = _image_media(data)
+    media, _width, _height = _checked_image(data)
     if media is None:
         raise HTTPException(status_code=422, detail="Reference images must be PNG, JPEG, or WebP.")
     extension = UPLOAD_TYPES[media]
@@ -311,14 +344,21 @@ def _image_data_url(image_id: str, owner_id: str) -> str | None:
     return f"data:{media};base64,{encoded}"
 
 
+def _checked_image(data: bytes) -> tuple[str, int, int]:
+    from drafty_api.images import inspect_image
+
+    try:
+        return inspect_image(data)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
 def _image_media(data: bytes) -> str | None:
-    if data.startswith(b"\x89PNG\r\n\x1a\n"):
-        return "image/png"
-    if data.startswith(b"\xff\xd8\xff"):
-        return "image/jpeg"
-    if len(data) >= 12 and data.startswith(b"RIFF") and data[8:12] == b"WEBP":
-        return "image/webp"
-    return None
+    try:
+        media, _width, _height = _checked_image(data)
+    except HTTPException:
+        return None
+    return media
 
 
 def run() -> None:

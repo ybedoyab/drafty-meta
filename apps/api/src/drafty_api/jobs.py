@@ -130,12 +130,72 @@ def recover_interrupted_jobs() -> None:
             continue
         status = job.get("status")
         if status == "queued":
-            _spawn(directory)
-        elif status in ACTIVE:
+            if claim_is_fresh(directory):
+                continue
+            _release_claim(directory)
+            if spawn_enabled():
+                _spawn(directory)
+        elif status in ACTIVE and not _heartbeat_fresh(job, directory):
+            _release_claim(directory)
             job["status"] = "failed"
-            job["error"] = "The API restarted while this job was running. Submit it again."
+            job["error"] = "The worker stopped before this job finished. Submit it again."
             job["updated_at"] = _now()
             _write(path, job)
+
+
+def spawn_enabled() -> bool:
+    mode = settings.drafty_spawn_local
+    if mode == "never":
+        return False
+    if mode == "always":
+        return True
+    return os.environ.get("DRAFTY_IN_WORKER") != "1"
+
+
+def claim_is_fresh(directory: Path) -> bool:
+    path = directory / "claim"
+    if not path.exists():
+        return False
+    return time.time() - path.stat().st_mtime <= settings.drafty_heartbeat_stale_s
+
+
+def acquire_claim(directory: Path) -> bool:
+    path = directory / "claim"
+    if path.exists() and claim_is_fresh(directory):
+        return False
+    _release_claim(directory)
+    try:
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        return False
+    try:
+        os.write(fd, str(os.getpid()).encode())
+    finally:
+        os.close(fd)
+    return True
+
+
+def touch_claim(directory: Path) -> None:
+    path = directory / "claim"
+    if path.exists():
+        os.utime(path, None)
+
+
+def _release_claim(directory: Path) -> None:
+    path = directory / "claim"
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        return
+
+
+def _heartbeat_fresh(job: dict, directory: Path) -> bool:
+    parsed = _parse_time(str(job.get("heartbeat_at") or ""))
+    if parsed is not None:
+        age = (datetime.now(timezone.utc) - parsed).total_seconds()
+        if age <= settings.drafty_heartbeat_stale_s:
+            return True
+    return claim_is_fresh(directory)
 
 
 def update_job(directory: Path, **fields: object) -> dict:
@@ -180,7 +240,9 @@ def _enforce_quota(owner_id: str) -> None:
         raise HTTPException(status_code=429, detail="Hourly job limit reached.")
 
 
-def _spawn(directory: Path) -> None:
+def _spawn(directory: Path) -> subprocess.Popen | None:
+    if not spawn_enabled() or claim_is_fresh(directory):
+        return None
     log_handle = (directory / "worker.log").open("a", encoding="utf-8")
     kwargs: dict = {"stdout": log_handle, "stderr": subprocess.STDOUT, "cwd": str(ROOT)}
     if os.name == "nt":
@@ -193,6 +255,29 @@ def _spawn(directory: Path) -> None:
     )
     log_handle.close()
     return process
+
+
+def charge_preview(owner_id: str) -> None:
+    path = settings.data_dir / "preview-quota.json"
+    with _job_lock():
+        payload = {"owners": {}}
+        if path.exists():
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                payload = {"owners": {}}
+        owners = payload.setdefault("owners", {})
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=1)
+        recent = []
+        for stamp in owners.get(owner_id, []):
+            parsed = _parse_time(stamp)
+            if parsed is not None and parsed >= cutoff:
+                recent.append(stamp)
+        if len(recent) >= settings.drafty_max_previews_per_hour:
+            raise HTTPException(status_code=429, detail="Hourly preview limit reached.")
+        recent.append(_now())
+        owners[owner_id] = recent
+        _write(path, payload)
 
 
 def _write(path: Path, payload: dict) -> None:

@@ -28,6 +28,7 @@ viz = ["pyvista>=0.44"]
 
 [project.scripts]
 drafty-api = "drafty_api.main:run"
+drafty-worker = "drafty_api.worker:main"
 drafty-benchmark = "drafty_engineering.benchmark:main"
 
 [build-system]
