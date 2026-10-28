@@ -8,7 +8,7 @@ from pydantic import ValidationError
 
 from drafty_engineering.errors import Cancelled, DraftyError
 from drafty_engineering.pipeline import run_simulation
-from drafty_engineering.spec import BeamGeometry, BracketGeometry, DesignSpec, PlateGeometry
+from drafty_engineering.spec import DesignSpec
 
 Proposer = Callable[[list[dict], float, float], float | None]
 
@@ -97,9 +97,7 @@ def optimize_thickness(
                 low = sample
             continue
         displacement = _reported_displacement(candidate, result)
-        feasible = result["safety_factor"] >= min_safety_factor and (
-            max_displacement_m is None or displacement <= max_displacement_m
-        )
+        feasible = _is_feasible(result, min_safety_factor, displacement, max_displacement_m)
         record = {
             "index": index,
             "source": source,
@@ -139,29 +137,31 @@ def optimize_thickness(
 
 
 def _with_thickness(spec: DesignSpec, thickness_m: float) -> DesignSpec:
+    payload = spec.model_dump()
     if spec.kind == "cantilever_beam" and spec.beam:
-        beam = BeamGeometry(
-            length_m=spec.beam.length_m,
-            width_m=spec.beam.width_m,
-            height_m=thickness_m,
-        )
-        return spec.model_copy(update={"beam": beam})
-    if spec.kind in {"plate", "perforated_plate"} and spec.plate:
-        plate = PlateGeometry(
-            length_m=spec.plate.length_m,
-            width_m=spec.plate.width_m,
-            thickness_m=thickness_m,
-        )
-        return spec.model_copy(update={"plate": plate})
-    if spec.kind == "l_bracket" and spec.bracket:
-        bracket = BracketGeometry(
-            leg_x_m=spec.bracket.leg_x_m,
-            leg_z_m=spec.bracket.leg_z_m,
-            thickness_m=thickness_m,
-            width_m=spec.bracket.width_m,
-        )
-        return spec.model_copy(update={"bracket": bracket})
-    raise DraftyError("This part has no thickness variable.")
+        payload["beam"]["height_m"] = thickness_m
+    elif spec.kind in {"plate", "perforated_plate"} and spec.plate:
+        payload["plate"]["thickness_m"] = thickness_m
+    elif spec.kind == "l_bracket" and spec.bracket:
+        payload["bracket"]["thickness_m"] = thickness_m
+    else:
+        raise DraftyError("This part has no thickness variable.")
+    return DesignSpec.model_validate(payload)
+
+
+def _is_feasible(
+    result: dict,
+    min_safety_factor: float,
+    displacement: float,
+    max_displacement_m: float | None,
+) -> bool:
+    if result.get("validation_status") == "benchmark_failed":
+        return False
+    if result["safety_factor"] < min_safety_factor:
+        return False
+    if max_displacement_m is not None and displacement > max_displacement_m:
+        return False
+    return True
 
 
 def _variable_name(spec: DesignSpec) -> str:
