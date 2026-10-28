@@ -24,6 +24,7 @@ from drafty_api.settings import settings
 from drafty_api.storage import signed_artifact_url
 from drafty_engineering.geometry_math import envelope, expected_face_area
 from drafty_engineering.materials import MATERIALS
+from drafty_engineering.scenario import classroom_line_load, i_section_properties, simply_supported_udl
 from drafty_engineering.solver import solver_availability
 from drafty_engineering.spec import DesignSpec
 
@@ -103,6 +104,38 @@ def health() -> dict:
 @app.get("/api/v1/materials")
 def materials() -> list[dict]:
     return [material.model_dump() for material in MATERIALS.values()]
+
+
+@app.post("/api/v1/scenarios/classroom")
+def classroom_scenario(body: dict) -> dict:
+    try:
+        width = body.get("tributary_width_m")
+        result = classroom_line_load(
+            dead_n_per_m2=float(body.get("dead_n_per_m2", 0)),
+            tributary_width_m=None if width in (None, "") else float(width),
+            beam_self_weight_n_per_m=float(body.get("beam_self_weight_n_per_m", 0)),
+            live_n_per_m2=None if body.get("live_n_per_m2") in (None, "") else float(body["live_n_per_m2"]),
+        )
+        section = None
+        beam = None
+        section_keys = ("depth_m", "flange_width_m", "flange_thickness_m", "web_thickness_m")
+        if all(body.get(key) not in (None, "") for key in section_keys):
+            section = i_section_properties(
+                float(body["depth_m"]),
+                float(body["flange_width_m"]),
+                float(body["flange_thickness_m"]),
+                float(body["web_thickness_m"]),
+            )
+            if body.get("span_m") not in (None, ""):
+                beam = simply_supported_udl(
+                    result["q_line_n_per_m"],
+                    float(body["span_m"]),
+                    float(body.get("youngs_modulus_pa") or 210e9),
+                    section["inertia_x_m4"],
+                )
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"calculation": result, "section": section, "beam": beam, "ai": "not called"}
 
 
 @app.post("/api/v1/designs/validate")

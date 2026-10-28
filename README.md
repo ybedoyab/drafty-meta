@@ -33,7 +33,11 @@ npm install
 npm run dev
 ```
 
-Open http://localhost:5173. The cantilever benchmark is the default form. Run analysis and wait for the status to move from queued through geometry, meshing, solving, and postprocessing. The numbers come from `model.dat` and `model.frd`.
+Open http://localhost:5173. The homepage has two paths: **Start with a problem** (`/scenario/new`) and **Open Studio** (`/studio`). The classroom path is a guided template. It cites a published live-load minimum, calculates a tributary line load only when the width is known, and does not send that floor beam to CalculiX. Studio still runs the cantilever, plate, bracket, and perforated plate without an AI key.
+
+Docker Compose publishes the web app on port 15173 and the API on port 18080.
+
+The cantilever benchmark is the default Studio form. Run analysis and wait for the status to move from queued through geometry, meshing, solving, and postprocessing. The numbers come from `model.dat` and `model.frd`.
 
 ```powershell
 uv run drafty-benchmark
@@ -67,7 +71,7 @@ Copy `.env.example` to `.env`. Leave unknown values blank.
 | `CCX_BIN`, `CCX_DOCKER_IMAGE`, `DRAFTY_USE_DOCKER_CCX` | Local `ccx` or the `drafty-ccx` image |
 | `VITE_API_URL` | API origin for the web app |
 
-Chat uses `POST https://api.meta.ai/v1/chat/completions` with tool calls. The model can only call `ask_clarification` and `propose_design`. A proposal fills the form; it does not start a solve and it does not run generated code. Reference images are stored and are not measured for dimensions.
+Chat uses `POST https://api.meta.ai/v1/chat/completions` with tool calls. The model can only call `ask_clarification` and `propose_design`. A proposal fills the form; it does not start a solve and it does not run generated code. `drafty_ai.responses` can call `POST /responses` with `web_search`, and only when `MODEL_API_KEY` is set. The classroom template does not call it and does not invent citations. Reference images are stored and are not measured for dimensions.
 
 Modal deploy, after the tokens exist:
 

@@ -1,12 +1,13 @@
-import { Center, GizmoHelper, GizmoViewport, OrbitControls, useGLTF } from "@react-three/drei";
+import { Center, GizmoHelper, GizmoViewport, Html, OrbitControls, useGLTF } from "@react-three/drei";
 import { Canvas, useThree } from "@react-three/fiber";
 import { Suspense, useEffect, useMemo } from "react";
 import * as THREE from "three";
 import { turbo } from "@/lib/colormap";
+import { faceCentroid, loadDirection } from "@/lib/markers";
 import type { SurfaceResult } from "@/lib/api";
 
 export type Shade = "von_mises" | "displacement" | "geometry";
-export type CameraView = "iso" | "front" | "top" | "side";
+export type CameraView = "iso" | "front" | "top" | "right";
 
 export function Viewport({
   previewUrl,
@@ -22,6 +23,8 @@ export function Viewport({
   support,
   loadSurface,
   direction,
+  loadLabel,
+  fitRadius,
 }: {
   previewUrl: string | null;
   surface: SurfaceResult | null;
@@ -36,6 +39,8 @@ export function Viewport({
   support: string;
   loadSurface: string;
   direction: [number, number, number];
+  loadLabel: string;
+  fitRadius: number;
 }) {
   return (
     <Canvas key={orthographic ? "ortho" : "persp"} orthographic={orthographic} camera={{ position: [0.45, -0.35, 0.28], fov: 35, zoom: orthographic ? 400 : 1 }}>
@@ -57,11 +62,18 @@ export function Viewport({
             <Preview key={previewUrl} url={previewUrl} />
           ) : null}
           {surface && (
-            <Markers surface={surface} support={support} loadSurface={loadSurface} direction={direction} />
+            <Markers
+              surface={surface}
+              support={support}
+              loadSurface={loadSurface}
+              direction={direction}
+              loadLabel={loadLabel}
+              fitRadius={fitRadius}
+            />
           )}
         </Suspense>
       </Center>
-      <CameraRig view={cameraView} nonce={cameraNonce} />
+      <CameraRig view={cameraView} nonce={cameraNonce} radius={fitRadius} />
       <OrbitControls makeDefault />
       <GizmoHelper alignment="bottom-right" margin={[72, 72]}>
         <GizmoViewport axisColors={["#ef4444", "#22c55e", "#3b82f6"]} labelColor="#334155" />
@@ -125,40 +137,70 @@ function Markers({
   support,
   loadSurface,
   direction,
+  loadLabel,
+  fitRadius,
 }: {
   surface: SurfaceResult;
   support: string;
   loadSurface: string;
   direction: [number, number, number];
+  loadLabel: string;
+  fitRadius: number;
 }) {
-  const marker = useMemo(() => faceMarker(surface.vertices_m, loadSurface, direction), [surface, loadSurface, direction]);
-  const held = useMemo(() => faceMarker(surface.vertices_m, support, [0, 0, 0]), [surface, support]);
+  const marker = useMemo(() => {
+    const origin = faceCentroid(surface.vertices_m, loadSurface);
+    const { unit } = loadDirection(direction);
+    return { origin: new THREE.Vector3(...origin), direction: new THREE.Vector3(...unit) };
+  }, [surface, loadSurface, direction]);
+  const held = useMemo(() => new THREE.Vector3(...faceCentroid(surface.vertices_m, support)), [surface, support]);
+  const arrow = Math.max(fitRadius * 0.45, 0.02);
+  const mark = Math.max(fitRadius * 0.08, 0.004);
   return (
     <group>
-      <mesh position={held.origin}>
-        <boxGeometry args={[0.004, 0.004, 0.004]} />
+      <mesh position={held}>
+        <boxGeometry args={[mark, mark, mark]} />
         <meshBasicMaterial color="#2563eb" />
       </mesh>
-      <arrowHelper args={[marker.direction, marker.origin, 0.04, "#dc2626"]} />
+      <Html position={held} center sprite zIndexRange={[20, 0]}>
+        <div className="pointer-events-none whitespace-nowrap rounded bg-white px-1.5 py-0.5 text-[11px] font-medium text-blue-700 shadow">
+          Fixed support
+        </div>
+      </Html>
+      <arrowHelper args={[marker.direction, marker.origin, arrow, "#dc2626"]} />
+      <Html position={marker.origin.clone().add(marker.direction.clone().multiplyScalar(arrow))} center sprite zIndexRange={[20, 0]}>
+        <div className="pointer-events-none whitespace-nowrap rounded bg-white px-1.5 py-0.5 text-[11px] font-medium text-red-700 shadow">
+          {loadLabel}
+        </div>
+      </Html>
     </group>
   );
 }
 
-function CameraRig({ view, nonce }: { view: CameraView; nonce: number }) {
+function CameraRig({ view, nonce, radius }: { view: CameraView; nonce: number; radius: number }) {
   const camera = useThree((state) => state.camera);
+  const size = useThree((state) => state.size);
   useEffect(() => {
-    const distance = 0.55;
+    const span = Math.max(radius * 2, 1e-4);
+    const padding = 1.55;
+    const fov = camera instanceof THREE.PerspectiveCamera ? (camera.fov * Math.PI) / 180 : Math.PI / 5;
+    const distance = (span * padding) / (2 * Math.tan(fov / 2));
+    if (camera instanceof THREE.OrthographicCamera) {
+      const zoom = Math.min(size.width, size.height) / (span * padding);
+      camera.zoom = Number.isFinite(zoom) && zoom > 0 ? zoom : 1;
+    }
     const positions: Record<CameraView, [number, number, number]> = {
-      iso: [distance, -distance, distance * 0.7],
-      front: [0, -distance, 0.02],
-      top: [0.001, -0.001, distance],
-      side: [distance, 0, 0.02],
+      iso: [distance, -distance, distance * 0.72],
+      front: [0, -distance, 0],
+      top: [0, 0, distance],
+      right: [distance, 0, 0],
     };
     const [x, y, z] = positions[view];
     camera.position.set(x, y, z);
+    camera.near = Math.max(distance / 200, 1e-4);
+    camera.far = Math.max(distance * 30, 10);
     camera.lookAt(0, 0, 0);
     camera.updateProjectionMatrix();
-  }, [camera, view, nonce]);
+  }, [camera, view, nonce, radius, size.width, size.height]);
   return null;
 }
 
@@ -200,18 +242,4 @@ function buildGeometry(
   geometry.setIndex(surface.faces.flat());
   geometry.computeVertexNormals();
   return geometry;
-}
-
-function faceMarker(vertices: [number, number, number][], surface: string, direction: [number, number, number]) {
-  const axis = surface.startsWith("x") ? 0 : surface.startsWith("y") ? 1 : 2;
-  const target = surface.endsWith("min") ? Math.min(...vertices.map((vertex) => vertex[axis])) : Math.max(...vertices.map((vertex) => vertex[axis]));
-  const near = vertices.filter((vertex) => Math.abs(vertex[axis] - target) < 1e-4);
-  const sample = near.length ? near : vertices;
-  const origin = new THREE.Vector3();
-  for (const vertex of sample) origin.add(new THREE.Vector3(...vertex));
-  origin.multiplyScalar(1 / sample.length);
-  const vector = new THREE.Vector3(...direction);
-  if (vector.length() === 0) vector.set(0, 0, -1);
-  vector.normalize();
-  return { origin, direction: vector };
 }

@@ -2,12 +2,13 @@ import { test, expect } from "@playwright/test";
 
 test("the landing page opens the studio example", async ({ page }) => {
   await page.goto("/");
-  await expect(page.getByRole("heading", { name: "Drafty" })).toBeVisible();
-  await page.getByRole("link", { name: "Open the studio" }).click();
+  await expect(page.getByRole("heading", { name: /Describe the problem/ })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Start with a problem" })).toBeVisible();
+  await page.getByRole("link", { name: "Open Studio" }).click();
   await expect(page.getByRole("button", { name: "Load cantilever example" })).toBeVisible();
   await page.getByLabel("Length mm").fill("280");
   await expect(page.getByLabel("Length mm")).toHaveValue("280");
-  await expect(page.getByText("Meta", { exact: false })).toBeVisible();
+  await expect(page.getByText(/AI not connected|Meta on/)).toBeVisible();
 });
 
 test("a mocked job can be submitted, reopened, and cancelled", async ({ page }) => {
@@ -66,6 +67,9 @@ test("a mocked job can be submitted, reopened, and cancelled", async ({ page }) 
   await page.goto("/studio");
   await page.getByRole("button", { name: "Run analysis" }).click();
   await expect(page.getByText("benchmark_passed")).toBeVisible();
+  await expect(page.getByText("Fixed support")).toBeVisible();
+  await expect(page.getByText("100 N −Z")).toBeVisible();
+  await page.screenshot({ path: "../../docs/screenshots/studio-mocked-result.png" });
   await page.getByRole("cell", { name: jobId.slice(0, 8) }).click();
   await page.reload();
   await expect(page.getByText("0.5652").first()).toBeVisible();

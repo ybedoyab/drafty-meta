@@ -22,6 +22,7 @@ import {
   type SimulationResult,
 } from "@/lib/api";
 import { turbo } from "@/lib/colormap";
+import { loadDirection } from "@/lib/markers";
 import {
   SURFACES,
   benchmarkForm,
@@ -66,6 +67,8 @@ export function Workstation() {
   const [minimumFactor, setMinimumFactor] = useState(2);
   const [formError, setFormError] = useState<string | null>(null);
   const [exampleBusy, setExampleBusy] = useState(false);
+  const [logOpen, setLogOpen] = useState(false);
+  const [stageFull, setStageFull] = useState(false);
 
   const health = useQuery({ queryKey: ["health"], queryFn: getHealth, retry: false, refetchInterval: 15000 });
   const jobs = useQuery({ queryKey: ["jobs"], queryFn: getJobs, refetchInterval: 2000 });
@@ -201,9 +204,29 @@ export function Workstation() {
   const current = job.data;
   const result = results.data;
   const selectedMaterial = materials.data?.find((item) => item.id === form.materialId);
+  const fitRadius = useMemo(() => {
+    const vertices = result?.surface.vertices_m;
+    if (vertices?.length) {
+      const min = [Infinity, Infinity, Infinity];
+      const max = [-Infinity, -Infinity, -Infinity];
+      for (const vertex of vertices) {
+        vertex.forEach((value, index) => {
+          min[index] = Math.min(min[index], value);
+          max[index] = Math.max(max[index], value);
+        });
+      }
+      return Math.hypot(max[0] - min[0], max[1] - min[1], max[2] - min[2]) / 2 || 0.15;
+    }
+    return Math.hypot(form.lengthMm, form.widthMm, form.heightMm) / 2000 || 0.15;
+  }, [result, form.lengthMm, form.widthMm, form.heightMm]);
+  const loadAxis = loadDirection([form.directionX, form.directionY, form.directionZ]).axisLabel;
+  const loadLabel =
+    form.loadMode === "pressure" ? `Pressure ${form.magnitude} MPa ${loadAxis}` : `${form.magnitude} N ${loadAxis}`;
 
   return (
-    <div className="grid h-full grid-cols-[360px_minmax(0,1fr)_320px] grid-rows-[64px_minmax(0,1fr)_210px] bg-slate-100 text-gray-900">
+    <div
+      className={`grid h-full grid-cols-[360px_minmax(0,1fr)_320px] bg-slate-100 text-gray-900 ${logOpen ? "grid-rows-[64px_minmax(0,1fr)_220px]" : "grid-rows-[64px_minmax(0,1fr)_132px]"}`}
+    >
       <header className="col-span-3 flex items-center justify-between border-b border-gray-200 bg-white px-5 shadow-sm">
         <div className="flex items-center gap-6">
           <Link to="/">
@@ -213,6 +236,9 @@ export function Workstation() {
             <Link to="/" className="rounded-md px-3 py-1.5 text-gray-600 hover:bg-indigo-50 hover:text-indigo-600">
               Home
             </Link>
+            <Link to="/scenario/new" className="rounded-md px-3 py-1.5 text-gray-600 hover:bg-indigo-50 hover:text-indigo-600">
+              Problem
+            </Link>
             <Link to="/studio" className="rounded-md bg-indigo-50 px-3 py-1.5 text-indigo-700">
               Studio
             </Link>
@@ -220,10 +246,8 @@ export function Workstation() {
         </div>
         <p className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-gray-600">
           {health.data
-            ? `solver ${health.data.solver.mode} · meta ${health.data.meta ? "on" : "off"}`
-            : health.error instanceof Error
-              ? health.error.message
-              : "connecting"}
+            ? `solver ${health.data.solver.mode} · ${health.data.meta ? "Meta on" : "AI not connected"}`
+            : "solver unreachable · AI not connected"}
         </p>
       </header>
 
@@ -418,7 +442,7 @@ export function Workstation() {
         </div>
       </aside>
 
-      <main className="relative min-h-0 bg-slate-100">
+      <main className={stageFull ? "fixed inset-0 z-30 min-h-0 bg-slate-100" : "relative min-h-0 bg-slate-100"}>
         <Suspense fallback={null}>
           <Viewport
             previewUrl={previewUrl}
@@ -434,6 +458,8 @@ export function Workstation() {
             support={form.support}
             loadSurface={form.loadSurface}
             direction={[form.directionX, form.directionY, form.directionZ]}
+            loadLabel={loadLabel}
+            fitRadius={fitRadius}
           />
         </Suspense>
         <div className="pointer-events-none absolute left-3 top-3 rounded-lg border border-gray-200 bg-white/90 px-3 py-1 text-xs text-gray-500 shadow-sm">
@@ -442,7 +468,7 @@ export function Workstation() {
             : "CAD preview · meters"}
         </div>
         <div className="absolute left-3 top-12 flex flex-wrap gap-1">
-          {(["iso", "front", "top", "side"] as const).map((view) => (
+          {(["iso", "front", "top", "right"] as const).map((view) => (
             <button
               key={view}
               type="button"
@@ -462,8 +488,15 @@ export function Workstation() {
           >
             {orthographic ? "Perspective" : "Orthographic"}
           </button>
+          <button
+            type="button"
+            className="rounded border border-gray-200 bg-white px-2 py-1 text-[11px] text-gray-700 shadow-sm"
+            onClick={() => setStageFull((value) => !value)}
+          >
+            {stageFull ? "Exit full view" : "Full view"}
+          </button>
         </div>
-        {!previewUrl && !result && (
+        {!previewUrl && !result && !activeId && (
           <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
             <div className="rounded-2xl border border-indigo-100 bg-white px-8 py-6 text-center shadow-lg">
               <p className="text-lg font-semibold text-gray-900">Ready to generate?</p>
@@ -564,11 +597,14 @@ export function Workstation() {
           </label>
         </div>
         <p className="mt-1 text-[11px] leading-4 text-gray-500">
-          Blue is the selected support face and the red arrow is the load direction. Both use the bounding-box face
-          preset, not a picked solid face.
+          The blue marker is the fixed support on the selected bounding-box face. The red arrow starts at the load-face
+          centroid and points in the applied-force direction. It is not the displacement. These six faces are presets,
+          not picked B-rep faces.
         </p>
         <label className="field mt-2">
-          <span>Visual scale {formatEngineering(visualScale, 2)}×</span>
+          <span>
+            {visualScale === 1 ? "Deformed shape 1× physical" : `Deformed shape ${formatEngineering(visualScale, 2)}× exaggerated`}
+          </span>
           <input
             type="range"
             min={0}
@@ -617,8 +653,14 @@ export function Workstation() {
         )}
       </aside>
 
-      <section className="col-span-3 grid grid-cols-[minmax(0,1fr)_360px] border-t border-gray-200 bg-white">
+      <section className={`col-span-3 border-t border-gray-200 bg-white ${logOpen ? "grid grid-cols-[minmax(0,1fr)_360px]" : ""}`}>
         <div className="overflow-auto">
+          <div className="flex items-center justify-between px-3 py-1">
+            <p className="text-xs font-medium text-gray-500">Jobs</p>
+            <button type="button" className="text-xs text-indigo-700" onClick={() => setLogOpen((value) => !value)}>
+              {logOpen ? "Hide solver log" : "Solver log"}
+            </button>
+          </div>
           <table className="w-full text-left font-mono text-xs">
             <thead className="text-gray-500">
               <tr>
@@ -652,9 +694,11 @@ export function Workstation() {
             </tbody>
           </table>
         </div>
-        <pre className="overflow-auto border-l border-gray-200 bg-slate-50 p-3 font-mono text-[11px] leading-4 text-gray-600">
-          {log.data?.solver || log.data?.worker || "Solver log appears after the job starts."}
-        </pre>
+        {logOpen && (
+          <pre className="overflow-auto border-l border-gray-200 bg-slate-50 p-3 font-mono text-[11px] leading-4 text-gray-600">
+            {log.data?.solver || log.data?.worker || "Solver log appears after the job starts."}
+          </pre>
+        )}
       </section>
     </div>
   );

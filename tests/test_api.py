@@ -60,3 +60,29 @@ def test_interpret_requires_an_owner_before_a_model_call(tmp_path, monkeypatch):
         segment = client.post("/api/v1/ai/segment")
     assert response.status_code == 401
     assert segment.status_code == 401
+
+
+def test_classroom_scenario_rejects_a_missing_width_and_calculates_when_known(tmp_path, monkeypatch):
+    with _client(tmp_path, monkeypatch) as client:
+        missing = client.post("/api/v1/scenarios/classroom", json={"dead_n_per_m2": 3000})
+        calculated = client.post(
+            "/api/v1/scenarios/classroom",
+            json={
+                "dead_n_per_m2": 3000,
+                "tributary_width_m": 2.5,
+                "beam_self_weight_n_per_m": 400,
+                "span_m": 6,
+                "depth_m": 0.2,
+                "flange_width_m": 0.1,
+                "flange_thickness_m": 0.01,
+                "web_thickness_m": 0.006,
+            },
+        )
+    assert missing.status_code == 422
+    assert calculated.status_code == 200
+    body = calculated.json()
+    assert body["ai"] == "not called"
+    assert body["calculation"]["ready_for_3d_simulation"] is False
+    assert body["calculation"]["q_line_n_per_m"] == 12900
+    assert body["beam"]["max_moment_n_m"] > 0
+    assert body["section"]["area_m2"] > 0
