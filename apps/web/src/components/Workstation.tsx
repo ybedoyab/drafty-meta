@@ -1,8 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import logo from "@/assets/logo.png";
-import { Suspense, useMemo, useState } from "react";
-import { Viewport } from "@/components/Viewport";
+import { Suspense, useEffect, useMemo, useState } from "react";
+import { Viewport, type CameraView, type Shade } from "@/components/Viewport";
 import { Button } from "@/components/ui/button";
 import {
   artifactUrl,
@@ -12,6 +12,8 @@ import {
   getJob,
   getJobs,
   getLog,
+  getMaterials,
+  getOptimization,
   getResults,
   interpret,
   previewSpec,
@@ -51,6 +53,13 @@ export function Workstation() {
   const [chat, setChat] = useState<{ role: "you" | "drafty"; text: string }[]>([]);
   const [imageId, setImageId] = useState<string | null>(null);
   const [wireframe, setWireframe] = useState(false);
+  const [shade, setShade] = useState<Shade>("von_mises");
+  const [orthographic, setOrthographic] = useState(false);
+  const [cameraView, setCameraView] = useState<CameraView>("iso");
+  const [cameraNonce, setCameraNonce] = useState(0);
+  const [contourMin, setContourMin] = useState("");
+  const [contourMax, setContourMax] = useState("");
+  const [iterationCap, setIterationCap] = useState(4);
   const [visualScale, setVisualScale] = useState(1);
   const [lowerMm, setLowerMm] = useState(8);
   const [upperMm, setUpperMm] = useState(16);
@@ -76,6 +85,18 @@ export function Workstation() {
     queryFn: () => getLog(activeId!),
     enabled: Boolean(activeId) && job.data?.status !== "queued",
   });
+  const materials = useQuery({ queryKey: ["materials"], queryFn: getMaterials, staleTime: 60_000 });
+  const optimization = useQuery({
+    queryKey: ["optimization", activeId],
+    queryFn: () => getOptimization(activeId!),
+    enabled: job.data?.kind === "optimization" && job.data?.status === "completed",
+  });
+
+  useEffect(() => {
+    return () => {
+      if (previewUrl) URL.revokeObjectURL(previewUrl);
+    };
+  }, [previewUrl]);
 
   const suggestedScale = useMemo(() => {
     if (!results.data) return 1;
@@ -123,7 +144,7 @@ export function Workstation() {
               lower_m: lowerMm / 1000,
               upper_m: upperMm / 1000,
               min_safety_factor: minimumFactor,
-              max_iterations: 4,
+              max_iterations: iterationCap,
             }
           : undefined;
       return createJob(kind, spec, optimization);
@@ -179,6 +200,7 @@ export function Workstation() {
 
   const current = job.data;
   const result = results.data;
+  const selectedMaterial = materials.data?.find((item) => item.id === form.materialId);
 
   return (
     <div className="grid h-full grid-cols-[360px_minmax(0,1fr)_320px] grid-rows-[64px_minmax(0,1fr)_210px] bg-slate-100 text-gray-900">
@@ -294,7 +316,9 @@ export function Workstation() {
             </select>
           </label>
           <p className="col-span-2 mt-2 text-xs text-gray-500">
-            Typical values near 20 °C. Not a certified material certificate.
+            {selectedMaterial
+              ? `${selectedMaterial.name}: E ${formatEngineering(selectedMaterial.youngs_modulus_pa / 1e9, 3)} GPa, nu ${selectedMaterial.poisson_ratio}, density ${selectedMaterial.density_kg_m3} kg/m3, yield ${formatEngineering(selectedMaterial.yield_strength_pa / 1e6, 3)} MPa. ${selectedMaterial.caveat}`
+              : "Typical values near 20 °C. Not a certified material certificate."}
           </p>
           <p className="col-span-2 mt-4 text-xs font-semibold uppercase tracking-wide text-indigo-600">
             3. Hold and load
@@ -398,15 +422,46 @@ export function Workstation() {
         <Suspense fallback={null}>
           <Viewport
             previewUrl={previewUrl}
-            surface={result?.surface ?? null}
+            surface={shade === "geometry" && previewUrl ? null : (result?.surface ?? null)}
             scale={visualScale}
             wireframe={wireframe}
+            shade={shade}
+            orthographic={orthographic}
+            cameraView={cameraView}
+            cameraNonce={cameraNonce}
+            contourMin={contourMin === "" ? null : Number(contourMin) * 1e6}
+            contourMax={contourMax === "" ? null : Number(contourMax) * 1e6}
+            support={form.support}
+            loadSurface={form.loadSurface}
+            direction={[form.directionX, form.directionY, form.directionZ]}
           />
         </Suspense>
         <div className="pointer-events-none absolute left-3 top-3 rounded-lg border border-gray-200 bg-white/90 px-3 py-1 text-xs text-gray-500 shadow-sm">
           {result
             ? "Contour max on corner triangles, not a certified stress plot · meters"
             : "CAD preview · meters"}
+        </div>
+        <div className="absolute left-3 top-12 flex flex-wrap gap-1">
+          {(["iso", "front", "top", "side"] as const).map((view) => (
+            <button
+              key={view}
+              type="button"
+              className="rounded border border-gray-200 bg-white px-2 py-1 text-[11px] text-gray-700 shadow-sm"
+              onClick={() => {
+                setCameraView(view);
+                setCameraNonce((value) => value + 1);
+              }}
+            >
+              {view}
+            </button>
+          ))}
+          <button
+            type="button"
+            className="rounded border border-gray-200 bg-white px-2 py-1 text-[11px] text-gray-700 shadow-sm"
+            onClick={() => setOrthographic((value) => !value)}
+          >
+            {orthographic ? "Perspective" : "Orthographic"}
+          </button>
         </div>
         {!previewUrl && !result && (
           <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
@@ -475,10 +530,43 @@ export function Workstation() {
         {current?.status === "failed" && <p className="mt-2 text-xs leading-5 text-red-600">{current.error}</p>}
         {current?.status === "cancelled" && <p className="mt-2 text-xs text-gray-500">Cancelled.</p>}
         {result && <ResultReadout result={result} />}
+        {optimization.data && (
+          <div className="mt-3 space-y-1 text-xs">
+            <p className="font-medium text-gray-700">Submitted versus accepted</p>
+            <p>Submitted thickness {optimization.data.submitted?.thickness_m == null ? "—" : formatEngineering(optimization.data.submitted.thickness_m * 1000, 3)} mm</p>
+            <p>Accepted thickness {optimization.data.best?.thickness_m == null ? "—" : formatEngineering(optimization.data.best.thickness_m * 1000, 3)} mm</p>
+            <p>Submitted mass {optimization.data.submitted?.mass_kg == null ? "—" : formatEngineering(optimization.data.submitted.mass_kg)} kg</p>
+            <p>Accepted mass {optimization.data.best?.mass_kg == null ? "—" : formatEngineering(optimization.data.best.mass_kg)} kg</p>
+            <p className="text-amber-700">{optimization.data.optimality}</p>
+            {optimization.data.message && <p className="text-amber-700">{optimization.data.message}</p>}
+          </div>
+        )}
         <label className="mt-3 flex items-center gap-2 text-xs text-gray-500">
           <input type="checkbox" checked={wireframe} onChange={(event) => setWireframe(event.target.checked)} />
           Wireframe
         </label>
+        <label className="mt-2 flex items-center gap-2 text-xs text-gray-500">
+          <span>Shade</span>
+          <select value={shade} onChange={(event) => setShade(event.target.value as Shade)}>
+            <option value="von_mises">von Mises</option>
+            <option value="displacement">Displacement magnitude</option>
+            <option value="geometry">Undeformed preview when loaded</option>
+          </select>
+        </label>
+        <div className="mt-2 grid grid-cols-2 gap-2">
+          <label className="field">
+            <span>Contour min MPa</span>
+            <input value={contourMin} onChange={(event) => setContourMin(event.target.value)} />
+          </label>
+          <label className="field">
+            <span>Contour max MPa</span>
+            <input value={contourMax} onChange={(event) => setContourMax(event.target.value)} />
+          </label>
+        </div>
+        <p className="mt-1 text-[11px] leading-4 text-gray-500">
+          Blue is the selected support face and the red arrow is the load direction. Both use the bounding-box face
+          preset, not a picked solid face.
+        </p>
         <label className="field mt-2">
           <span>Visual scale {formatEngineering(visualScale, 2)}×</span>
           <input
@@ -507,14 +595,18 @@ export function Workstation() {
             <NumberField label="Lower mm" value={lowerMm} onChange={setLowerMm} />
             <NumberField label="Upper mm" value={upperMm} onChange={setUpperMm} />
             <NumberField label="Min factor" value={minimumFactor} onChange={setMinimumFactor} />
+            <NumberField label="Iterations" value={iterationCap} onChange={setIterationCap} />
           </div>
+          <p className="mt-2 text-[11px] leading-4 text-gray-500">
+            One thickness variable, real solves only. Not a global optimum. The factor stays exploratory.
+          </p>
           <Button className="mt-2" onClick={() => run.mutate("optimization")} disabled={run.isPending}>
             Optimize with FEM
           </Button>
         </div>
         {activeId && current?.status === "completed" && (
           <div className="mt-3 flex flex-col gap-1 text-xs">
-            {["model.step", "preview.glb", "results.glb", "model.inp", "model.dat", "model.frd", "model.vtu", "results.json"].map(
+            {["model.step", "preview.glb", "results.glb", "model.inp", "model.dat", "model.frd", "model.vtu", "results.json", "report.json", "report.pdf"].map(
               (name) => (
                 <a key={name} className="text-indigo-600 hover:underline" href={artifactUrl(activeId, name)}>
                   {name}
@@ -579,6 +671,18 @@ function ResultReadout({ result }: { result: SimulationResult }) {
       <Row label="Governing von Mises" value={`${formatEngineering(mpaFromPascals(result.governing_von_mises_pa))} MPa`} />
       <Row label="Contour peak von Mises" value={`${formatEngineering(mpaFromPascals(result.max_von_mises_pa))} MPa`} />
       <Row label="Exploratory factor" value={formatEngineering(result.safety_factor, 3)} />
+      {result.stress_assessment && (
+        <p className="pt-1 text-[11px] leading-4 text-amber-700">
+          {result.stress_assessment.safety_factor_status}. {result.stress_assessment.exclusion}.{" "}
+          {result.stress_assessment.exclusion_reason} {result.stress_assessment.mesh_sensitivity}
+        </p>
+      )}
+      {result.equilibrium && (
+        <Row
+          label="Force balance"
+          value={result.equilibrium.passed ? "reactions match the load" : "residual above 5%"}
+        />
+      )}
       <p className="pt-1 text-[11px] leading-4 text-amber-700">
         The factor uses governing stress away from the fixed face. The contour peak can be higher because of the
         support singularity. This is not a certified safety factor.

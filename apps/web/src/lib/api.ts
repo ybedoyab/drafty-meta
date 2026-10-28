@@ -74,6 +74,23 @@ export interface SimulationResult {
     stress_error?: number;
     notes?: string[];
   };
+  equilibrium?: {
+    applied_force_n: number[];
+    reaction_force_n: number[];
+    residual_n: number;
+    relative_residual: number;
+    passed: boolean;
+  };
+  stress_assessment?: {
+    measure: string;
+    exclusion: string;
+    exclusion_reason: string;
+    safety_factor_status: string;
+    nodal_field: string;
+    integration_point_field: string;
+    displayed_surface: string;
+    mesh_sensitivity: string;
+  };
   warnings: string[];
   surface: SurfaceResult;
 }
@@ -122,6 +139,29 @@ export const cancelJob = (id: string) =>
   api<Job>(`/api/v1/jobs/${id}/cancel`, { method: "POST" }).then((job) => jobSchema.parse(job));
 
 export const getResults = (id: string) => api<SimulationResult>(`/api/v1/jobs/${id}/results`);
+
+export const getMaterials = () =>
+  api<
+    {
+      id: string;
+      name: string;
+      youngs_modulus_pa: number;
+      poisson_ratio: number;
+      density_kg_m3: number;
+      yield_strength_pa: number;
+      source: string;
+      caveat: string;
+    }[]
+  >("/api/v1/materials");
+
+export const getOptimization = (id: string) =>
+  api<{
+    best: { mass_kg?: number; displacement_m?: number; safety_factor?: number; thickness_m?: number } | null;
+    submitted: { mass_kg?: number; displacement_m?: number; safety_factor?: number; thickness_m?: number } | null;
+    optimality?: string;
+    message?: string;
+    iterations: { index: number; accepted: boolean; feasible: boolean; error?: string; thickness_m: number }[];
+  }>(`/api/v1/jobs/${id}/optimization`);
 
 export const getLog = (id: string) => api<{ solver: string; worker: string }>(`/api/v1/jobs/${id}/log`);
 
