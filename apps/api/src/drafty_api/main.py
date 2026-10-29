@@ -23,6 +23,7 @@ from drafty_api.jobs import (
 from drafty_api.scenarios import attach_job, read_scenario
 from drafty_api.scenarios import router as scenario_router
 from drafty_api.settings import assert_production_auth, settings
+from drafty_api.speech import router as speech_router
 from drafty_api.storage import signed_artifact_url
 from drafty_engineering.geometry_math import envelope, expected_face_area
 from drafty_engineering.materials import MATERIALS
@@ -61,6 +62,7 @@ class CreateJobRequest(BaseModel):
     spec: DesignSpec
     optimization: OptimizationOptions | None = None
     scenario_id: str | None = None
+    compute: str = "local"
 
 
 class InterpretRequest(BaseModel):
@@ -92,6 +94,7 @@ app.add_middleware(
 )
 
 app.include_router(scenario_router)
+app.include_router(speech_router)
 
 
 @app.get("/api/v1/health")
@@ -100,7 +103,8 @@ def health() -> dict:
         "service": "drafty",
         "solver": solver_availability(),
         "meta": settings.meta_configured,
-        "modal": settings.drafty_compute == "modal" and settings.modal_configured,
+        "modal": settings.modal_available,
+        "modal_available": settings.modal_available,
         "supabase": settings.supabase_configured,
         "supabase_auth": settings.supabase_auth_configured,
         "auth": settings.drafty_auth_mode,
@@ -181,9 +185,34 @@ def post_job(body: CreateJobRequest, request: Request) -> dict:
         if body.optimization.upper_m <= body.optimization.lower_m:
             raise HTTPException(status_code=422, detail="The upper bound must exceed the lower bound.")
         options = body.optimization.model_dump()
+    if body.kind == "optimization" and body.compute == "modal":
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Thickness optimization runs on Local CalculiX. "
+                "Choose Local CalculiX for that search. Modal was not started."
+            ),
+        )
+    if body.compute not in {"local", "modal"}:
+        raise HTTPException(status_code=422, detail="compute must be local or modal.")
+    if body.compute == "modal" and not settings.modal_available:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Modal Cloud CalculiX is not configured. Run `modal setup` in a terminal, or set "
+                "MODAL_TOKEN_ID and MODAL_TOKEN_SECRET on the server. Local CalculiX was not started."
+            ),
+        )
     if body.scenario_id:
         read_scenario(body.scenario_id, owner)
-    job = create_job(owner, body.kind, body.spec.model_dump(), options, scenario_id=body.scenario_id)
+    job = create_job(
+        owner,
+        body.kind,
+        body.spec.model_dump(),
+        options,
+        scenario_id=body.scenario_id,
+        compute=body.compute,
+    )
     if body.scenario_id:
         attach_job(body.scenario_id, owner, job["id"], job["kind"])
     return _public_job(job)
@@ -342,6 +371,8 @@ def _public_job(job: dict) -> dict:
         "summary": job.get("summary"),
         "spec": job.get("spec"),
         "scenario_id": job.get("scenario_id"),
+        "compute": job.get("compute") or "local",
+        "artifact_storage": job.get("artifact_storage") or "local",
         "created_at": job.get("created_at"),
         "updated_at": job.get("updated_at"),
         "active": job.get("status") in ACTIVE,

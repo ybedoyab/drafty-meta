@@ -3,12 +3,14 @@ import type { BeamStation, ScenarioSession } from "@/lib/api";
 export function BeamResults({
   session,
   busy,
+  runLabel = "Run beam elements",
   onRun,
   onCompare,
   onDownload,
 }: {
   session: ScenarioSession;
   busy: boolean;
+  runLabel?: string;
   onRun: () => void;
   onCompare: () => void;
   onDownload: () => void;
@@ -43,7 +45,7 @@ export function BeamResults({
           disabled={!canRun}
           onClick={onRun}
         >
-          Run beam elements
+          {runLabel}
         </button>
         <button type="button" className="rounded-md bg-slate-200 px-3 py-2 text-sm text-slate-500" disabled>
           Run 3D simulation

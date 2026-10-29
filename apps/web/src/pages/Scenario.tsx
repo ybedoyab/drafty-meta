@@ -4,6 +4,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { SiteHeader } from "@/components/SiteHeader";
 import { BeamResults } from "@/components/BeamResults";
+import { MicButton, SpeakButton } from "@/components/Voice";
 import { Button } from "@/components/ui/button";
 import {
   analyzeScenario,
@@ -17,6 +18,7 @@ import {
   downloadScenarioReport,
   getHealth,
   getScenario,
+  loadDemo,
   scenarioEvidenceUrl,
   segmentScenario,
   turnScenario,
@@ -57,6 +59,8 @@ export function Scenario() {
   const [segmentPrompt, setSegmentPrompt] = useState("bracket");
   const [supportFace, setSupportFace] = useState("");
   const [loadFace, setLoadFace] = useState("");
+  const [bracket, setBracket] = useState({ legX: "80", legZ: "80", width: "40", thickness: "8", force: "200", limit: "1" });
+  const evidenceRef = useRef<HTMLInputElement | null>(null);
   const [linkedJobs, setLinkedJobs] = useState<Awaited<ReturnType<typeof getJob>>[]>([]);
   const turnAbort = useRef<AbortController | null>(null);
   const navigate = useNavigate();
@@ -146,6 +150,38 @@ export function Scenario() {
 
   function cancelTurn() {
     turnAbort.current?.abort();
+  }
+
+  async function loadPreset(kind: "classroom" | "bracket") {
+    if (!session) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const overrides =
+        kind === "bracket"
+          ? {
+              leg_x_m: Number(bracket.legX) / 1000,
+              leg_z_m: Number(bracket.legZ) / 1000,
+              bracket_width_m: Number(bracket.width) / 1000,
+              bracket_thickness_m: Number(bracket.thickness) / 1000,
+              force_n: Number(bracket.force),
+              displacement_limit_m: Number(bracket.limit) / 1000,
+            }
+          : undefined;
+      const next = await loadDemo(kind, session.id, overrides);
+      rememberScenarioId(localStorage, next.id);
+      setSession(next);
+      setForm(formFromInputs(next.inputs));
+      if (next.suggested_faces) {
+        setSupportFace(next.suggested_faces.support_face);
+        setLoadFace(next.suggested_faces.load_face);
+      }
+      setDraft("");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "The demo could not be loaded.");
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function startFresh() {
@@ -332,12 +368,18 @@ export function Scenario() {
               </p>
             </div>
           )}
-          <div className="flex-1 space-y-3 overflow-auto px-4 py-4">
-            {(session?.messages ?? []).map((entry, index) => (
-              <p key={`${entry.role}-${index}`} className="text-sm leading-6">
-                <span className="font-semibold">{entry.role === "user" ? "You" : "Drafty"}: </span>
-                {entry.text}
+            {session?.demo && (
+              <p className="border-b border-amber-200 bg-amber-50 px-4 py-2 text-sm text-amber-950">
+                {session.demo.label} {session.demo.version}.
               </p>
+            )}
+            <div className="flex-1 space-y-3 overflow-auto px-4 py-4">
+            {(session?.messages ?? []).map((entry, index) => (
+              <article key={`${entry.role}-${index}`} className="rounded-md border border-slate-200 px-3 py-2 text-sm leading-6">
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">{entry.role === "user" ? "You" : "Drafty"}</p>
+                <p>{entry.text}</p>
+                {entry.role === "assistant" && <SpeakButton text={entry.text} />}
+              </article>
             ))}
             {session && session.messages.length === 0 && (
               <p className="text-sm leading-6 text-slate-600">
@@ -347,7 +389,7 @@ export function Scenario() {
             )}
           </div>
           <form
-            className="border-t border-slate-200 p-4"
+            className="sticky bottom-0 border-t border-slate-200 bg-white p-4"
             onSubmit={(event) => {
               event.preventDefault();
               void submit(draft);
@@ -364,14 +406,22 @@ export function Scenario() {
               onChange={(event) => setDraft(event.target.value)}
             />
             <div className="mt-3 flex flex-wrap gap-2">
+              <Button type="button" disabled={busy || !session} onClick={() => evidenceRef.current?.click()}>
+                Attach
+              </Button>
+              <MicButton
+                disabled={busy || !session}
+                onTranscript={(text) => setDraft((current) => (current ? `${current} ${text}` : text))}
+                onError={setError}
+              />
               <Button type="submit" variant="primary" disabled={busy || !session || !draft.trim()}>
                 Send
               </Button>
-              <Button type="button" disabled={busy || !session} onClick={() => void submit(CLASSROOM_PROMPT)}>
-                Use the classroom example
+              <Button type="button" disabled={busy || !session} onClick={() => void loadPreset("classroom")}>
+                Load Classroom Demo
               </Button>
-              <Button type="button" disabled={busy || !session} onClick={() => void submit("Review the current inputs.")}>
-                Review inputs
+              <Button type="button" disabled={busy || !session} onClick={() => void loadPreset("bracket")}>
+                Load Bracket Demo
               </Button>
             </div>
             {error && <p className="mt-3 text-sm text-amber-800">{error}</p>}
@@ -418,19 +468,30 @@ export function Scenario() {
           </Panel>
           {domain !== "mechanical" && (
           <Panel title="Inputs">
-            <div className="grid gap-2 sm:grid-cols-2">
-              <Field label="Jurisdiction" value={form.jurisdiction} onChange={(jurisdiction) => setForm({ ...form, jurisdiction })} />
-              <Field label="Span m" value={form.spanM} onChange={(spanM) => setForm({ ...form, spanM })} />
-              <Field label="Tributary width m" value={form.tributaryM} onChange={(tributaryM) => setForm({ ...form, tributaryM })} />
-              <Field label="Dead load kN/m²" value={form.deadKn} onChange={(deadKn) => setForm({ ...form, deadKn })} />
-              <Field label="Live load kN/m²" value={form.liveKn} onChange={(liveKn) => setForm({ ...form, liveKn })} />
-              <Field label="Beam self-weight N/m" value={form.selfWeight} onChange={(selfWeight) => setForm({ ...form, selfWeight })} />
-              <Field label="Depth mm" value={form.depthMm} onChange={(depthMm) => setForm({ ...form, depthMm })} />
-              <Field label="Flange width mm" value={form.flangeWidthMm} onChange={(flangeWidthMm) => setForm({ ...form, flangeWidthMm })} />
-              <Field label="Flange thickness mm" value={form.flangeThicknessMm} onChange={(flangeThicknessMm) => setForm({ ...form, flangeThicknessMm })} />
-              <Field label="Web thickness mm" value={form.webThicknessMm} onChange={(webThicknessMm) => setForm({ ...form, webThicknessMm })} />
-              <Field label="Supports" value={form.supports} onChange={(supports) => setForm({ ...form, supports })} />
-            </div>
+            {session?.inputs.student_count ? (
+              <p className="mb-2 text-sm">Occupancy context: {session.inputs.student_count} students. A headcount is not a floor load.</p>
+            ) : null}
+            <details open className="border-b border-slate-200 py-2">
+              <summary className="cursor-pointer text-sm font-medium">Geometry</summary>
+              <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                <Field label="Span m" value={form.spanM} onChange={(spanM) => setForm({ ...form, spanM })} />
+                <Field label="Depth mm" value={form.depthMm} onChange={(depthMm) => setForm({ ...form, depthMm })} />
+                <Field label="Flange width mm" value={form.flangeWidthMm} onChange={(flangeWidthMm) => setForm({ ...form, flangeWidthMm })} />
+                <Field label="Flange thickness mm" value={form.flangeThicknessMm} onChange={(flangeThicknessMm) => setForm({ ...form, flangeThicknessMm })} />
+                <Field label="Web thickness mm" value={form.webThicknessMm} onChange={(webThicknessMm) => setForm({ ...form, webThicknessMm })} />
+              </div>
+            </details>
+            <details open className="border-b border-slate-200 py-2">
+              <summary className="cursor-pointer text-sm font-medium">Materials and loads</summary>
+              <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                <Field label="Jurisdiction" value={form.jurisdiction} onChange={(jurisdiction) => setForm({ ...form, jurisdiction })} />
+                <Field label="Tributary width m" value={form.tributaryM} onChange={(tributaryM) => setForm({ ...form, tributaryM })} />
+                <Field label="Dead load kN/m²" value={form.deadKn} onChange={(deadKn) => setForm({ ...form, deadKn })} />
+                <Field label="Live load kN/m²" value={form.liveKn} onChange={(liveKn) => setForm({ ...form, liveKn })} />
+                <Field label="Beam self-weight N/m" value={form.selfWeight} onChange={(selfWeight) => setForm({ ...form, selfWeight })} />
+                <Field label="Supports" value={form.supports} onChange={(supports) => setForm({ ...form, supports })} />
+              </div>
+            </details>
             <Button
               className="mt-3"
               type="button"
@@ -453,6 +514,7 @@ export function Scenario() {
               <label className="text-sm">
                 Evidence images
                 <input
+                  ref={evidenceRef}
                   className="mt-2 block w-full text-sm"
                   aria-label="Evidence images"
                   type="file"
@@ -526,6 +588,7 @@ export function Scenario() {
               span={session?.inputs.span_m ?? null}
               lineLoad={session?.calculation?.q_line_n_per_m ?? null}
               reaction={session?.beam?.end_shear_n ?? null}
+              solved={Boolean(session?.analysis)}
             />
             {session?.calculation && (
               <p className="mt-2 font-mono text-sm">
@@ -599,6 +662,33 @@ export function Scenario() {
                 )}
               </div>
             )}
+            {domain === "mechanical" && session?.demo?.kind === "bracket" && (
+              <div className="mb-3 grid gap-2 sm:grid-cols-2">
+                {(
+                  [
+                    ["Leg X mm", "legX"],
+                    ["Leg Z mm", "legZ"],
+                    ["Width mm", "width"],
+                    ["Thickness mm", "thickness"],
+                    ["Force N", "force"],
+                    ["Displacement limit mm", "limit"],
+                  ] as const
+                ).map(([label, key]) => (
+                  <label key={key} className="block text-sm">
+                    {label}
+                    <input
+                      className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1"
+                      aria-label={label}
+                      value={bracket[key]}
+                      onChange={(event) => setBracket({ ...bracket, [key]: event.target.value })}
+                    />
+                  </label>
+                ))}
+                <Button type="button" disabled={busy} onClick={() => void loadPreset("bracket")}>
+                  Update bracket numbers
+                </Button>
+              </div>
+            )}
             {domain === "mechanical" && !session?.studio_spec && session?.missing.includes("fixed face and load face") && session.missing.length === 1 && (
               <div className="space-y-2 text-sm">
                 <p>Choose the fixed face and the load face. Drafty does not assume them.</p>
@@ -644,6 +734,7 @@ export function Scenario() {
               <BeamResults
                 session={session}
                 busy={busy}
+                runLabel={session.demo?.kind === "classroom" ? "Run Demo Analysis" : "Run beam elements"}
                 onRun={() => void runBeam(false)}
                 onCompare={() => void runBeam(true)}
                 onDownload={() => void downloadReport()}
@@ -681,25 +772,56 @@ function Field({ label, value, onChange }: { label: string; value: string; onCha
   );
 }
 
-function BeamFigure({ span, lineLoad, reaction }: { span: number | null; lineLoad: number | null; reaction: number | null }) {
+function BeamFigure({
+  span,
+  lineLoad,
+  reaction,
+  solved,
+}: {
+  span: number | null;
+  lineLoad: number | null;
+  reaction: number | null;
+  solved: boolean;
+}) {
   return (
-    <svg viewBox="0 0 640 180" className="h-40 w-full rounded border border-slate-200 bg-slate-50" role="img" aria-label="Simply supported beam with uniform load and end reactions">
-      <line x1="80" y1="90" x2="560" y2="90" stroke="#0f172a" strokeWidth="6" />
-      <path d="M80 90 l-14 18 h28 z" fill="none" stroke="#2563eb" strokeWidth="2" />
-      <circle cx="560" cy="100" r="8" fill="none" stroke="#2563eb" strokeWidth="2" />
-      {Array.from({ length: 12 }, (_, index) => (
-        <line key={index} x1={110 + index * 36} y1="42" x2={110 + index * 36} y2="78" stroke="#dc2626" strokeWidth="2" />
-      ))}
-      <text x="80" y="150" fontSize="14" fill="#334155">
-        L = {span == null ? "—" : `${span} m`}
-      </text>
-      <text x="250" y="28" fontSize="14" fill="#991b1b">
-        q = {lineLoad == null ? "—" : `${lineLoad.toFixed(0)} N/m`}
-      </text>
-      <text x="430" y="150" fontSize="14" fill="#1e3a8a">
-        R = {reaction == null ? "—" : `${reaction.toFixed(0)} N upward`}
-      </text>
-    </svg>
+    <figure>
+      <svg viewBox="0 0 640 210" className="h-48 w-full rounded border border-slate-200 bg-slate-50" role="img" aria-label="Simply supported beam with uniform load, span, and end reactions">
+        <line x1="80" y1="40" x2="560" y2="40" stroke="#991b1b" strokeWidth="2" />
+        {Array.from({ length: 13 }, (_, index) => (
+          <g key={index}>
+            <line x1={80 + index * 40} y1="40" x2={80 + index * 40} y2="78" stroke="#dc2626" strokeWidth="2" />
+            <path d={`M${80 + index * 40 - 4} 72 l4 8 l4 -8`} fill="none" stroke="#dc2626" strokeWidth="2" />
+          </g>
+        ))}
+        <line x1="80" y1="96" x2="560" y2="96" stroke="#0f172a" strokeWidth="8" />
+        <path d="M80 104 l-16 22 h32 z" fill="none" stroke="#1d4ed8" strokeWidth="2" />
+        <line x1="64" y1="128" x2="96" y2="128" stroke="#1d4ed8" strokeWidth="2" />
+        <circle cx="560" cy="112" r="8" fill="none" stroke="#1d4ed8" strokeWidth="2" />
+        <line x1="544" y1="128" x2="576" y2="128" stroke="#1d4ed8" strokeWidth="2" />
+        <path d="M80 150 l0 22" stroke="#1e3a8a" strokeWidth="2" />
+        <path d="M74 164 l6 8 l6 -8" fill="none" stroke="#1e3a8a" strokeWidth="2" />
+        <path d="M560 150 l0 22" stroke="#1e3a8a" strokeWidth="2" />
+        <path d="M554 164 l6 8 l6 -8" fill="none" stroke="#1e3a8a" strokeWidth="2" />
+        <line x1="80" y1="188" x2="560" y2="188" stroke="#334155" strokeWidth="1" />
+        <text x="250" y="24" fontSize="14" fill="#991b1b">
+          q = {lineLoad == null ? "not calculated" : `${lineLoad.toFixed(0)} N/m`}
+        </text>
+        <text x="270" y="204" fontSize="14" fill="#334155">
+          L = {span == null ? "unknown" : `${span} m`}
+        </text>
+        <text x="8" y="168" fontSize="12" fill="#1e3a8a">
+          R = {reaction == null ? "—" : `${reaction.toFixed(0)} N`}
+        </text>
+        <text x="500" y="168" fontSize="12" fill="#1e3a8a">
+          R = {reaction == null ? "—" : `${reaction.toFixed(0)} N`}
+        </text>
+      </svg>
+      <figcaption className="mt-1 text-xs text-slate-600">
+        {solved
+          ? "Support symbols, uniform load, span, and reactions. Shear, moment, and deflection diagrams below use the beam-element result."
+          : "Physical diagram of the entered model. It is not a finite-element result until beam elements are run."}
+      </figcaption>
+    </figure>
   );
 }
 

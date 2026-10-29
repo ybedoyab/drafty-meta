@@ -89,9 +89,7 @@ def _run(
         )
     if name == "research_engineering_reference":
         retrieved = [
-            item.get("title") or item.get("url")
-            for item in sources
-            if item.get("evidence_class") == "retrieved"
+            item.get("title") or item.get("url") for item in sources if item.get("evidence_class") == "retrieved"
         ]
         if not searched or not retrieved:
             return _trace(

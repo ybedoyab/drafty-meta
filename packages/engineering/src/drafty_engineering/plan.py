@@ -115,15 +115,34 @@ def evaluate_bracket(inputs: dict) -> dict:
 
     missing: list[str] = []
     assumptions: list[dict] = []
+    demo = inputs.get("value_origin") == "demo"
+    origin = "demo preset" if demo else "user"
+    state = "assumed" if demo else "confirmed"
     if inputs.get("force_n") is None:
         missing.append("force")
     else:
-        assumptions.append(_assumption("force", "The force was typed by the user.", "confirmed", "user"))
+        assumptions.append(
+            _assumption(
+                "force",
+                "The bracket demo sets this force. It is not a measured load and not an approved design."
+                if demo
+                else "The force was typed by the user.",
+                state,
+                origin,
+            )
+        )
     if inputs.get("displacement_limit_m") is None:
         missing.append("displacement limit")
     else:
         assumptions.append(
-            _assumption("displacement limit", "The displacement limit was typed by the user.", "confirmed", "user")
+            _assumption(
+                "displacement limit",
+                "The bracket demo sets this exploratory displacement limit. It is not a code limit."
+                if demo
+                else "The displacement limit was typed by the user.",
+                state,
+                origin,
+            )
         )
     material_id = str(inputs.get("material_id") or "")
     if material_id not in MATERIALS:
@@ -157,6 +176,17 @@ def evaluate_bracket(inputs: dict) -> dict:
             )
         )
     ready = not missing
+    if demo:
+        assumptions.append(
+            _assumption(
+                "bracket demo",
+                "The aluminum L-bracket numbers are bracket-v1 demo assumptions unless you edit them. "
+                "Quadratic elements are requested. Support and load faces stay unconfirmed until you choose them. "
+                "A later CalculiX peak at the fixed edge is not a converged stress and not a certification.",
+                "assumed",
+                "demo preset",
+            )
+        )
     return {
         "missing": missing,
         "errors": [],
@@ -237,10 +267,15 @@ def build_scenario(
     comparison: dict | None,
 ) -> EngineeringScenario:
     domain = inputs.get("domain") if inputs.get("domain") in {"structural", "mechanical"} else "unknown"
-    system = inputs.get("physical_system") if inputs.get("physical_system") in {
-        "simply_supported_ibeam",
-        "l_bracket",
-    } else "unknown"
+    system = (
+        inputs.get("physical_system")
+        if inputs.get("physical_system")
+        in {
+            "simply_supported_ibeam",
+            "l_bracket",
+        }
+        else "unknown"
+    )
     quantities = _quantities(inputs, study, domain)
     simulator = "none"
     validation = "incomplete"
@@ -415,10 +450,7 @@ def score_planning_reply(reply: dict) -> dict:
     """Score one planning reply. A passing score does not authorize a calculation."""
 
     claims = reply.get("claims") if isinstance(reply.get("claims"), list) else []
-    text = " ".join(
-        [str(reply.get("message") or "")]
-        + [str(item) for item in (reply.get("questions") or [])]
-    ).lower()
+    text = " ".join([str(reply.get("message") or "")] + [str(item) for item in (reply.get("questions") or [])]).lower()
     numeric_claim = any(
         any(character.isdigit() for character in str(item.get("statement") or ""))
         for item in claims

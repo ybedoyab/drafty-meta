@@ -66,6 +66,21 @@ class Settings(BaseSettings):
         return bool(self.modal_token_id.strip() and self.modal_token_secret.strip())
 
     @property
+    def modal_profile_present(self) -> bool:
+        """True when the Modal CLI has a local profile. The file contents are not read."""
+
+        home = Path.home()
+        appdata = Path(os.environ.get("APPDATA", "")) if os.environ.get("APPDATA") else None
+        candidates = [home / ".modal.toml", home / ".modal" / "config.toml"]
+        if appdata is not None:
+            candidates.append(appdata / "modal" / "config.toml")
+        return any(path.is_file() and path.stat().st_size > 0 for path in candidates)
+
+    @property
+    def modal_available(self) -> bool:
+        return self.modal_configured or self.modal_profile_present
+
+    @property
     def supabase_secret(self) -> str:
         return self.supabase_secret_key.strip() or self.supabase_service_role_key.strip()
 

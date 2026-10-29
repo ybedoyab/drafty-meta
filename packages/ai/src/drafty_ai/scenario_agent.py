@@ -300,9 +300,7 @@ def advance_scenario(
     known = _known_numbers(inputs, study)
     rejected_claims = _rejected_claims(accepted, parsed_claims, known)
     if rejected_claims:
-        accepted = (
-            f"{accepted} A number in that explanation was not stored as an engineering result."
-        ).strip()
+        accepted = (f"{accepted} A number in that explanation was not stored as an engineering result.").strip()
     tool = execute_tool(
         requested_tool or None,
         domain=domain,
@@ -414,9 +412,7 @@ def _search_sources(citations: list) -> list[dict]:
                 "url": item["url"],
                 "span": item.get("span") or "",
                 "status": (
-                    "model citation, not a compliance finding"
-                    if cited
-                    else "retrieved page, not a url_citation"
+                    "model citation, not a compliance finding" if cited else "retrieved page, not a url_citation"
                 ),
                 "evidence_class": "cited" if cited else "retrieved",
                 "origin": "meta web_search",
@@ -460,13 +456,9 @@ def _parse_model(text: str) -> ModelReply | None:
         except ValidationError:
             continue
         reply.message = reply.message.strip()[:1200]
-        reply.observations = [
-            item for item in reply.observations if item and not _MEASURED.search(item)
-        ][:6]
+        reply.observations = [item for item in reply.observations if item and not _MEASURED.search(item)][:6]
         reply.questions = [
-            item.strip()[:240]
-            for item in reply.questions
-            if item.strip() and not _MEASURED.search(item)
+            item.strip()[:240] for item in reply.questions if item.strip() and not _MEASURED.search(item)
         ][:6]
         return reply
     return None

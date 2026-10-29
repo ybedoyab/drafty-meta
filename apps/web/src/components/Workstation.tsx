@@ -53,6 +53,7 @@ export function Workstation() {
   const [params] = useSearchParams();
   const scenarioId = params.get("scenario");
   const [form, setForm] = useState<DesignForm>(benchmarkForm);
+  const [compute, setCompute] = useState<"local" | "modal">("local");
   const [displacementLimitM, setDisplacementLimitM] = useState<number | null>(null);
 
   useEffect(() => {
@@ -185,6 +186,7 @@ export function Workstation() {
           ? { ...optimization, max_displacement_m: displacementLimitM }
           : optimization,
         scenarioId,
+        compute,
       );
     },
     onSuccess: async (created) => {
@@ -269,10 +271,13 @@ export function Workstation() {
           </Link>
           <nav className="flex items-center gap-1 text-sm font-medium">
             <Link to="/" className="rounded-md px-3 py-1.5 text-gray-600 hover:bg-indigo-50 hover:text-indigo-600">
-              Home
+              Dashboard
+            </Link>
+            <Link to="/projects" className="rounded-md px-3 py-1.5 text-gray-600 hover:bg-indigo-50 hover:text-indigo-600">
+              Projects
             </Link>
             <Link to="/scenario/new" className="rounded-md px-3 py-1.5 text-gray-600 hover:bg-indigo-50 hover:text-indigo-600">
-              {scenarioId ? "Back to scenario" : "Problem"}
+              {scenarioId ? "Back to scenario" : "New Problem"}
             </Link>
             <Link to="/studio" className="rounded-md bg-indigo-50 px-3 py-1.5 text-indigo-700">
               Studio
@@ -578,6 +583,28 @@ export function Workstation() {
             </select>
           </label>
         </div>
+        <fieldset className="mt-3 space-y-1 text-xs">
+          <legend className="font-medium text-gray-700">Execution backend</legend>
+          <label className="flex items-center gap-2">
+            <input type="radio" name="compute" checked={compute === "local"} onChange={() => setCompute("local")} />
+            Local CalculiX
+          </label>
+          <label className="flex items-center gap-2">
+            <input
+              type="radio"
+              name="compute"
+              checked={compute === "modal"}
+              disabled={!health.data?.modal_available}
+              onChange={() => setCompute("modal")}
+            />
+            Modal Cloud CalculiX
+          </label>
+          {!health.data?.modal_available && (
+            <p>Modal Cloud CalculiX is off until `modal setup` completes or server tokens are set. Local CalculiX stays available.</p>
+          )}
+          {current?.compute && <p>This job ran on {current.compute}. Results are stored {current.artifact_storage ?? "local"}.</p>}
+          {compute === "modal" && <p>Thickness optimization stays on Local CalculiX.</p>}
+        </fieldset>
         <div className="mt-3 flex gap-2">
           <Button variant="primary" onClick={() => run.mutate("simulation")} disabled={run.isPending}>
             Run analysis
@@ -586,9 +613,15 @@ export function Workstation() {
             Cancel
           </Button>
         </div>
+        <p className="mt-2 text-xs text-gray-500">
+          Cancel asks this job's backend to stop. Closing the page does not cancel a Modal job.
+        </p>
         {formError && <p className="mt-2 text-xs leading-5 text-amber-700">{formError}</p>}
         <ol className="mt-4 space-y-1 font-mono text-xs">
-          {STAGES.map((stage) => (
+          {(current?.compute === "modal"
+            ? (["queued", "solving", "transferring", "completed"] as const)
+            : STAGES
+          ).map((stage) => (
             <li key={stage} className={stageClass(stage, current)}>
               {stage}
               {current?.status === stage ? ` — ${current.message ?? ""}` : ""}
@@ -677,7 +710,7 @@ export function Workstation() {
           <p className="mt-2 text-[11px] leading-4 text-gray-500">
             One thickness variable, real solves only. Not a global optimum. The factor stays exploratory.
           </p>
-          <Button className="mt-2" onClick={() => run.mutate("optimization")} disabled={run.isPending}>
+          <Button className="mt-2" onClick={() => run.mutate("optimization")} disabled={run.isPending || compute === "modal"}>
             Optimize with FEM
           </Button>
         </div>
@@ -821,11 +854,12 @@ function NumberField({ label, value, onChange }: { label: string; value: number;
   );
 }
 
-function stageClass(stage: (typeof STAGES)[number], job: Job | undefined) {
+function stageClass(stage: string, job: Job | undefined) {
+  const order = ["queued", "geometry", "meshing", "solving", "postprocessing", "transferring", "completed"];
   if (!job) return "text-gray-400";
   if (job.status === stage) return "font-medium text-indigo-600";
-  const current = STAGES.indexOf(job.status as (typeof STAGES)[number]);
-  const index = STAGES.indexOf(stage);
+  const current = order.indexOf(job.status);
+  const index = order.indexOf(stage);
   if (current >= 0 && index < current) return "text-gray-900";
   return "text-gray-400";
 }

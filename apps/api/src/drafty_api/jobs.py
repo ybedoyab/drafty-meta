@@ -1,5 +1,6 @@
 """Durable local job records. The API returns a job id before CalculiX starts."""
 
+import hashlib
 import json
 import os
 import subprocess
@@ -14,7 +15,7 @@ from fastapi import HTTPException
 
 from drafty_api.settings import ROOT, settings
 
-ACTIVE = {"queued", "geometry", "meshing", "solving", "postprocessing"}
+ACTIVE = {"queued", "geometry", "meshing", "solving", "postprocessing", "transferring"}
 TERMINAL = {"completed", "failed", "cancelled"}
 
 
@@ -51,8 +52,15 @@ def create_job(
     spec: dict,
     options: dict | None = None,
     scenario_id: str | None = None,
+    compute: str = "local",
 ) -> dict:
+    request_hash = hashlib.sha256(
+        json.dumps(
+            {"kind": kind, "spec": spec, "scenario_id": scenario_id, "compute": compute}, sort_keys=True
+        ).encode()
+    ).hexdigest()
     with _job_lock():
+        _reject_duplicate(owner_id, request_hash)
         _enforce_quota(owner_id)
         job_id = str(uuid.uuid4())
         now = _now()
@@ -67,6 +75,9 @@ def create_job(
             "error": None,
             "summary": None,
             "scenario_id": scenario_id,
+            "compute": compute,
+            "request_hash": request_hash,
+            "artifact_storage": "local",
             "created_at": now,
             "updated_at": now,
         }
@@ -212,6 +223,12 @@ def update_job(directory: Path, **fields: object) -> dict:
     job["updated_at"] = _now()
     _write(path, job)
     return job
+
+
+def _reject_duplicate(owner_id: str, request_hash: str) -> None:
+    for job in list_jobs(owner_id):
+        if job.get("request_hash") == request_hash and job.get("status") in ACTIVE:
+            raise HTTPException(status_code=409, detail="A matching job is already running.")
 
 
 def _enforce_quota(owner_id: str) -> None:

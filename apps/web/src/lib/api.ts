@@ -13,6 +13,7 @@ export const jobSchema = z.object({
     "meshing",
     "solving",
     "postprocessing",
+    "transferring",
     "completed",
     "failed",
     "cancelled",
@@ -31,6 +32,8 @@ export const jobSchema = z.object({
     .nullable(),
   spec: z.unknown().nullable(),
   scenario_id: z.string().nullable().optional(),
+  compute: z.string().optional(),
+  artifact_storage: z.string().optional(),
   created_at: z.string().nullable(),
   updated_at: z.string().nullable(),
   active: z.boolean(),
@@ -43,6 +46,7 @@ export interface Health {
   solver: { available: boolean; mode: string; detail: string };
   meta: boolean;
   modal: boolean;
+  modal_available?: boolean;
   supabase: boolean;
   supabase_auth?: boolean;
   auth: string;
@@ -163,10 +167,17 @@ export const createJob = (
   spec: DesignSpec,
   optimization?: object,
   scenarioId?: string | null,
+  compute: "local" | "modal" = "local",
 ) =>
   api<Job>("/api/v1/jobs", {
     method: "POST",
-    body: JSON.stringify({ kind, spec, optimization: optimization ?? null, scenario_id: scenarioId ?? null }),
+    body: JSON.stringify({
+      kind,
+      spec,
+      optimization: optimization ?? null,
+      scenario_id: scenarioId ?? null,
+      compute,
+    }),
   }).then((job) => jobSchema.parse(job));
 
 export const cancelJob = (id: string) =>
@@ -294,6 +305,8 @@ export interface ScenarioSession {
     limit: string;
   };
   ai: string;
+  demo?: { kind: string; version: string; label: string } | null;
+  suggested_faces?: { support_face: string; load_face: string } | null;
 }
 
 export interface BeamStation {
@@ -331,6 +344,22 @@ export interface BeamAnalysis {
 }
 
 export const createScenario = () => api<ScenarioSession>("/api/v1/scenarios", { method: "POST" });
+
+export const loadDemo = (
+  kind: "classroom" | "bracket",
+  scenarioId: string | null,
+  bracket?: Record<string, number>,
+) =>
+  api<ScenarioSession>("/api/v1/scenarios/demo", {
+    method: "POST",
+    body: JSON.stringify({ kind, scenario_id: scenarioId, bracket: bracket ?? null }),
+  });
+
+export const transcribeSpeech = (audio: Blob) => {
+  const body = new FormData();
+  body.append("audio", audio, "speech.wav");
+  return api<{ transcript: string }>("/api/v1/speech/transcribe", { method: "POST", body });
+};
 
 export const getScenario = (id: string) => api<ScenarioSession>(`/api/v1/scenarios/${id}`);
 

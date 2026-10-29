@@ -11,7 +11,13 @@ export interface ScenarioInputs {
   web_thickness_m: number | null;
   student_count: number | null;
   supports: string;
+  force_n?: number | null;
   displacement_limit_m?: number | null;
+  leg_x_m?: number | null;
+  leg_z_m?: number | null;
+  bracket_width_m?: number | null;
+  bracket_thickness_m?: number | null;
+  material_id?: string;
   support_face?: string;
   load_face?: string;
 }

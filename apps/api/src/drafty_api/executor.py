@@ -5,6 +5,7 @@ import json
 import os
 import shutil
 import threading
+import time
 import traceback
 from pathlib import Path
 
@@ -58,17 +59,28 @@ def _run(directory: Path) -> None:
 
     try:
         spec = DesignSpec.model_validate(job["spec"])
+        backend = job.get("compute") or settings.drafty_compute or "local"
         if job["kind"] == "optimization":
             result = _optimize(directory, spec, job, on_status, cancel_file)
-        elif settings.drafty_compute == "modal":
-            on_status("solving", "Waiting for Modal")
-            result = _run_modal(spec)
-            (directory / "results.json").write_text(json.dumps(result), encoding="utf-8")
+        elif backend == "modal":
+            on_status("solving", "Waiting for Modal CalculiX")
+            result = _run_modal(directory, spec, job, cancel_file)
         else:
             result = run_simulation(spec, directory, on_status, cancel_file)
         summary = _summary(result, job["kind"])
-        update_job(directory, status="completed", message="Completed", error=None, summary=summary, heartbeat_at=_utc())
-        _sync(directory)
+        update_job(
+            directory,
+            status="completed",
+            message="Completed",
+            error=None,
+            summary=summary,
+            compute=backend,
+            artifact_storage="local",
+            heartbeat_at=_utc(),
+        )
+        stored = _sync(directory)
+        if stored != "local":
+            update_job(directory, artifact_storage=stored)
     except Cancelled as exc:
         update_job(directory, status="cancelled", message="Cancelled", error=str(exc))
     except Exception as exc:
@@ -126,19 +138,94 @@ def _meta_proposer():
     return propose
 
 
-def _run_modal(spec: DesignSpec) -> dict:
-    if not settings.modal_configured:
-        raise DraftyError(
-            "DRAFTY_COMPUTE=modal but MODAL_TOKEN_ID or MODAL_TOKEN_SECRET is empty. No local solver was started."
-        )
+def _run_modal(directory: Path, spec: DesignSpec, job: dict, cancel_file: Path) -> dict:
+    if not settings.modal_available:
+        raise DraftyError("Modal Cloud CalculiX is not configured. No local solver was started.")
     import modal
 
+    from drafty_engineering.artifacts import ARTIFACT_NAMES, MAX_ARTIFACT_BYTES, verify_manifest
+
     function = modal.Function.from_name("drafty-engineering", "run_simulation")
-    call = function.spawn(spec.model_dump(mode="json"))
-    result = call.get(timeout=settings.drafty_solver_timeout_s)
+    call_id = job.get("modal_call_id")
+    if call_id:
+        call = modal.FunctionCall.from_id(str(call_id))
+    else:
+        call = function.spawn(spec.model_dump(mode="json"), job["id"])
+        call_id = getattr(call, "object_id", None)
+        if not call_id:
+            raise DraftyError("Modal did not return a FunctionCall id.")
+        update_job(directory, modal_call_id=call_id)
+    deadline = time.monotonic() + settings.drafty_solver_timeout_s
+    payload = None
+    while time.monotonic() < deadline:
+        if cancel_file.exists():
+            _cancel_modal(call)
+            raise Cancelled("The Modal job was cancelled.")
+        try:
+            payload = call.get(timeout=5)
+            break
+        except TimeoutError:
+            continue
+        except Exception as exc:
+            if exc.__class__.__name__ in {"TimeoutError", "FunctionTimeoutError"}:
+                continue
+            raise
+    if payload is None:
+        _cancel_modal(call)
+        raise DraftyError("Modal exceeded the solver timeout. The remote call was cancelled.")
+    if not isinstance(payload, dict) or not payload.get("manifest"):
+        raise DraftyError("Modal returned a payload without an artifact manifest.")
+    manifest = payload["manifest"]
+    on_transfer = directory
+    update_job(on_transfer, status="transferring", message="Copying Modal artifacts", heartbeat_at=_utc())
+    _download_modal_artifacts(str(job["id"]), directory, manifest, ARTIFACT_NAMES, MAX_ARTIFACT_BYTES)
+    verify_manifest(directory, manifest, str(job["id"]))
+    results_path = directory / "results.json"
+    if not results_path.is_file():
+        raise DraftyError("Modal finished without results.json.")
+    result = json.loads(results_path.read_text(encoding="utf-8"))
     if not isinstance(result, dict) or "solver" not in result:
-        raise DraftyError("Modal returned a payload that is not a CalculiX result.")
+        raise DraftyError("The transferred results.json is not a CalculiX result.")
+    result["compute"] = "modal"
     return result
+
+
+def _cancel_modal(call: object) -> None:
+    cancel = getattr(call, "cancel", None)
+    if cancel is None:
+        return
+    try:
+        cancel()
+    except Exception:
+        return
+
+
+def _download_modal_artifacts(
+    job_id: str,
+    directory: Path,
+    manifest: list[dict],
+    allowed: tuple[str, ...],
+    limit: int,
+) -> None:
+    import modal
+
+    volume = modal.Volume.from_name("drafty-artifacts")
+    reload = getattr(volume, "reload", None)
+    if reload is not None:
+        reload()
+    for item in manifest:
+        name = str(item.get("name") or "")
+        if name not in allowed:
+            raise DraftyError("Modal listed an artifact name that is not allowed.")
+        temporary = directory / f".{name}.partial"
+        received = bytearray()
+        for chunk in volume.read_file(f"{job_id}/{name}"):
+            received.extend(chunk)
+            if len(received) > limit:
+                temporary.unlink(missing_ok=True)
+                raise DraftyError(f"{name} exceeds the artifact size limit.")
+        temporary.write_bytes(received)
+        temporary.replace(directory / name)
 
 
 def _summary(result: dict, kind: str) -> dict:
@@ -160,12 +247,14 @@ def _summary(result: dict, kind: str) -> dict:
     }
 
 
-def _sync(directory: Path) -> None:
+def _sync(directory: Path) -> str:
     try:
-        sync_job(directory)
+        uploaded = sync_job(directory)
     except Exception as exc:
         with (directory / "worker.log").open("a", encoding="utf-8") as handle:
-            handle.write(f"Supabase sync failed: {exc}\n")
+            handle.write(f"Supabase sync failed: {type(exc).__name__}\n")
+        return "local"
+    return "supabase" if uploaded else "local"
 
 
 if __name__ == "__main__":

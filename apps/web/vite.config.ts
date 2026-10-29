@@ -4,6 +4,7 @@ import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   envDir: fileURLToPath(new URL("../..", import.meta.url)),
+  envPrefix: ["VITE_", "SUPABASE_URL", "SUPABASE_PUBLISHABLE_KEY"],
   plugins: [react()],
   resolve: {
     alias: {

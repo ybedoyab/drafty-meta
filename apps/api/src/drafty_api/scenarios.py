@@ -17,6 +17,7 @@ from drafty_api.images import inspect_image
 from drafty_api.settings import settings
 from drafty_api.storage import fetch_scenario, list_remote_scenarios, mirror_scenario
 from drafty_engineering.beam_fem import analyze_simply_supported_udl
+from drafty_engineering.demos import bracket_record, classroom_record
 from drafty_engineering.plan import build_scenario, evaluate_bracket, proposed_bracket_spec, workflow_stage
 from drafty_engineering.scenario import classroom_kwargs, evaluate_classroom
 
@@ -200,6 +201,89 @@ def create_scenario(request: Request) -> dict:
     }
     _write(session)
     return _public(session)
+
+
+class DemoBody(BaseModel):
+    kind: str
+    scenario_id: str | None = None
+    bracket: dict | None = None
+
+
+@router.post("/api/v1/scenarios/demo")
+def load_demo(body: DemoBody, request: Request) -> dict:
+    """Load a versioned preset with Python calculations. This route does not call a model."""
+
+    owner = current_owner(request)
+    session = None
+    if body.scenario_id:
+        try:
+            session = read_scenario(body.scenario_id, owner)
+        except HTTPException:
+            session = None
+    if session is None or _is_user_project(session):
+        created = create_scenario(request)
+        session = read_scenario(created["id"], owner)
+    if body.kind == "classroom":
+        record = classroom_record()
+    elif body.kind == "bracket":
+        record = bracket_record(body.bracket)
+    else:
+        raise HTTPException(status_code=422, detail="kind must be classroom or bracket.")
+    inputs = blank_inputs()
+    inputs.update(record["inputs"])
+    study = record["study"]
+    session["inputs"] = inputs
+    session["demo"] = record["demo"]
+    session["messages"] = [{"role": "assistant", "text": record["message"]}]
+    session["missing"] = study["missing"]
+    session["errors"] = study["errors"]
+    session["assumptions"] = study["assumptions"]
+    session["sources"] = study["sources"]
+    session["calculation"] = study["line"]
+    session["section"] = study["section"]
+    session["beam"] = study["beam"]
+    session["model_proposal"] = record["model_proposal"]
+    session["verification"] = study["verification"]
+    session["engineering"] = record["engineering"]
+    session["workflow"] = record["workflow"]
+    session["ai"] = "not called"
+    session["mode"] = "offline-template"
+    session["model"] = None
+    session["previous_response_id"] = None
+    session["model_questions"] = []
+    session["observations"] = []
+    session["evidence"] = []
+    session["analysis"] = None
+    session["comparison"] = None
+    session["studio_spec"] = None
+    session["studio_approval"] = "pending"
+    session["tool_trace"] = [
+        {
+            "tool": "load_demo",
+            "status": "executed",
+            "detail": "The preset was applied in Python. No model request was made.",
+            "authorization": "user",
+            "output": {"kind": body.kind, "version": record["demo"]["version"], "started": False},
+        }
+    ]
+    if body.kind == "bracket":
+        session["suggested_faces"] = record.get("suggested_faces")
+    session["updated_at"] = datetime.now(UTC).isoformat()
+    _write(session)
+    return _public(session)
+
+
+def _is_user_project(session: dict) -> bool:
+    if session.get("demo"):
+        return False
+    if session.get("messages") or session.get("analysis") or session.get("evidence"):
+        return True
+    if session.get("studio_approval") == "confirmed":
+        return True
+    inputs = session.get("inputs") or {}
+    return any(
+        inputs.get(key) not in (None, "") for key in ("span_m", "jurisdiction", "force_n", "supports", "leg_x_m")
+    )
 
 
 @router.get("/api/v1/scenarios/{scenario_id}")

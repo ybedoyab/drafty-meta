@@ -175,6 +175,7 @@ CLASSROOM_FIELDS = (
     "web_thickness_m",
     "student_count",
     "supports",
+    "value_origin",
 )
 
 
@@ -184,6 +185,7 @@ def classroom_kwargs(payload: dict) -> dict:
     values = {key: payload.get(key) for key in CLASSROOM_FIELDS}
     values["jurisdiction"] = str(values.get("jurisdiction") or "")
     values["supports"] = str(values.get("supports") or "")
+    values["value_origin"] = str(values.get("value_origin") or "")
     return values
 
 
@@ -201,6 +203,7 @@ def evaluate_classroom(
     web_thickness_m: float | None = None,
     student_count: int | None = None,
     supports: str = "",
+    value_origin: str = "",
 ) -> dict:
     """Authoritative classroom record. Missing data stays missing."""
 
@@ -209,26 +212,42 @@ def evaluate_classroom(
     errors: list[str] = []
     missing: list[str] = []
     assumptions: list[dict] = []
+    demo = value_origin == "demo"
     if student_count is not None:
         assumptions.append(
             {
                 "name": "occupancy",
-                "statement": f"{student_count} students were noted. A headcount is not a floor load.",
-                "status": "unknown",
-                "provenance": "user",
+                "statement": (
+                    f"{student_count} students are occupancy context in the classroom demo. "
+                    "A headcount is not a floor load. This is not a measured occupancy."
+                    if demo
+                    else f"{student_count} students were noted. A headcount is not a floor load."
+                ),
+                "status": "assumed" if demo else "unknown",
+                "provenance": "demo preset" if demo else "user",
             }
         )
     if not jurisdiction.strip():
         missing.append("jurisdiction")
     place = jurisdiction.strip().lower()
-    use_nsr = live_n_per_m2 is None and "colombia" in place
+    illustrative = (
+        demo
+        and "colombia" in place
+        and (live_n_per_m2 is None or abs(float(live_n_per_m2) - CLASSROOM_LIVE_N_PER_M2) < 1e-6)
+    )
+    use_nsr = (live_n_per_m2 is None and "colombia" in place) or illustrative
     if use_nsr:
         assumptions.append(
             {
                 "name": "live load",
                 "statement": (
                     "NSR-10 Title B Table B.4.2.1-1 classroom minimum, 2.0 kN/m2, "
-                    "used as an illustrative service live load."
+                    "used as an illustrative service live load. It is not a design combination."
+                    + (
+                        " The classroom demo enters this cited minimum. It is not a measured floor load."
+                        if demo
+                        else ""
+                    )
                 ),
                 "status": "assumed",
                 "provenance": "cited code",
@@ -253,7 +272,19 @@ def evaluate_classroom(
     if dead_n_per_m2 is None:
         missing.append("dead load")
     self_weight = 0.0 if beam_self_weight_n_per_m is None else beam_self_weight_n_per_m
-    if beam_self_weight_n_per_m is None:
+    if demo and beam_self_weight_n_per_m == 0:
+        assumptions.append(
+            {
+                "name": "self-weight",
+                "statement": (
+                    "Additional beam self-weight is 0 N/m and is explicitly omitted. "
+                    "Do not also include it in the dead load."
+                ),
+                "status": "assumed",
+                "provenance": "demo preset",
+            }
+        )
+    elif beam_self_weight_n_per_m is None:
         assumptions.append(
             {
                 "name": "self-weight",
@@ -277,9 +308,13 @@ def evaluate_classroom(
         assumptions.append(
             {
                 "name": "supports",
-                "statement": "The user described simple supports.",
-                "status": "confirmed",
-                "provenance": "user",
+                "statement": (
+                    "The classroom demo assumes simple supports. This is a testing value, not a site measurement."
+                    if demo
+                    else "The user described simple supports."
+                ),
+                "status": "assumed" if demo else "confirmed",
+                "provenance": "demo preset" if demo else "user",
             }
         )
     elif kind == "fixed":
@@ -341,7 +376,12 @@ def evaluate_classroom(
         "This simply supported line load is not that model, so no solid job is created."
     )
     if ready_for_beam_elements:
-        reason = "Simple supports and the line load are confirmed. Euler-Bernoulli beam elements can run. " + solid
+        reason = (
+            "The classroom demo has the numbers needed for Euler-Bernoulli beam elements. "
+            "The supports are a demo assumption, not a site measurement. " + solid
+            if demo
+            else "Simple supports and the line load are confirmed. Euler-Bernoulli beam elements can run. " + solid
+        )
     elif beam is not None and kind == "unspecified":
         reason = "A simple span is only a candidate until the supports are confirmed. " + solid
     else:
@@ -360,6 +400,19 @@ def evaluate_classroom(
             "limit": "Confirm Colombia before this minimum is used. It is not a design combination.",
         }
     sources = [citation]
+    if demo:
+        assumptions.append(
+            {
+                "name": "classroom demo",
+                "statement": (
+                    "Span, tributary width, dead load, omitted self-weight, and the I-section are versioned "
+                    "demo assumptions (classroom-v1). "
+                    "They are not measurements of a building and not an approved design."
+                ),
+                "status": "assumed",
+                "provenance": "demo preset",
+            }
+        )
     return {
         "missing": missing,
         "errors": errors,
