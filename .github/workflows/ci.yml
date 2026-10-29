@@ -24,6 +24,20 @@ jobs:
       - name: Finite element benchmark
         run: pytest -m fem
 
+  api-bundle:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install the lightweight API
+        run: pip install -r requirements.api.txt && pip install --no-deps .
+      - name: Import the Vercel entry without CAD
+        run: |
+          python -c "import importlib.util; assert importlib.util.find_spec('cadquery') is None; assert importlib.util.find_spec('gmsh') is None"
+          python -c "from app import app; assert app.title"
+
   web:
     runs-on: ubuntu-latest
     defaults:

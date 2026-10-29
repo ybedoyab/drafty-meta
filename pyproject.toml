@@ -51,6 +51,9 @@ markers = [
     "fem: requires CalculiX",
 ]
 
+[tool.vercel]
+entrypoint = "app:app"
+
 [tool.ruff]
 line-length = 120
 target-version = "py311"

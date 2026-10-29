@@ -5,7 +5,6 @@ import { Suspense, useEffect, useMemo, useState } from "react";
 import { Viewport, type CameraView, type Shade } from "@/components/Viewport";
 import { Button } from "@/components/ui/button";
 import {
-  artifactUrl,
   cancelJob,
   createJob,
   getHealth,
@@ -16,6 +15,7 @@ import {
   getMaterials,
   getOptimization,
   getResults,
+  openArtifact,
   interpret,
   previewSpec,
   uploadReference,
@@ -77,6 +77,7 @@ export function Workstation() {
       cancel = true;
     };
   }, [scenarioId]);
+
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [message, setMessage] = useState("");
@@ -100,6 +101,9 @@ export function Workstation() {
   const [stageFull, setStageFull] = useState(false);
 
   const health = useQuery({ queryKey: ["health"], queryFn: getHealth, retry: false, refetchInterval: 15000 });
+  useEffect(() => {
+    if (health.data?.compute === "modal") setCompute("modal");
+  }, [health.data?.compute]);
   const jobs = useQuery({ queryKey: ["jobs"], queryFn: getJobs, refetchInterval: 2000 });
   const job = useQuery({
     queryKey: ["job", activeId],
@@ -586,7 +590,13 @@ export function Workstation() {
         <fieldset className="mt-3 space-y-1 text-xs">
           <legend className="font-medium text-gray-700">Execution backend</legend>
           <label className="flex items-center gap-2">
-            <input type="radio" name="compute" checked={compute === "local"} onChange={() => setCompute("local")} />
+            <input
+              type="radio"
+              name="compute"
+              checked={compute === "local"}
+              disabled={health.data?.compute === "modal"}
+              onChange={() => setCompute("local")}
+            />
             Local CalculiX
           </label>
           <label className="flex items-center gap-2">
@@ -603,7 +613,9 @@ export function Workstation() {
             <p>Modal Cloud CalculiX is off until `modal setup` completes or server tokens are set. Local CalculiX stays available.</p>
           )}
           {current?.compute && <p>This job ran on {current.compute}. Results are stored {current.artifact_storage ?? "local"}.</p>}
-          {compute === "modal" && <p>Thickness optimization stays on Local CalculiX.</p>}
+          {health.data?.compute === "modal" && (
+            <p>This deployment runs CalculiX on Modal. Local CalculiX is not started.</p>
+          )}
         </fieldset>
         <div className="mt-3 flex gap-2">
           <Button variant="primary" onClick={() => run.mutate("simulation")} disabled={run.isPending}>
@@ -619,7 +631,7 @@ export function Workstation() {
         {formError && <p className="mt-2 text-xs leading-5 text-amber-700">{formError}</p>}
         <ol className="mt-4 space-y-1 font-mono text-xs">
           {(current?.compute === "modal"
-            ? (["queued", "solving", "transferring", "completed"] as const)
+            ? (["queued", "submitted", "running", "transferring", "completed"] as const)
             : STAGES
           ).map((stage) => (
             <li key={stage} className={stageClass(stage, current)}>
@@ -710,7 +722,7 @@ export function Workstation() {
           <p className="mt-2 text-[11px] leading-4 text-gray-500">
             One thickness variable, real solves only. Not a global optimum. The factor stays exploratory.
           </p>
-          <Button className="mt-2" onClick={() => run.mutate("optimization")} disabled={run.isPending || compute === "modal"}>
+          <Button className="mt-2" onClick={() => run.mutate("optimization")} disabled={run.isPending}>
             Optimize with FEM
           </Button>
         </div>
@@ -718,9 +730,14 @@ export function Workstation() {
           <div className="mt-3 flex flex-col gap-1 text-xs">
             {["model.step", "preview.glb", "results.glb", "model.inp", "model.dat", "model.frd", "model.vtu", "results.json", "report.json", "report.pdf"].map(
               (name) => (
-                <a key={name} className="text-indigo-600 hover:underline" href={artifactUrl(activeId, name)}>
+                <button
+                  key={name}
+                  type="button"
+                  className="text-left text-indigo-600 hover:underline"
+                  onClick={() => void openArtifact(activeId, name)}
+                >
                   {name}
-                </a>
+                </button>
               ),
             )}
           </div>
@@ -855,7 +872,17 @@ function NumberField({ label, value, onChange }: { label: string; value: number;
 }
 
 function stageClass(stage: string, job: Job | undefined) {
-  const order = ["queued", "geometry", "meshing", "solving", "postprocessing", "transferring", "completed"];
+  const order = [
+    "queued",
+    "submitted",
+    "running",
+    "geometry",
+    "meshing",
+    "solving",
+    "postprocessing",
+    "transferring",
+    "completed",
+  ];
   if (!job) return "text-gray-400";
   if (job.status === stage) return "font-medium text-indigo-600";
   const current = order.indexOf(job.status);

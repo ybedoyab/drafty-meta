@@ -49,11 +49,21 @@ class Settings(BaseSettings):
     drafty_spawn_local: str = "auto"
     drafty_heartbeat_stale_s: int = 45
     drafty_data_dir: str = ""
+    drafty_env: str = "development"
     frontend_origin: str = "http://localhost:5173"
 
     @property
+    def production(self) -> bool:
+        return self.drafty_env.strip().lower() == "production"
+
+    @property
     def data_dir(self) -> Path:
-        path = Path(self.drafty_data_dir) if self.drafty_data_dir else ROOT / "data"
+        if self.drafty_data_dir:
+            path = Path(self.drafty_data_dir)
+        elif self.production:
+            path = Path("/tmp/drafty")
+        else:
+            path = ROOT / "data"
         path.mkdir(parents=True, exist_ok=True)
         return path
 
@@ -98,17 +108,18 @@ class Settings(BaseSettings):
 def assert_production_auth() -> None:
     """A public deployment must not boot with authentication disabled."""
 
-    if os.getenv("DRAFTY_ENV", "").strip().lower() != "production":
+    if os.getenv("DRAFTY_ENV", settings.drafty_env).strip().lower() != "production":
         return
     if (
         settings.drafty_auth_mode == "supabase"
         and settings.supabase_url.strip()
         and settings.supabase_publishable_key.strip()
+        and settings.supabase_secret
     ):
         return
     raise RuntimeError(
         "DRAFTY_ENV=production requires DRAFTY_AUTH_MODE=supabase, SUPABASE_URL, "
-        "and SUPABASE_PUBLISHABLE_KEY. The service-role key stays on the server."
+        "SUPABASE_PUBLISHABLE_KEY, and SUPABASE_SECRET_KEY. The secret stays on the server."
     )
 
 

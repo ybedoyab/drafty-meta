@@ -15,8 +15,18 @@ from fastapi import HTTPException
 
 from drafty_api.settings import ROOT, settings
 
-ACTIVE = {"queued", "geometry", "meshing", "solving", "postprocessing", "transferring"}
-TERMINAL = {"completed", "failed", "cancelled"}
+ACTIVE = {
+    "queued",
+    "submitted",
+    "running",
+    "geometry",
+    "meshing",
+    "solving",
+    "postprocessing",
+    "transferring",
+    "cancel_requested",
+}
+TERMINAL = {"completed", "failed", "cancelled", "timed_out"}
 
 
 @contextmanager
@@ -54,6 +64,10 @@ def create_job(
     scenario_id: str | None = None,
     compute: str = "local",
 ) -> dict:
+    if settings.production:
+        from drafty_api.remote import create_remote_job
+
+        return create_remote_job(owner_id, kind, spec, options, scenario_id, compute)
     request_hash = hashlib.sha256(
         json.dumps(
             {"kind": kind, "spec": spec, "scenario_id": scenario_id, "compute": compute}, sort_keys=True
@@ -98,6 +112,10 @@ def job_dir(job_id: str) -> Path:
 
 
 def read_job(job_id: str, owner_id: str) -> dict:
+    if settings.production:
+        from drafty_api.remote import read_remote_job
+
+        return read_remote_job(job_id, owner_id)
     path = job_dir(job_id) / "job.json"
     if not path.exists():
         raise HTTPException(status_code=404, detail="Job not found.")
@@ -108,6 +126,10 @@ def read_job(job_id: str, owner_id: str) -> dict:
 
 
 def list_jobs(owner_id: str) -> list[dict]:
+    if settings.production:
+        from drafty_api.remote import list_remote_jobs
+
+        return list_remote_jobs(owner_id)
     root = settings.data_dir / "jobs"
     if not root.exists():
         return []
@@ -127,6 +149,10 @@ def list_jobs(owner_id: str) -> list[dict]:
 
 
 def request_cancel(job_id: str, owner_id: str) -> dict:
+    if settings.production:
+        from drafty_api.remote import cancel_remote_job
+
+        return cancel_remote_job(job_id, owner_id)
     job = read_job(job_id, owner_id)
     if job["status"] in TERMINAL:
         return job

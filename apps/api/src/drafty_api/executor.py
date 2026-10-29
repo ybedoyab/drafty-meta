@@ -145,12 +145,15 @@ def _run_modal(directory: Path, spec: DesignSpec, job: dict, cancel_file: Path) 
 
     from drafty_engineering.artifacts import ARTIFACT_NAMES, MAX_ARTIFACT_BYTES, verify_manifest
 
-    function = modal.Function.from_name("drafty-engineering", "run_simulation")
+    function_name = "optimize_design" if job.get("kind") == "optimization" else "run_simulation"
+    function = modal.Function.from_name("drafty-engineering", function_name)
     call_id = job.get("modal_call_id")
     if call_id:
         call = modal.FunctionCall.from_id(str(call_id))
+    elif job.get("kind") == "optimization":
+        call = function.spawn(spec.model_dump(mode="json"), job["id"], job.get("options") or {}, None)
     else:
-        call = function.spawn(spec.model_dump(mode="json"), job["id"])
+        call = function.spawn(spec.model_dump(mode="json"), job["id"], None)
         call_id = getattr(call, "object_id", None)
         if not call_id:
             raise DraftyError("Modal did not return a FunctionCall id.")

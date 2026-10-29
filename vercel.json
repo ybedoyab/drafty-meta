@@ -1,0 +1,9 @@
+{
+  "installCommand": "pip install -r requirements.api.txt && pip install --no-deps .",
+  "functions": {
+    "app.py": {
+      "maxDuration": 60,
+      "memory": 1024
+    }
+  }
+}

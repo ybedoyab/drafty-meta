@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
 from drafty_ai.client import configured
@@ -15,7 +15,14 @@ from drafty_ai.scenario_agent import advance_scenario, blank_inputs
 from drafty_api.auth import current_access_token, current_owner
 from drafty_api.images import inspect_image
 from drafty_api.settings import settings
-from drafty_api.storage import fetch_scenario, list_remote_scenarios, mirror_scenario
+from drafty_api.storage import (
+    download_private_object,
+    fetch_scenario,
+    list_remote_scenarios,
+    mirror_scenario,
+    signed_object_url,
+    upload_private_object,
+)
 from drafty_engineering.beam_fem import analyze_simply_supported_udl
 from drafty_engineering.demos import bracket_record, classroom_record
 from drafty_engineering.plan import build_scenario, evaluate_bracket, proposed_bracket_spec, workflow_stage
@@ -67,6 +74,11 @@ def scenario_dir(scenario_id: str) -> Path:
 
 
 def read_scenario(scenario_id: str, owner_id: str) -> dict:
+    if settings.production:
+        remote = _remote_session(scenario_id, owner_id)
+        if remote is None:
+            raise HTTPException(status_code=404, detail="Scenario not found.")
+        return remote
     path = scenario_dir(scenario_id) / "session.json"
     if not path.exists():
         remote = _remote_session(scenario_id, owner_id)
@@ -97,13 +109,18 @@ def _write(session: dict, snapshot: bool = False, mirror: bool = True) -> None:
     if not mirror:
         return
     try:
-        mirror_scenario(session, current_access_token(), snapshot=snapshot)
+        stored = mirror_scenario(session, current_access_token(), snapshot=snapshot)
     except Exception as exc:
         status = getattr(getattr(exc, "response", None), "status_code", None)
+        if settings.production:
+            raise HTTPException(status_code=503, detail="The scenario was not saved.") from exc
         (directory / "sync.log").write_text(
             f"scenario mirror failed: {status or type(exc).__name__}\n",
             encoding="utf-8",
         )
+        return
+    if settings.production and not stored:
+        raise HTTPException(status_code=503, detail="The scenario was not saved.")
 
 
 def _public(session: dict) -> dict:
@@ -139,7 +156,8 @@ def list_scenarios(request: Request) -> dict:
             state["name"] = row.get("name") or state.get("name")
             found[str(row["id"])] = _scenario_summary(state)
     except Exception:
-        pass
+        if settings.production:
+            raise HTTPException(status_code=503, detail="Scenarios could not be loaded.") from None
     rows = sorted(found.values(), key=lambda item: str(item.get("updated_at") or ""), reverse=True)
     return {"scenarios": rows}
 
@@ -575,6 +593,13 @@ async def add_evidence(
     directory = scenario_dir(scenario_id) / "evidence"
     directory.mkdir(parents=True, exist_ok=True)
     (directory / f"{evidence_id}{EXTENSIONS[media]}").write_bytes(data)
+    stored = upload_private_object(
+        f"evidence/{scenario_id}/{evidence_id}{EXTENSIONS[media]}",
+        data,
+        media,
+    )
+    if settings.production and not stored:
+        raise HTTPException(status_code=503, detail="The image was not stored.")
     item = {
         "id": evidence_id,
         "name": Path(file.filename or "image").name[:120],
@@ -610,8 +635,8 @@ def remove_evidence(scenario_id: str, evidence_id: str, request: Request) -> dic
     return _public(session)
 
 
-@router.get("/api/v1/scenarios/{scenario_id}/evidence/{evidence_id}")
-def get_evidence(scenario_id: str, evidence_id: str, request: Request) -> FileResponse:
+@router.get("/api/v1/scenarios/{scenario_id}/evidence/{evidence_id}", response_model=None)
+def get_evidence(scenario_id: str, evidence_id: str, request: Request) -> FileResponse | RedirectResponse:
     session = read_scenario(scenario_id, current_owner(request))
     _evidence_id(evidence_id)
     item = next((entry for entry in session["evidence"] if entry["id"] == evidence_id), None)
@@ -619,6 +644,12 @@ def get_evidence(scenario_id: str, evidence_id: str, request: Request) -> FileRe
         raise HTTPException(status_code=404, detail="Image not found.")
     path = scenario_dir(scenario_id) / "evidence" / f"{evidence_id}{EXTENSIONS[item['media_type']]}"
     if not path.exists():
+        signed = signed_object_url(
+            f"evidence/{scenario_id}/{evidence_id}{EXTENSIONS[item['media_type']]}",
+            120,
+        )
+        if signed:
+            return RedirectResponse(signed)
         raise HTTPException(status_code=404, detail="Image not found.")
     return FileResponse(path, media_type=item["media_type"], filename=item["name"])
 
@@ -711,9 +742,12 @@ def _vision_urls(session: dict) -> tuple[list[str], bool]:
     directory = scenario_dir(session["id"]) / "evidence"
     for item in session["evidence"]:
         path = directory / f"{item['id']}{EXTENSIONS[item['media_type']]}"
-        if not path.exists():
-            continue
-        data = path.read_bytes()
+        if path.exists():
+            data = path.read_bytes()
+        else:
+            data = download_private_object(f"evidence/{session['id']}/{item['id']}{EXTENSIONS[item['media_type']]}")
+            if data is None:
+                continue
         if total + len(data) > MAX_VISION_BYTES:
             withheld = True
             break

@@ -4,7 +4,7 @@ import hashlib
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel, Field
@@ -83,7 +83,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=sorted(
         {
-            settings.frontend_origin,
+            *(origin.strip() for origin in settings.frontend_origin.split(",") if origin.strip()),
             "http://localhost:5173",
             "http://127.0.0.1:5173",
         }
@@ -99,16 +99,22 @@ app.include_router(speech_router)
 
 @app.get("/api/v1/health")
 def health() -> dict:
+    from drafty_api.remote import provider_status
+
+    providers = provider_status()
+    modal_ready = bool(providers["modal"]["reachable"])
     return {
         "service": "drafty",
         "solver": solver_availability(),
         "meta": settings.meta_configured,
-        "modal": settings.modal_available,
-        "modal_available": settings.modal_available,
+        "modal": modal_ready,
+        "modal_available": modal_ready,
+        "modal_configured": bool(providers["modal"]["configured"]),
         "supabase": settings.supabase_configured,
         "supabase_auth": settings.supabase_auth_configured,
         "auth": settings.drafty_auth_mode,
-        "compute": settings.drafty_compute,
+        "compute": "modal" if settings.production else settings.drafty_compute,
+        "providers": providers,
     }
 
 
@@ -162,10 +168,16 @@ def validate_design(spec: DesignSpec) -> dict:
 
 
 @app.post("/api/v1/designs/preview")
-def preview_design(spec: DesignSpec, request: Request) -> FileResponse:
+def preview_design(spec: DesignSpec, request: Request):
+    charge_preview(current_owner(request))
+    if settings.production:
+        from fastapi.responses import Response
+
+        from drafty_api.remote import remote_preview
+
+        return Response(content=remote_preview(spec.model_dump()), media_type="model/gltf-binary")
     from drafty_engineering.cad import build_solid, export_preview_glb
 
-    charge_preview(current_owner(request))
     digest = hashlib.sha256(spec.model_dump_json().encode()).hexdigest()[:20]
     path = settings.data_dir / "previews" / f"{digest}.glb"
     if not path.exists():
@@ -185,16 +197,13 @@ def post_job(body: CreateJobRequest, request: Request) -> dict:
         if body.optimization.upper_m <= body.optimization.lower_m:
             raise HTTPException(status_code=422, detail="The upper bound must exceed the lower bound.")
         options = body.optimization.model_dump()
-    if body.kind == "optimization" and body.compute == "modal":
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "Thickness optimization runs on Local CalculiX. "
-                "Choose Local CalculiX for that search. Modal was not started."
-            ),
-        )
     if body.compute not in {"local", "modal"}:
         raise HTTPException(status_code=422, detail="compute must be local or modal.")
+    if settings.production and body.compute == "local":
+        raise HTTPException(
+            status_code=409,
+            detail="This deployment runs CalculiX on Modal. Local CalculiX was not started.",
+        )
     if body.compute == "modal" and not settings.modal_available:
         raise HTTPException(
             status_code=409,
@@ -234,26 +243,29 @@ def cancel_job(job_id: str, request: Request) -> dict:
     return _public_job(request_cancel(job_id, current_owner(request)))
 
 
+@app.post("/api/v1/internal/jobs/{job_id}/complete")
+def complete_job(job_id: str, request: Request, payload: dict = Body(...)) -> dict:
+    from drafty_api.remote import complete_remote_job
+
+    header = request.headers.get("authorization", "")
+    token = header.split(" ", 1)[1].strip() if header.lower().startswith("bearer ") else ""
+    return _public_job(complete_remote_job(job_id, token, payload))
+
+
 @app.get("/api/v1/jobs/{job_id}/results")
 def get_results(job_id: str, request: Request) -> dict:
     job = read_job(job_id, current_owner(request))
-    path = job_dir(job_id) / "results.json"
-    if job["status"] != "completed" or not path.exists():
+    if job["status"] != "completed":
         raise HTTPException(status_code=409, detail="Results are not available until the solver completes.")
-    import json
-
-    return json.loads(path.read_text(encoding="utf-8"))
+    return _stored_json(job_id, "results.json")
 
 
 @app.get("/api/v1/jobs/{job_id}/optimization")
 def get_optimization(job_id: str, request: Request) -> dict:
     job = read_job(job_id, current_owner(request))
-    path = job_dir(job_id) / "optimization.json"
-    if job["status"] != "completed" or not path.exists():
+    if job["status"] != "completed":
         raise HTTPException(status_code=409, detail="Optimization results are not available yet.")
-    import json
-
-    return json.loads(path.read_text(encoding="utf-8"))
+    return _stored_json(job_id, "optimization.json")
 
 
 @app.get("/api/v1/jobs/{job_id}/log")
@@ -263,6 +275,15 @@ def get_log(job_id: str, request: Request) -> dict:
     solver = _tail(directory / "solver.log")
     worker = _tail(directory / "worker.log")
     return {"solver": solver, "worker": worker}
+
+
+@app.get("/api/v1/jobs/{job_id}/artifacts/{name}/link")
+def artifact_link(job_id: str, name: str, request: Request) -> dict:
+    read_job(job_id, current_owner(request))
+    if name not in ARTIFACTS and name not in {"report.json", "report.pdf"}:
+        raise HTTPException(status_code=404, detail="Unknown artifact.")
+    remote = signed_artifact_url(job_id, name if name != "report.pdf" else "report.json", expires=120)
+    return {"url": remote, "expires_in": 120 if remote else None}
 
 
 @app.get("/api/v1/jobs/{job_id}/artifacts/{name}")
@@ -377,6 +398,20 @@ def _public_job(job: dict) -> dict:
         "updated_at": job.get("updated_at"),
         "active": job.get("status") in ACTIVE,
     }
+
+
+def _stored_json(job_id: str, name: str) -> dict:
+    import json
+
+    path = job_dir(job_id) / name
+    if path.is_file():
+        return json.loads(path.read_text(encoding="utf-8"))
+    from drafty_api.remote import fetch_remote_artifact
+
+    data = fetch_remote_artifact(job_id, name)
+    if not data:
+        raise HTTPException(status_code=409, detail="Results are not available until the solver completes.")
+    return json.loads(data)
 
 
 def _tail(path: Path, limit: int = 20000) -> str:

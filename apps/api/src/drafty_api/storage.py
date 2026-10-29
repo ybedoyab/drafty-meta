@@ -64,15 +64,19 @@ def sync_job(job_dir: Path) -> str | None:
     return "uploaded"
 
 
-def signed_artifact_url(job_id: str, name: str) -> str | None:
+def signed_artifact_url(job_id: str, name: str, expires: int = 3600) -> str | None:
+    return signed_object_url(f"{job_id}/{name}", expires)
+
+
+def signed_object_url(object_path: str, expires: int = 3600) -> str | None:
     if not settings.supabase_configured:
         return None
     base = settings.supabase_url.rstrip("/")
     key = settings.supabase_secret
     response = httpx.post(
-        f"{base}/storage/v1/object/sign/artifacts/{job_id}/{name}",
+        f"{base}/storage/v1/object/sign/artifacts/{object_path}",
         headers={"apikey": key, "Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-        json={"expiresIn": 3600},
+        json={"expiresIn": expires},
         timeout=30,
     )
     if response.status_code >= 400:
@@ -170,6 +174,42 @@ def list_remote_scenarios(access_token: str | None) -> list[dict]:
     )
     response.raise_for_status()
     return list(response.json())
+
+
+def upload_private_object(object_path: str, data: bytes, content_type: str) -> bool:
+    if not settings.supabase_configured:
+        return False
+    base = settings.supabase_url.rstrip("/")
+    key = settings.supabase_secret
+    response = httpx.post(
+        f"{base}/storage/v1/object/artifacts/{object_path}",
+        headers={
+            "apikey": key,
+            "Authorization": f"Bearer {key}",
+            "Content-Type": content_type,
+            "x-upsert": "true",
+        },
+        content=data,
+        timeout=60,
+    )
+    return response.status_code < 400
+
+
+def download_private_object(object_path: str) -> bytes | None:
+    if not settings.supabase_configured:
+        return None
+    base = settings.supabase_url.rstrip("/")
+    key = settings.supabase_secret
+    response = httpx.get(
+        f"{base}/storage/v1/object/artifacts/{object_path}",
+        headers={"apikey": key, "Authorization": f"Bearer {key}"},
+        timeout=60,
+    )
+    if response.status_code == 404:
+        return None
+    if response.status_code >= 400:
+        return None
+    return response.content
 
 
 def _upload(client: httpx.Client, base: str, key: str, job_id: str, name: str, path: Path) -> None:

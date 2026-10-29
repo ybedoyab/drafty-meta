@@ -9,14 +9,18 @@ export const jobSchema = z.object({
   kind: z.string(),
   status: z.enum([
     "queued",
+    "submitted",
+    "running",
     "geometry",
     "meshing",
     "solving",
     "postprocessing",
     "transferring",
+    "cancel_requested",
     "completed",
     "failed",
     "cancelled",
+    "timed_out",
   ]),
   message: z.string().nullable(),
   error: z.string().nullable(),
@@ -249,6 +253,24 @@ export async function uploadReference(file: File) {
 
 export function artifactUrl(jobId: string, name: string) {
   return `${apiBase}/api/v1/jobs/${jobId}/artifacts/${name}`;
+}
+
+export async function openArtifact(jobId: string, name: string) {
+  const link = await api<{ url: string | null; expires_in: number | null }>(
+    `/api/v1/jobs/${jobId}/artifacts/${name}/link`,
+  );
+  if (link.url) {
+    window.open(link.url, "_blank", "noopener,noreferrer");
+    return;
+  }
+  const response = await request(`/api/v1/jobs/${jobId}/artifacts/${name}`, undefined, false);
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = name;
+  anchor.click();
+  URL.revokeObjectURL(url);
 }
 
 export interface ScenarioSession {
