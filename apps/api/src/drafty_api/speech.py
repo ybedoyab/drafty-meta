@@ -49,7 +49,7 @@ def transcribe_wav(data: bytes) -> str:
         raise DraftyError("Another transcription is already running.")
     try:
         request_body = {
-            "mode": "ENDPOINTING",
+            "mode": "PUSH_TO_TALK",
             "model": ASR_MODEL,
             "audioEncoding": "WAV",
             "languageBias": ["English", "Spanish"],

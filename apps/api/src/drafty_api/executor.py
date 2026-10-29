@@ -210,21 +210,22 @@ def _download_modal_artifacts(
     import modal
 
     volume = modal.Volume.from_name("drafty-artifacts")
-    reload = getattr(volume, "reload", None)
-    if reload is not None:
-        reload()
     for item in manifest:
         name = str(item.get("name") or "")
         if name not in allowed:
             raise DraftyError("Modal listed an artifact name that is not allowed.")
         temporary = directory / f".{name}.partial"
-        received = bytearray()
-        for chunk in volume.read_file(f"{job_id}/{name}"):
-            received.extend(chunk)
-            if len(received) > limit:
-                temporary.unlink(missing_ok=True)
-                raise DraftyError(f"{name} exceeds the artifact size limit.")
-        temporary.write_bytes(received)
+        received = 0
+        try:
+            with temporary.open("wb") as handle:
+                for chunk in volume.read_file(f"{job_id}/{name}"):
+                    received += len(chunk)
+                    if received > limit:
+                        raise DraftyError(f"{name} exceeds the artifact size limit.")
+                    handle.write(chunk)
+        except Exception:
+            temporary.unlink(missing_ok=True)
+            raise
         temporary.replace(directory / name)
 
 

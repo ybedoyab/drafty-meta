@@ -14,8 +14,9 @@ from pathlib import Path
 
 import modal
 
+# Debian 13 dropped calculix-ccx. Bookworm still ships CalculiX 2.20, matching infra/docker/Dockerfile.ccx.
 image = (
-    modal.Image.debian_slim(python_version="3.12")
+    modal.Image.from_registry("python:3.12-slim-bookworm")
     .apt_install(
         "calculix-ccx",
         "libgl1",

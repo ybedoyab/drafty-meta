@@ -10,16 +10,22 @@ export function spokenText(text: string): string {
     .slice(0, 700);
 }
 
+export function pickVoice<T extends { lang: string }>(voices: T[], language: "en" | "es"): T | null {
+  const prefix = language === "es" ? "es" : "en";
+  return voices.find((voice) => voice.lang.toLowerCase().startsWith(prefix)) ?? null;
+}
+
 export function SpeakButton({ text }: { text: string }) {
   const [speaking, setSpeaking] = useState(false);
   const [spoken, setSpoken] = useState("");
   const [rate, setRate] = useState(1);
+  const [language, setLanguage] = useState<"en" | "es">("en");
   const [supported, setSupported] = useState(true);
   const utterance = useRef<SpeechSynthesisUtterance | null>(null);
   const script = spokenText(text);
 
   useEffect(() => {
-    setSupported(typeof window !== "undefined" && "speechSynthesis" in window);
+    setSupported(typeof window.speechSynthesis?.speak === "function");
     return () => {
       window.speechSynthesis?.cancel();
     };
@@ -36,9 +42,9 @@ export function SpeakButton({ text }: { text: string }) {
     window.speechSynthesis.cancel();
     const next = new SpeechSynthesisUtterance(script);
     const voices = window.speechSynthesis.getVoices();
-    const preferred = voices.find((voice) => voice.lang.toLowerCase().startsWith("es")) ?? voices.find((voice) => voice.lang.toLowerCase().startsWith("en"));
+    const preferred = pickVoice(voices, language) ?? pickVoice(voices, language === "es" ? "en" : "es");
     if (preferred) next.voice = preferred;
-    next.lang = preferred?.lang ?? "en-US";
+    next.lang = preferred?.lang ?? (language === "es" ? "es-ES" : "en-US");
     next.rate = rate;
     next.onend = () => setSpeaking(false);
     next.onerror = () => setSpeaking(false);
@@ -54,6 +60,13 @@ export function SpeakButton({ text }: { text: string }) {
         {speaking ? <VolumeX className="h-3.5 w-3.5" aria-hidden /> : <Volume2 className="h-3.5 w-3.5" aria-hidden />}
         {speaking ? "Stop speech" : "Play speech"}
       </button>
+      <label className="text-xs text-slate-500">
+        Language
+        <select className="ml-1 rounded border border-slate-300 px-1" value={language} aria-label="Speech language" onChange={(event) => setLanguage(event.target.value as "en" | "es")}>
+          <option value="en">English</option>
+          <option value="es">Spanish</option>
+        </select>
+      </label>
       <label className="text-xs text-slate-500">
         Speed
         <select className="ml-1 rounded border border-slate-300 px-1" value={rate} aria-label="Playback speed" onChange={(event) => setRate(Number(event.target.value))}>
@@ -82,6 +95,7 @@ export function MicButton({
   const recorder = useRef<MediaRecorder | null>(null);
   const chunks = useRef<Blob[]>([]);
   const started = useRef(0);
+  const discard = useRef(false);
 
   useEffect(() => {
     if (!recording) return;
@@ -89,7 +103,13 @@ export function MicButton({
     return () => window.clearInterval(timer);
   }, [recording]);
 
-  useEffect(() => () => recorder.current?.stop(), []);
+  useEffect(
+    () => () => {
+      discard.current = true;
+      recorder.current?.stop();
+    },
+    [],
+  );
 
   async function start() {
     if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
@@ -105,6 +125,11 @@ export function MicButton({
       };
       media.onstop = () => {
         stream.getTracks().forEach((track) => track.stop());
+        if (discard.current) {
+          discard.current = false;
+          chunks.current = [];
+          return;
+        }
         void finish(new Blob(chunks.current, { type: media.mimeType || "audio/webm" }));
       };
       recorder.current = media;
@@ -126,6 +151,13 @@ export function MicButton({
     setRecording(false);
   }
 
+  function cancelRecording() {
+    discard.current = true;
+    recorder.current?.stop();
+    setRecording(false);
+    setStatus("Recording cancelled");
+  }
+
   async function finish(blob: Blob) {
     setRecording(false);
     setStatus("Transcribing");
@@ -141,15 +173,23 @@ export function MicButton({
   }
 
   return (
-    <button
-      type="button"
-      className="inline-flex items-center gap-1 rounded-md border border-slate-300 px-3 py-2 text-sm"
-      disabled={disabled || status === "Transcribing"}
-      onClick={recording ? stop : () => void start()}
-    >
-      {recording ? <Square className="h-4 w-4" aria-hidden /> : <Mic className="h-4 w-4" aria-hidden />}
-      {recording ? `Stop ${elapsed}s` : status || "Microphone"}
-    </button>
+    <span className="inline-flex flex-wrap items-center gap-2">
+      <button
+        type="button"
+        className="inline-flex items-center gap-1 rounded-md border border-slate-300 px-3 py-2 text-sm"
+        disabled={disabled || status === "Transcribing"}
+        onClick={recording ? stop : () => void start()}
+      >
+        {recording ? <Square className="h-4 w-4" aria-hidden /> : <Mic className="h-4 w-4" aria-hidden />}
+        {recording ? `Stop ${elapsed}s` : "Microphone"}
+      </button>
+      {status && !recording && <span className="text-xs text-slate-600">{status}</span>}
+      {recording && (
+        <button type="button" className="rounded-md border border-slate-300 px-3 py-2 text-sm" onClick={cancelRecording}>
+          Cancel recording
+        </button>
+      )}
+    </span>
   );
 }
 

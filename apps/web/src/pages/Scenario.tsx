@@ -1,3 +1,4 @@
+import { Box, GraduationCap, PanelRightClose, PanelRightOpen } from "lucide-react";
 import { OrbitControls } from "@react-three/drei";
 import { Canvas } from "@react-three/fiber";
 import { Link, useNavigate } from "react-router-dom";
@@ -60,6 +61,7 @@ export function Scenario() {
   const [supportFace, setSupportFace] = useState("");
   const [loadFace, setLoadFace] = useState("");
   const [bracket, setBracket] = useState({ legX: "80", legZ: "80", width: "40", thickness: "8", force: "200", limit: "1" });
+  const [inspectorOpen, setInspectorOpen] = useState(true);
   const evidenceRef = useRef<HTMLInputElement | null>(null);
   const [linkedJobs, setLinkedJobs] = useState<Awaited<ReturnType<typeof getJob>>[]>([]);
   const turnAbort = useRef<AbortController | null>(null);
@@ -321,23 +323,53 @@ export function Scenario() {
   const domain = session?.engineering?.domain ?? "unknown";
   const workflow = session?.workflow ?? "understand";
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900">
+    <div className="flex h-screen flex-col bg-slate-100 text-slate-900">
       <SiteHeader />
-      <main className="mx-auto grid min-w-0 max-w-6xl gap-4 px-4 py-4 lg:grid-cols-[minmax(0,1.3fr)_minmax(300px,0.7fr)]">
-        <section className="flex min-h-[70vh] min-w-0 flex-col rounded-lg border border-slate-200 bg-white">
+      <main
+        className={`grid min-h-0 flex-1 grid-cols-1 gap-3 p-3 ${
+          inspectorOpen
+            ? "lg:grid-cols-[240px_minmax(0,1fr)_minmax(340px,460px)]"
+            : "lg:grid-cols-[240px_minmax(0,1fr)]"
+        }`}
+      >
+        <aside className="space-y-3 overflow-auto rounded-xl border border-slate-200 bg-white p-4">
+          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">Project</p>
+          <p className="text-sm font-medium">{session?.demo ? `Demo ${session.demo.version}` : "Working scenario"}</p>
+          <ol className="space-y-1 text-sm">
+            {WORKFLOW.map((stage) => (
+              <li key={stage} className={stage === workflow ? "rounded-md bg-slate-900 px-2 py-1 font-medium text-white" : "rounded-md px-2 py-1 text-slate-600"}>
+                {stage}
+              </li>
+            ))}
+          </ol>
+          <div className="space-y-2 border-t border-slate-200 pt-3">
+            <Button className="w-full gap-2" type="button" variant="primary" disabled={busy || !session} onClick={() => void loadPreset("classroom")}>
+              <GraduationCap className="h-4 w-4" aria-hidden />
+              Load Classroom Demo
+            </Button>
+            <Button className="w-full gap-2" type="button" disabled={busy || !session} onClick={() => void loadPreset("bracket")}>
+              <Box className="h-4 w-4" aria-hidden />
+              Load Bracket Demo
+            </Button>
+          </div>
+          <p className="text-xs leading-5 text-slate-500">Demo values are assumptions. They are not a measured building and not an approved design.</p>
+        </aside>
+        <section className="flex min-h-0 min-w-0 flex-col rounded-xl border border-slate-200 bg-white">
           <header className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 px-4 py-3">
             <div>
               <p className="text-xs font-medium uppercase tracking-[0.14em] text-slate-500">
-                {PHASE_LABEL[session?.phase ?? "collecting"] ?? "Collecting the problem"}
-                {connected
-                  ? ` · ${session?.model ?? "muse-spark-1.3"} · Responses API`
-                  : metaReady
-                    ? " · Muse Spark ready"
-                    : " · AI not connected"}
+                <span className="block">{PHASE_LABEL[session?.phase ?? "collecting"] ?? "Collecting the problem"}</span>
+                <span className="mt-1 block normal-case tracking-normal">
+                  {connected ? `${session?.model ?? "muse-spark-1.3"} · Responses API` : metaReady ? "Muse Spark ready" : "AI not connected"}
+                </span>
               </p>
               <h1 className="text-xl font-semibold">Scenario assistant</h1>
             </div>
             <div className="flex flex-wrap gap-2">
+              <Button className="gap-2" type="button" onClick={() => setInspectorOpen((open) => !open)}>
+                {inspectorOpen ? <PanelRightClose className="h-4 w-4" aria-hidden /> : <PanelRightOpen className="h-4 w-4" aria-hidden />}
+                {inspectorOpen ? "Hide inspector" : "Show inspector"}
+              </Button>
               <Button type="button" onClick={() => void startFresh()} disabled={busy}>
                 New scenario
               </Button>
@@ -346,27 +378,21 @@ export function Scenario() {
               </Link>
             </div>
           </header>
-          <ol className="flex flex-wrap gap-2 border-b border-slate-200 px-4 py-2 text-xs">
-            {WORKFLOW.map((stage) => (
-              <li
-                key={stage}
-                className={stage === workflow ? "rounded bg-slate-900 px-2 py-1 font-medium text-white" : "rounded bg-slate-100 px-2 py-1 text-slate-600"}
-              >
-                {stage}
-              </li>
-            ))}
-          </ol>
-          {session?.tool_trace?.[0] && (
-            <div className="border-b border-slate-200 px-4 py-2 text-xs text-slate-700">
-              <p>
-                Tool {session.tool_trace[0].tool} · status {session.tool_trace[0].status}
-                {session.tool_trace[0].authorization === "user_confirmation" ? " · approval required" : ""}
-              </p>
-              <p className="text-slate-600">{session.tool_trace[0].detail}</p>
-              <p className="text-slate-500">
+          {session?.tool_trace && session.tool_trace.length > 0 && (
+            <ol className="space-y-2 border-b border-slate-200 px-4 py-3 text-xs text-slate-700">
+              {session.tool_trace.map((item, index) => (
+                <li key={`${item.tool}-${index}`}>
+                  <p>
+                    {index + 1}. {item.tool} · {item.status}
+                    {item.authorization === "user_confirmation" ? " · approval required" : ""}
+                  </p>
+                  <p className="text-slate-600">{item.detail}</p>
+                </li>
+              ))}
+              <li className="text-slate-500">
                 Simulator: {session.engineering?.simulator ?? "none"}. A selected tool name is not a finished solve.
-              </p>
-            </div>
+              </li>
+            </ol>
           )}
             {session?.demo && (
               <p className="border-b border-amber-200 bg-amber-50 px-4 py-2 text-sm text-amber-950">
@@ -375,8 +401,15 @@ export function Scenario() {
             )}
             <div className="flex-1 space-y-3 overflow-auto px-4 py-4">
             {(session?.messages ?? []).map((entry, index) => (
-              <article key={`${entry.role}-${index}`} className="rounded-md border border-slate-200 px-3 py-2 text-sm leading-6">
-                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">{entry.role === "user" ? "You" : "Drafty"}</p>
+              <article
+                key={`${entry.role}-${index}`}
+                className={
+                  entry.role === "user"
+                    ? "ml-8 rounded-xl bg-slate-900 px-3 py-2 text-sm leading-6 text-white"
+                    : "mr-8 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm leading-6"
+                }
+              >
+                <p className={`text-xs font-semibold uppercase tracking-wide ${entry.role === "user" ? "text-slate-300" : "text-slate-500"}`}>{entry.role === "user" ? "You" : "Drafty"}</p>
                 <p>{entry.text}</p>
                 {entry.role === "assistant" && <SpeakButton text={entry.text} />}
               </article>
@@ -417,12 +450,6 @@ export function Scenario() {
               <Button type="submit" variant="primary" disabled={busy || !session || !draft.trim()}>
                 Send
               </Button>
-              <Button type="button" disabled={busy || !session} onClick={() => void loadPreset("classroom")}>
-                Load Classroom Demo
-              </Button>
-              <Button type="button" disabled={busy || !session} onClick={() => void loadPreset("bracket")}>
-                Load Bracket Demo
-              </Button>
             </div>
             {error && <p className="mt-3 text-sm text-amber-800">{error}</p>}
             {busy && (
@@ -442,7 +469,8 @@ export function Scenario() {
           </form>
         </section>
 
-        <div className="min-w-0 space-y-4">
+        {inspectorOpen && (
+        <aside className="min-h-0 min-w-0 space-y-4 overflow-auto">
           <Panel title="Still needed">
             {session?.missing.length ? (
               <ul className="list-disc space-y-1 pl-4 text-sm">
@@ -580,9 +608,7 @@ export function Scenario() {
               );
             })}
           </Panel>
-        </div>
-
-        <section className="min-w-0 space-y-4 lg:col-span-2">
+        <section className="min-w-0 space-y-4">
           <Panel title="Load path">
             <BeamFigure
               span={session?.inputs.span_m ?? null}
@@ -749,6 +775,8 @@ export function Scenario() {
             </ul>
           </Panel>
         </section>
+        </aside>
+        )}
       </main>
     </div>
   );

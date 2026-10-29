@@ -174,14 +174,15 @@ def list_remote_scenarios(access_token: str | None) -> list[dict]:
 
 def _upload(client: httpx.Client, base: str, key: str, job_id: str, name: str, path: Path) -> None:
     content_type = CONTENT_TYPES.get(path.suffix.lower(), "application/octet-stream")
-    response = client.post(
-        f"{base}/storage/v1/object/artifacts/{job_id}/{name}",
-        headers={
-            "apikey": key,
-            "Authorization": f"Bearer {key}",
-            "Content-Type": content_type,
-            "x-upsert": "true",
-        },
-        content=path.read_bytes(),
-    )
+    with path.open("rb") as handle:
+        response = client.post(
+            f"{base}/storage/v1/object/artifacts/{job_id}/{name}",
+            headers={
+                "apikey": key,
+                "Authorization": f"Bearer {key}",
+                "Content-Type": content_type,
+                "x-upsert": "true",
+            },
+            content=handle,
+        )
     response.raise_for_status()

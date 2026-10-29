@@ -49,8 +49,15 @@ test("a classroom scenario asks for missing data and does not open a 3D solve", 
   await expect(page.getByText("photo.png")).toBeVisible();
   await page.getByRole("button", { name: "Remove" }).first().click();
   await expect(page.getByText("plan.png")).toHaveCount(0);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.locator("aside").last().evaluate((node) => {
+    node.scrollTop = 0;
+  });
+  await page.screenshot({ path: "../../docs/screenshots/scenario-workspace-1440x900.png" });
   await page.getByRole("heading", { name: "Beam-element results" }).scrollIntoViewIfNeeded();
   await page.screenshot({ path: "../../docs/screenshots/scenario-model-1440x900.png" });
+  await page.setViewportSize({ width: 1366, height: 768 });
+  await page.screenshot({ path: "../../docs/screenshots/scenario-model-1366x768.png" });
   await page.reload();
   await expect(page.getByText("12500.0 N/m").first()).toBeVisible();
   await expect(page.getByText("photo.png")).toBeVisible();
@@ -161,13 +168,22 @@ test("a recording stays in the composer until the user sends it", async ({ page 
       configurable: true,
       value: { getUserMedia: async () => ({ getTracks: () => [{ stop() {} }] }) },
     });
+    class FakeUtterance {
+      lang = "";
+      rate = 1;
+      voice: { lang: string } | null = null;
+      onend: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      constructor(public text: string) {}
+    }
+    Object.defineProperty(window, "SpeechSynthesisUtterance", { configurable: true, value: FakeUtterance });
     Object.defineProperty(window, "speechSynthesis", {
       configurable: true,
       value: {
         speaking: false,
         cancel() {},
-        speak(utterance: { onend?: () => void }) {
-          window.setTimeout(() => utterance.onend?.(), 400);
+        speak(utterance: { onend?: (() => void) | null }) {
+          window.setTimeout(() => utterance.onend?.(), 5000);
         },
         getVoices() {
           return [
@@ -183,11 +199,27 @@ test("a recording stays in the composer until the user sends it", async ({ page 
   );
   await page.goto("/scenario/new");
   await page.getByRole("button", { name: "Microphone" }).click();
+  await page.getByRole("button", { name: "Cancel recording" }).click();
+  await expect(page.getByText("Recording cancelled")).toBeVisible();
+  await expect(page.getByLabel("Describe the problem")).toHaveValue("");
+  await page.getByRole("button", { name: "Microphone" }).click();
   await page.getByRole("button", { name: /Stop/ }).click();
   await expect(page.getByLabel("Describe the problem")).toHaveValue("What is the beam span?");
   await page.getByRole("button", { name: "Load Classroom Demo" }).click();
-  await page.getByRole("button", { name: "Play speech" }).click();
+  await page.getByLabel("Speech language").first().selectOption("es");
+  await page.getByRole("button", { name: "Play speech" }).first().click();
   await expect(page.getByText("Spoken text:").first()).toBeVisible();
+  await page.getByRole("button", { name: "Stop speech" }).first().click();
+  await expect(page.getByRole("button", { name: "Play speech" }).first()).toBeVisible();
+});
+
+test("speech playback explains when the browser has no speech engine", async ({ page }) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(window, "speechSynthesis", { configurable: true, value: undefined });
+  });
+  await page.goto("/scenario/new");
+  await page.getByRole("button", { name: "Load Classroom Demo" }).click();
+  await expect(page.getByText("Speech playback is not available on this device.").first()).toBeVisible();
 });
 
 test("landing screenshots", async ({ page }) => {

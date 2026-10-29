@@ -154,5 +154,6 @@ def test_transcription_posts_the_documented_contract(tmp_path, monkeypatch):
     assert captured["authorization"] == "Bearer test-key"
     assert "English" in captured["request"] and "Spanish" in captured["request"]
     assert "muse-voice-transcribe-1.0" in captured["request"]
+    assert "PUSH_TO_TALK" in captured["request"]
     assert captured["audio_type"] == "audio/wav"
     assert "test-key" not in response.text

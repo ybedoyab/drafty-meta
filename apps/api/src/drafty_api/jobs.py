@@ -131,7 +131,21 @@ def request_cancel(job_id: str, owner_id: str) -> dict:
     if job["status"] in TERMINAL:
         return job
     (job_dir(job_id) / "cancel").write_text("cancel", encoding="utf-8")
+    if job.get("compute") == "modal" and job.get("modal_call_id"):
+        _cancel_modal_call(str(job["modal_call_id"]), job_dir(job_id))
     return job
+
+
+def _cancel_modal_call(call_id: str, directory: Path) -> None:
+    """Ask Modal to stop the remote function. A browser abort does not do this."""
+
+    try:
+        import modal
+
+        modal.FunctionCall.from_id(call_id).cancel()
+    except Exception as exc:
+        with (directory / "worker.log").open("a", encoding="utf-8") as handle:
+            handle.write(f"Modal cancel failed: {type(exc).__name__}\n")
 
 
 def recover_interrupted_jobs() -> None:
@@ -155,6 +169,9 @@ def recover_interrupted_jobs() -> None:
                 _spawn(directory)
         elif status in ACTIVE and not _heartbeat_fresh(job, directory):
             _release_claim(directory)
+            if job.get("compute") == "modal" and job.get("modal_call_id") and spawn_enabled():
+                _spawn(directory)
+                continue
             job["status"] = "failed"
             job["error"] = "The worker stopped before this job finished. Submit it again."
             job["updated_at"] = _now()
