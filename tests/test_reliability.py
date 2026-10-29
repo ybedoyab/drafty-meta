@@ -57,6 +57,30 @@ def test_a_stale_running_job_is_failed_on_recovery(tmp_path, monkeypatch):
     assert "worker stopped" in recovered["error"]
 
 
+def test_concurrent_job_updates_keep_a_readable_record(tmp_path, monkeypatch):
+    import threading
+
+    monkeypatch.setattr(settings, "drafty_data_dir", str(tmp_path))
+    monkeypatch.setattr(settings, "drafty_spawn_local", "never")
+    job = create_job("local", "simulation", cantilever_benchmark_spec().model_dump())
+    from drafty_api.jobs import job_dir, update_job
+
+    directory = job_dir(job["id"])
+
+    def write(status: str) -> None:
+        for _ in range(40):
+            update_job(directory, status=status, message=status)
+
+    threads = [threading.Thread(target=write, args=(name,)) for name in ("solving", "meshing")]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    saved = json.loads((directory / "job.json").read_text(encoding="utf-8"))
+    assert saved["status"] in {"solving", "meshing"}
+    assert saved["message"] == saved["status"]
+
+
 def test_preview_quota_blocks_the_second_request(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "drafty_data_dir", str(tmp_path))
     monkeypatch.setattr(settings, "drafty_max_previews_per_hour", 1)

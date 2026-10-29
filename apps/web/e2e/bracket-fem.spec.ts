@@ -32,7 +32,13 @@ test("an approved bracket runs CalculiX and one real optimization", async ({ pag
   await page.getByLabel("Lower mm").fill("4");
   await page.getByLabel("Iterations").fill("2");
   await page.getByRole("button", { name: "Optimize with FEM" }).click();
-  await expect(page.getByText("Not a proof of a global optimum")).toBeVisible({ timeout: 180_000 });
+  const optimality = page.getByText("Not a proof of a global optimum");
+  try {
+    await expect(optimality).toBeVisible({ timeout: 180_000 });
+  } catch (error) {
+    const visible = await page.locator("body").innerText();
+    throw new Error(`${error instanceof Error ? error.message : String(error)}\n\n${visible.slice(0, 4000)}`);
+  }
   await expect(page.getByText("Not a certified safety factor").first()).toBeVisible();
   await page.screenshot({ path: "../../docs/screenshots/bracket-optimization-1440x900.png" });
   expect(pageErrors).toEqual([]);

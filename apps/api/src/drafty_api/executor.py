@@ -154,10 +154,11 @@ def _run_modal(directory: Path, spec: DesignSpec, job: dict, cancel_file: Path) 
         call = function.spawn(spec.model_dump(mode="json"), job["id"], job.get("options") or {}, None)
     else:
         call = function.spawn(spec.model_dump(mode="json"), job["id"], None)
+    if not call_id:
         call_id = getattr(call, "object_id", None)
         if not call_id:
             raise DraftyError("Modal did not return a FunctionCall id.")
-        update_job(directory, modal_call_id=call_id)
+        update_job(directory, modal_call_id=str(call_id))
     deadline = time.monotonic() + settings.drafty_solver_timeout_s
     payload = None
     while time.monotonic() < deadline:

@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from contextlib import contextmanager
@@ -259,12 +260,18 @@ def _heartbeat_fresh(job: dict, directory: Path) -> bool:
     return claim_is_fresh(directory)
 
 
+_job_write_lock = threading.Lock()
+
+
 def update_job(directory: Path, **fields: object) -> dict:
+    """Merge fields into job.json. The heartbeat thread and the solver share this process."""
+
     path = directory / "job.json"
-    job = json.loads(path.read_text(encoding="utf-8"))
-    job.update(fields)
-    job["updated_at"] = _now()
-    _write(path, job)
+    with _job_write_lock:
+        job = json.loads(path.read_text(encoding="utf-8"))
+        job.update(fields)
+        job["updated_at"] = _now()
+        _write(path, job)
     return job
 
 
@@ -348,7 +355,7 @@ def charge_preview(owner_id: str) -> None:
 
 
 def _write(path: Path, payload: dict) -> None:
-    temporary = path.with_suffix(".tmp")
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     temporary.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     temporary.replace(path)
 
