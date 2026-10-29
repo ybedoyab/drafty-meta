@@ -2,7 +2,6 @@ import io
 import wave
 
 import pytest
-
 from fastapi.testclient import TestClient
 
 from drafty_api.main import app
