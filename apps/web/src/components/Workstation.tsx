@@ -5,6 +5,7 @@ import { Suspense, useEffect, useMemo, useState } from "react";
 import { Viewport, type CameraView, type Shade } from "@/components/Viewport";
 import { Button } from "@/components/ui/button";
 import {
+  artifactUrl,
   cancelJob,
   createJob,
   getHealth,
@@ -730,14 +731,17 @@ export function Workstation() {
           <div className="mt-3 flex flex-col gap-1 text-xs">
             {["model.step", "preview.glb", "results.glb", "model.inp", "model.dat", "model.frd", "model.vtu", "results.json", "report.json", "report.pdf"].map(
               (name) => (
-                <button
+                <a
                   key={name}
-                  type="button"
-                  className="text-left text-indigo-600 hover:underline"
-                  onClick={() => void openArtifact(activeId, name)}
+                  className="text-indigo-600 hover:underline"
+                  href={artifactUrl(activeId, name)}
+                  onClick={(event) => {
+                    event.preventDefault();
+                    void openArtifact(activeId, name);
+                  }}
                 >
                   {name}
-                </button>
+                </a>
               ),
             )}
           </div>
