@@ -4,7 +4,15 @@ from typing import get_args
 import pytest
 
 from drafty_ai.scenario_agent import INSTRUCTIONS, advance_scenario, blank_inputs
-from drafty_engineering.catalog import PARTS, catalog_view, scenario_parts, studio_kinds, supported_parts_sentence
+from drafty_engineering.catalog import (
+    CAPABILITIES_PATH,
+    PARTS,
+    catalog_view,
+    scenario_parts,
+    studio_kinds,
+    supported_parts_sentence,
+    unsupported_sentence,
+)
 from drafty_engineering.plan import classify_request, route_tool
 from drafty_engineering.spec import PartKind
 
@@ -62,6 +70,21 @@ def test_instructions_list_the_registry_and_forbid_promises():
     assert "never say you will generate geometry or a file" in INSTRUCTIONS
     for part in scenario_parts():
         assert part.id in INSTRUCTIONS
+
+
+@pytest.mark.parametrize("noun", ["coffee mug", "perforated plate", ""])
+def test_an_unsupported_reply_points_to_the_capabilities_page(noun):
+    sentence = unsupported_sentence(noun)
+    assert sentence.endswith(f"The Capabilities page ({CAPABILITIES_PATH}) lists what Drafty can and cannot do.")
+    assert catalog_view("unsupported", noun)["message"] == sentence
+
+
+def test_the_public_registry_lists_methods_and_limits_for_the_capabilities_page():
+    for part in PARTS.values():
+        shown = part.public()
+        assert shown["methods"] == list(part.methods)
+        assert shown["limits"] == list(part.limits)
+        assert shown["methods"], f"{part.id} needs at least one method"
 
 
 def test_reply_schema_enums_come_from_the_registry():
@@ -145,6 +168,7 @@ def test_the_knight_conversation_is_honest_about_an_unsupported_part():
         text = result["messages"][-1]["text"]
         assert "Drafty can't model a chess knight yet." in text
         assert "No geometry, file, or calculation was created." in text
+        assert f"({CAPABILITIES_PATH})" in text
         assert "Describe the structure or the part" not in text
         assert result["studio_spec"] is None
         assert result["model_questions"] == []

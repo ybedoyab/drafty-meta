@@ -5,6 +5,7 @@ import { transcribeSpeech } from "@/lib/api";
 export function spokenText(text: string): string {
   return text
     .replace(/https?:\/\/\S+/g, "")
+    .replace(/\s*\(\/[a-z-]+\)/g, "")
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 700);

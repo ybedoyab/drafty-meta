@@ -6,6 +6,13 @@ describe("spoken replies", () => {
     expect(spokenText("Span 6 m. See https://example.com/nsr.pdf for the table.")).toBe("Span 6 m. See for the table.");
   });
 
+  it("does not read an in-app path aloud", () => {
+    expect(spokenText("The Capabilities page (/capabilities) lists what Drafty can and cannot do.")).toBe(
+      "The Capabilities page lists what Drafty can and cannot do.",
+    );
+    expect(spokenText("Line load 12.5 kN/m (q_dead + q_live).")).toBe("Line load 12.5 kN/m (q_dead + q_live).");
+  });
+
   it("selects a Spanish or English voice and reports when neither exists", () => {
     const voices = [
       { lang: "en-US", name: "English" },

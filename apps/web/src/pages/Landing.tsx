@@ -1,6 +1,6 @@
 import { Link } from "react-router-dom";
 import { ArrowDown, ArrowRight, RotateCw, Shield, UserRound } from "lucide-react";
-import logo from "@/assets/logo.png";
+import { Logo } from "@/components/Logo";
 import { SiteHeader } from "@/components/SiteHeader";
 
 const PIPELINE = [
@@ -66,7 +66,7 @@ export function Landing() {
         {/* ── Hero (kept) ──────────────────────────────────── */}
         <div className="grid gap-10 py-12 lg:grid-cols-[minmax(0,1.1fr)_minmax(300px,0.9fr)] lg:items-start lg:py-16">
           <div>
-            <img src={logo} alt="Drafty" className="mb-8 h-12 w-auto" />
+            <Logo className="mb-8 h-12 w-auto" />
             <p className="text-sm font-medium uppercase tracking-[0.16em] text-slate-500">
               Preliminary engineering assistant
             </p>

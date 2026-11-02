@@ -144,6 +144,11 @@ async function errorMessage(response: Response) {
 
 export const getHealth = () => api<Health>("/api/v1/health");
 
+export const getParts = async () => {
+  const body = await api<{ parts: import("./scenario").PartSummary[] }>("/api/v1/parts");
+  return body.parts;
+};
+
 export interface ScenarioSummary {
   id: string;
   name: string;

@@ -2,7 +2,8 @@ import { Box, GraduationCap, PanelRightClose, PanelRightOpen } from "lucide-reac
 import { OrbitControls } from "@react-three/drei";
 import { Canvas } from "@react-three/fiber";
 import { Link, useNavigate } from "react-router-dom";
-import { Suspense, useEffect, useRef, useState, type ReactNode } from "react";
+import { Fragment, Suspense, useEffect, useRef, useState, type ReactNode } from "react";
+import { Logo } from "@/components/Logo";
 import { SiteHeader } from "@/components/SiteHeader";
 import { BeamResults } from "@/components/BeamResults";
 import { Viewport } from "@/components/Viewport";
@@ -31,6 +32,8 @@ import {
   type ScenarioSession,
 } from "@/lib/api";
 import {
+  ANALYSIS_LABEL,
+  CAPABILITIES_PATH,
   CLASSROOM_PROMPT,
   emptyForm,
   fieldLabel,
@@ -38,6 +41,7 @@ import {
   formFromInputs,
   groupFields,
   inputsFromForm,
+  messageSegments,
   recallScenarioId,
   rememberScenarioId,
   scenarioFields,
@@ -49,13 +53,6 @@ import {
 import { DEFAULT_GRID_STEP_MM, gridStepMeters } from "@/lib/grid";
 
 const IBEAM = "simply_supported_ibeam";
-const ANALYSIS_LABEL: Record<string, string> = {
-  none: "geometry only",
-  analytical: "closed-form checks",
-  "beam-element": "beam elements",
-  calculix: "CalculiX solid FEM",
-};
-
 function withArticle(noun: string): string {
   return `${/^[aeiou]/i.test(noun) ? "an" : "a"} ${noun}`;
 }
@@ -482,15 +479,18 @@ export function Scenario() {
                 }
               >
                 <p className={`text-xs font-semibold uppercase tracking-wide ${entry.role === "user" ? "text-slate-300" : "text-slate-500"}`}>{entry.role === "user" ? "You" : "Drafty"}</p>
-                <p>{entry.text}</p>
+                <p>{entry.role === "assistant" ? <ReplyText text={entry.text} /> : entry.text}</p>
                 {entry.role === "assistant" && <SpeakButton text={entry.text} />}
               </article>
             ))}
             {session && session.messages.length === 0 && (
-              <p className="text-sm leading-6 text-slate-600">
-                Describe the structure in your own words. Drafty will ask for what is missing and will not turn a floor
-                beam into the cantilever solver.
-              </p>
+              <div className="flex min-h-full flex-col items-center justify-center gap-6 text-center">
+                <Logo variant="gear" className="h-24 w-24 opacity-20 sm:h-28 sm:w-28" />
+                <p className="max-w-md text-sm leading-6 text-slate-600">
+                  Describe the structure in your own words. Drafty will ask for what is missing and will not turn a floor
+                  beam into the cantilever solver.
+                </p>
+              </div>
             )}
           </div>
           <form
@@ -991,7 +991,30 @@ function SupportedParts({ parts, requested }: { parts: PartSummary[]; requested:
           </li>
         ))}
       </ul>
+      <Link to={CAPABILITIES_PATH} className="mt-3 inline-block text-sm font-medium text-slate-800 underline">
+        See everything Drafty can and cannot do
+      </Link>
     </Panel>
+  );
+}
+
+function ReplyText({ text }: { text: string }) {
+  return (
+    <>
+      {messageSegments(text).map((part, index) =>
+        part.link ? (
+          <Fragment key={index}>
+            (
+            <Link to={part.text} target="_blank" rel="noopener noreferrer" className="font-medium underline">
+              {part.text}
+            </Link>
+            )
+          </Fragment>
+        ) : (
+          <Fragment key={index}>{part.text}</Fragment>
+        ),
+      )}
+    </>
   );
 }
 

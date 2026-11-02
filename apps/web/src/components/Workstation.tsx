@@ -1,6 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useSearchParams } from "react-router-dom";
-import logo from "@/assets/logo.png";
 import { Suspense, useEffect, useMemo, useState } from "react";
 import { Viewport, type CameraView, type Shade } from "@/components/Viewport";
 import { GridControl } from "@/components/GridControl";
@@ -41,6 +40,7 @@ import {
   type PartKind,
 } from "@/lib/design";
 import { takeStudioSpec } from "@/lib/scenario";
+import { Logo } from "@/components/Logo";
 
 const STAGES = ["queued", "geometry", "meshing", "solving", "postprocessing", "completed"] as const;
 const MATERIALS = [
@@ -277,7 +277,7 @@ export function Workstation() {
       <header className="col-span-3 flex items-center justify-between border-b border-gray-200 bg-white px-5 shadow-sm">
         <div className="flex items-center gap-6">
           <Link to="/">
-            <img src={logo} alt="Drafty" className="h-9 w-auto" />
+            <Logo still className="h-9 w-auto" />
           </Link>
           <nav className="flex items-center gap-1 text-sm font-medium">
             <Link to="/" className="rounded-md px-3 py-1.5 text-gray-600 hover:bg-blue-50 hover:text-blue-800">

@@ -46,7 +46,27 @@ export interface PartSummary {
   analysis: string[];
   exports: string[];
   where: "scenario" | "studio";
+  methods: string[];
+  limits: string[];
   inputs: PartInput[];
+}
+
+export const ANALYSIS_LABEL: Record<string, string> = {
+  none: "geometry only",
+  analytical: "closed-form checks",
+  "beam-element": "beam elements",
+  calculix: "CalculiX solid FEM",
+};
+
+/** Must match CAPABILITIES_PATH in drafty_engineering.catalog. */
+export const CAPABILITIES_PATH = "/capabilities";
+
+/** Splits a reply around "(/capabilities)" so the chat can render that path as a link. */
+export function messageSegments(text: string): { text: string; link: boolean }[] {
+  return text
+    .split(/\((\/capabilities)\)/)
+    .map((part, index) => ({ text: part, link: index % 2 === 1 }))
+    .filter((part) => part.text);
 }
 
 export interface PartCatalogView {

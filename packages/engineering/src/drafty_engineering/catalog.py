@@ -15,6 +15,9 @@ UNSUPPORTED = "unsupported"
 UNKNOWN = "unknown"
 DEFAULT_FORM_PART = "simply_supported_ibeam"
 NOTHING_CREATED = "No geometry, file, or calculation was created."
+# The web app links this path when it appears in parentheses in a reply.
+CAPABILITIES_PATH = "/capabilities"
+CAPABILITIES_POINTER = f"The Capabilities page ({CAPABILITIES_PATH}) lists what Drafty can and cannot do."
 _ANALYSIS_TEXT = {
     "none": "geometry only",
     "analytical": "closed-form checks",
@@ -73,6 +76,8 @@ class Part(BaseModel):
             "analysis": list(self.analysis),
             "exports": list(self.exports),
             "where": "scenario" if self.in_scenario else "studio",
+            "methods": list(self.methods),
+            "limits": list(self.limits),
             "inputs": [item.model_dump() for item in self.inputs],
         }
 
@@ -348,10 +353,11 @@ def unsupported_sentence(noun: str) -> str:
     studio = studio_part_for(noun)
     if studio is not None:
         return (
-            f"Drafty builds {studio.phrase} in Studio, not in this chat. {supported_parts_sentence()} {NOTHING_CREATED}"
+            f"Drafty builds {studio.phrase} in Studio, not in this chat. {supported_parts_sentence()} "
+            f"{NOTHING_CREATED} {CAPABILITIES_POINTER}"
         )
     subject = f"{indefinite(noun)} {noun}" if noun else "that part"
-    return f"Drafty can't model {subject} yet. {supported_parts_sentence()} {NOTHING_CREATED}"
+    return f"Drafty can't model {subject} yet. {supported_parts_sentence()} {NOTHING_CREATED} {CAPABILITIES_POINTER}"
 
 
 def catalog_view(system: str | None, requested: str | None = None) -> dict:
