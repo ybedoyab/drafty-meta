@@ -86,14 +86,19 @@ _BWIDTH = re.compile(r"\b(?:bracket width|ancho)\s+(\d+(?:\.\d+)?)\s*mm\b", re.I
 _SUPPORT_FACE = re.compile(r"\b(?:fixed|support)\s+face\s+(xmin|xmax|ymin|ymax|zmin|zmax)\b", re.I)
 _LOAD_FACE = re.compile(r"\bload\s+face\s+(xmin|xmax|ymin|ymax|zmin|zmax)\b", re.I)
 _LENGTH = r"(\d+(?:\.\d+)?)\s*(mm|cm)\b"
+_CONNECTOR_WORD = (
+    r"(?:of|de|is|are|was|were|be|been|being|could|should|would|can|may|might|must|shall|will|at|most|up|to|about|"
+    r"approximately|approx\.?|roughly|around|only|just|still|now|equals?|equal)\b"
+)
+_CONNECTOR = rf"(?:\s+{_CONNECTOR_WORD}|\s*[:=]\s*)*\s*"
 _HEIGHT = re.compile(
     rf"{_LENGTH}\s*(?:tall|high|in height|de alto|de altura)\b"
-    rf"|\b(?:height|tall|alto|altura)\s*(?:of\s+|de\s+|is\s+|:\s*|=\s*)?{_LENGTH}",
+    rf"|\b(?:height|tall|alto|altura){_CONNECTOR}{_LENGTH}",
     re.I,
 )
 _BASE = re.compile(
     rf"{_LENGTH}\s*(?:base|de base)\b"
-    rf"|\bbase(?:\s+diameter)?\s*(?:of\s+|de\s+|is\s+|:\s*|=\s*)?{_LENGTH}",
+    rf"|\bbase(?:\s+diameter)?{_CONNECTOR}{_LENGTH}",
     re.I,
 )
 _NUMBER = re.compile(r"\d+(?:\.\d+)?")
@@ -212,11 +217,18 @@ def absorb_message(inputs: dict, message: str) -> dict:
 
 
 def _absorb_revolved(found: dict, message: str) -> None:
+    """Absorb pawn dimensions; a lone measurement fills the single missing field."""
     for key, pattern in (("overall_height_m", _HEIGHT), ("base_diameter_m", _BASE)):
         match = pattern.search(message)
         if match and found.get(key) is None:
             value, unit = (match.group(1), match.group(2)) if match.group(1) else (match.group(3), match.group(4))
             found[key] = float(value) / (1000.0 if unit.lower() == "mm" else 100.0)
+    missing = [key for key in ("overall_height_m", "base_diameter_m") if found.get(key) is None]
+    if len(missing) == 1 and _HEIGHT.search(message) is None and _BASE.search(message) is None:
+        lone = re.findall(_LENGTH, message, flags=re.I)
+        if len(lone) == 1:
+            value, unit = lone[0]
+            found[missing[0]] = float(value) / (1000.0 if unit.lower() == "mm" else 100.0)
 
 
 def _absorb_bracket(found: dict, message: str) -> None:

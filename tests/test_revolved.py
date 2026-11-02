@@ -160,6 +160,32 @@ def test_the_pawn_conversation_builds_a_profile_and_says_no_check_ran():
     assert not built["rejected_claims"]
 
 
+def test_chat_measurements_with_filler_words_fill_the_form():
+    asked = advance_scenario(
+        {"inputs": blank_inputs(), "messages": [], "evidence": []},
+        "I want to design a 3D model of a chess pawn, it only must be at most 5cm tall.",
+    )
+    assert asked["inputs"]["overall_height_m"] == pytest.approx(0.05)
+    assert asked["inputs"]["base_diameter_m"] is None
+    assert asked["missing"] == ["base diameter"]
+    answered = advance_scenario(asked, "The base diameter could be 2cm")
+    assert answered["inputs"]["overall_height_m"] == pytest.approx(0.05)
+    assert answered["inputs"]["base_diameter_m"] == pytest.approx(0.02)
+    assert answered["missing"] == []
+    assert answered["geometry_spec"]["kind"] == "revolved_profile"
+
+
+def test_a_lone_measurement_fills_the_single_missing_field():
+    asked = advance_scenario(
+        {"inputs": blank_inputs(), "messages": [], "evidence": []},
+        "I want to design a 3D model of a chess pawn, it only must be at most 5cm tall.",
+    )
+    assert asked["missing"] == ["base diameter"]
+    answered = advance_scenario(asked, "2cm")
+    assert answered["inputs"]["base_diameter_m"] == pytest.approx(0.02)
+    assert answered["missing"] == []
+
+
 def test_a_pawn_outside_the_preset_limits_creates_nothing():
     result = advance_scenario(
         {"inputs": blank_inputs(), "messages": [], "evidence": []},
