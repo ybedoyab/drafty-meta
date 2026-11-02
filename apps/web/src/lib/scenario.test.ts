@@ -5,6 +5,7 @@ import {
   formFromInputs,
   groupFields,
   inputsFromForm,
+  messageSegments,
   recallScenarioId,
   forgetScenarioId,
   rememberScenarioId,
@@ -36,6 +37,8 @@ const ibeam: PartSummary = {
   analysis: ["analytical", "beam-element"],
   exports: ["JSON report"],
   where: "scenario",
+  methods: [],
+  limits: [],
   inputs: [
     field("span_m", "Span"),
     field("depth_m", "Depth", { display_unit: "mm", display_scale: 1000 }),
@@ -115,5 +118,18 @@ describe("scenario inputs", () => {
     expect(recallScenarioId(memory)).toBe("11111111-1111-4111-8111-111111111111");
     forgetScenarioId(memory, "11111111-1111-4111-8111-111111111111");
     expect(recallScenarioId(memory)).toBeNull();
+  });
+});
+
+describe("reply links", () => {
+  it("links the capabilities path only where the server put it in parentheses", () => {
+    expect(messageSegments("Drafty can't model a coffee mug yet. The Capabilities page (/capabilities) lists it.")).toEqual([
+      { text: "Drafty can't model a coffee mug yet. The Capabilities page ", link: false },
+      { text: "/capabilities", link: true },
+      { text: " lists it.", link: false },
+    ]);
+    expect(messageSegments("See https://example.com/capabilities for more.")).toEqual([
+      { text: "See https://example.com/capabilities for more.", link: false },
+    ]);
   });
 });

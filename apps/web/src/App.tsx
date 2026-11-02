@@ -4,6 +4,7 @@ import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { Workstation } from "@/components/Workstation";
 import { getHealth } from "@/lib/api";
 import { AuthProvider, useAuth } from "@/lib/auth";
+import { Capabilities } from "@/pages/Capabilities";
 import { Landing } from "@/pages/Landing";
 import { Login } from "@/pages/Login";
 import { Projects } from "@/pages/Projects";
@@ -36,6 +37,7 @@ export function App() {
           <Routes>
             <Route path="/" element={<Landing />} />
             <Route path="/login" element={<Login />} />
+            <Route path="/capabilities" element={<Capabilities />} />
             <Route
               path="/projects"
               element={

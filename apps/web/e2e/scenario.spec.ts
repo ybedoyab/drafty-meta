@@ -234,9 +234,17 @@ test("an unsupported part lists what Drafty can model instead of the beam form",
   await expect(page.getByRole("heading", { name: "Inputs" })).toHaveCount(0);
   await expect(page.getByLabel("Span m")).toHaveCount(0);
   await expect(page.getByRole("heading", { name: "Load path" })).toHaveCount(0);
+  await expect(page.getByRole("link", { name: "See everything Drafty can and cannot do" })).toBeVisible();
   if (process.env.DRAFTY_SCREENSHOT_DIR) {
     await page.screenshot({ path: `${process.env.DRAFTY_SCREENSHOT_DIR}/unsupported-part.png` });
   }
+  const opened = page.waitForEvent("popup");
+  await page.locator("article").last().getByRole("link", { name: "/capabilities" }).click();
+  const capabilities = await opened;
+  await expect(capabilities.getByRole("heading", { name: "What Drafty can and cannot do" })).toBeVisible();
+  await expect(capabilities.getByRole("heading", { name: "Drafty cannot" })).toBeVisible();
+  await expect(capabilities.getByRole("heading", { name: "Staunton chess pawn" })).toBeVisible();
+  await expect(page.getByText("Part not supported yet")).toBeVisible();
 });
 
 test("a chess pawn builds a revolved profile with a preview and downloads, and no solve", async ({ page }) => {

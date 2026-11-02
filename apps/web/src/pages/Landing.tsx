@@ -1,6 +1,6 @@
 import { Link } from "react-router-dom";
-import logo from "@/assets/logo.png";
 import { SiteHeader } from "@/components/SiteHeader";
+import { Logo } from "@/components/Logo";
 
 export function Landing() {
   return (
@@ -8,7 +8,7 @@ export function Landing() {
       <SiteHeader />
       <main className="mx-auto grid w-full max-w-6xl flex-1 content-center gap-10 px-6 py-12 lg:grid-cols-[minmax(0,1.2fr)_minmax(280px,0.8fr)] lg:items-center">
         <div>
-          <img src={logo} alt="Drafty" className="mb-8 h-12 w-auto" />
+          <Logo className="mb-8 h-12 w-auto" />
           <p className="text-sm font-medium uppercase tracking-[0.16em] text-slate-500">Preliminary engineering assistant</p>
           <h1 className="mt-3 max-w-xl text-4xl font-semibold leading-tight text-slate-950">
             Describe the problem, or open the studio and run the solver yourself.
