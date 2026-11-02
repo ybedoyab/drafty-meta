@@ -9,7 +9,7 @@ const IMAGES = {
   gear: { animated: gearAnimated, still: gearStill },
 };
 
-/** The spinning-gear logo, with or without the wordmark. Viewers who ask for reduced motion get the still image. */
+/** The spinning-gear logo, with or without the wordmark. The animation always plays unless `still` is set. */
 export function Logo({
   className,
   variant = "wordmark",
@@ -22,11 +22,5 @@ export function Logo({
   const { animated, still } = IMAGES[variant];
   // The artwork is black; in dark mode invert it and screen away any background box.
   className = cn(className, "dark:invert dark:mix-blend-screen");
-  if (alwaysStill) return <img src={still} alt="Drafty" className={className} />;
-  return (
-    <picture className="contents">
-      <source srcSet={still} media="(prefers-reduced-motion: reduce)" />
-      <img src={animated} alt="Drafty" className={className} />
-    </picture>
-  );
+  return <img src={alwaysStill ? still : animated} alt="Drafty" className={className} />;
 }
