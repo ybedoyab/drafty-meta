@@ -377,6 +377,9 @@ export interface BeamAnalysis {
 
 export const createScenario = () => api<ScenarioSession>("/api/v1/scenarios", { method: "POST" });
 
+export const renameScenario = (id: string, name: string) =>
+  api<ScenarioSession>(`/api/v1/scenarios/${id}/rename`, { method: "POST", body: JSON.stringify({ name }) });
+
 export const deleteScenario = (id: string) =>
   api<{ id: string; deleted: boolean; name: string }>(`/api/v1/scenarios/${id}`, { method: "DELETE" });
 

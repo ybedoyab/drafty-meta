@@ -49,6 +49,10 @@ class TurnBody(BaseModel):
     model: str | None = None
 
 
+class RenameBody(BaseModel):
+    name: str = ""
+
+
 class AnalyzeBody(BaseModel):
     method: str = "euler-bernoulli"
     elements: int = Field(default=16, ge=2, le=64)
@@ -345,6 +349,20 @@ def delete_scenario(scenario_id: str, request: Request) -> dict:
         raise HTTPException(status_code=503, detail="The scenario was not deleted.")
     shutil.rmtree(scenario_dir(scenario_id), ignore_errors=True)
     return {"id": scenario_id, "deleted": True, "name": session.get("name") or "Untitled"}
+
+
+@router.post("/api/v1/scenarios/{scenario_id}/rename")
+def rename_scenario(scenario_id: str, body: RenameBody, request: Request) -> dict:
+    """Rename a scenario the caller owns. The name is a label only."""
+
+    session = read_scenario(scenario_id, current_owner(request))
+    name = body.name.strip()[:120]
+    if not name:
+        raise HTTPException(status_code=422, detail="The name must not be empty.")
+    session["name"] = name
+    session["updated_at"] = datetime.now(UTC).isoformat()
+    _write(session)
+    return _public(session)
 
 
 @router.post("/api/v1/scenarios/{scenario_id}/turn")

@@ -172,6 +172,24 @@ def test_deleting_a_scenario_removes_it_from_the_list(tmp_path, monkeypatch):
     assert malformed.status_code == 404
 
 
+def test_renaming_a_scenario_changes_only_its_label(tmp_path, monkeypatch):
+    with _client(tmp_path, monkeypatch) as client:
+        created = client.post("/api/v1/scenarios").json()
+        scenario_id = created["id"]
+        renamed = client.post(f"/api/v1/scenarios/{scenario_id}/rename", json={"name": "  Pawn v2  "})
+        blank = client.post(f"/api/v1/scenarios/{scenario_id}/rename", json={"name": "   "})
+        unknown = client.post("/api/v1/scenarios/00000000-0000-4000-8000-000000000000/rename", json={"name": "X"})
+        fetched = client.get(f"/api/v1/scenarios/{scenario_id}")
+        listed = client.get("/api/v1/scenarios")
+    assert renamed.status_code == 200
+    assert renamed.json()["name"] == "Pawn v2"
+    assert renamed.json()["inputs"] == created["inputs"]
+    assert blank.status_code == 422
+    assert unknown.status_code == 404
+    assert fetched.json()["name"] == "Pawn v2"
+    assert listed.json()["scenarios"][0]["name"] == "Pawn v2"
+
+
 def test_rejecting_a_suggestion_keeps_the_typed_span(tmp_path, monkeypatch):
     with _client(tmp_path, monkeypatch) as client:
         created = client.post("/api/v1/scenarios")
