@@ -6,10 +6,10 @@ import { supabase } from "@/lib/supabase";
 import { Logo } from "@/components/Logo";
 import { ThemeToggle } from "@/components/ThemeToggle";
 
-export function SiteHeader({ trailing }: { trailing?: ReactNode }) {
+export function SiteHeader({ trailing, className = "" }: { trailing?: ReactNode; className?: string }) {
   const { session } = useAuth();
   return (
-    <header className="sticky top-0 z-20 flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-b border-gray-200 bg-white px-4 py-3 shadow-sm">
+    <header className={`sticky top-0 z-20 flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-b border-gray-200 bg-white px-4 py-3 shadow-sm ${className}`}>
       <div className="flex min-w-0 flex-wrap items-center gap-x-6 gap-y-2">
         <Link to="/" className="block">
           <Logo still className="h-10 w-auto sm:h-12" />

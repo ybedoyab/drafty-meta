@@ -41,8 +41,7 @@ import {
   type PartKind,
 } from "@/lib/design";
 import { takeStudioSpec } from "@/lib/scenario";
-import { Logo } from "@/components/Logo";
-import { ThemeToggle } from "@/components/ThemeToggle";
+import { SiteHeader } from "@/components/SiteHeader";
 
 const STAGES = ["queued", "geometry", "meshing", "solving", "postprocessing", "completed"] as const;
 const MATERIALS = [
@@ -304,37 +303,25 @@ export function Workstation() {
 
   return (
     <div
-      className={`grid h-full grid-cols-[360px_minmax(0,1fr)_320px] bg-slate-100 text-gray-900 ${logOpen ? "grid-rows-[64px_minmax(0,1fr)_220px]" : "grid-rows-[64px_minmax(0,1fr)_132px]"}`}
+      className={`grid h-full grid-cols-[360px_minmax(0,1fr)_320px] bg-slate-100 text-gray-900 ${logOpen ? "grid-rows-[auto_minmax(0,1fr)_220px]" : "grid-rows-[auto_minmax(0,1fr)_132px]"}`}
     >
-      <header className="col-span-3 flex items-center justify-between border-b border-gray-200 bg-white px-5 shadow-sm">
-        <div className="flex items-center gap-6">
-          <Link to="/">
-            <Logo still className="h-9 w-auto" />
-          </Link>
-          <nav className="flex items-center gap-1 text-sm font-medium">
-            <Link to="/" className="rounded-md px-3 py-1.5 text-gray-600 hover:bg-blue-50 hover:text-blue-800">
-              Dashboard
-            </Link>
-            <Link to="/projects" className="rounded-md px-3 py-1.5 text-gray-600 hover:bg-blue-50 hover:text-blue-800">
-              Projects
-            </Link>
-            <Link to="/scenario/new" className="rounded-md px-3 py-1.5 text-gray-600 hover:bg-blue-50 hover:text-blue-800">
-              {scenarioId ? "Back to scenario" : "New Problem"}
-            </Link>
-            <Link to="/studio" className="rounded-md bg-blue-50 px-3 py-1.5 text-blue-800">
-              Studio
-            </Link>
-          </nav>
-        </div>
-        <div className="flex items-center gap-2">
-          <p className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-gray-600">
-            {health.data
-              ? `solver ${health.data.solver.mode} · ${health.data.meta ? "Meta on" : "AI not connected"}`
-              : "solver unreachable · AI not connected"}
-          </p>
-          <ThemeToggle />
-        </div>
-      </header>
+      <SiteHeader
+        className="col-span-3"
+        trailing={
+          <>
+            {scenarioId && (
+              <Link to="/scenario/new" className="rounded-md px-3 py-1.5 text-sm font-medium text-gray-600 hover:bg-blue-50 hover:text-blue-800">
+                Back to scenario
+              </Link>
+            )}
+            <p className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-gray-600">
+              {health.data
+                ? `solver ${health.data.solver.mode} · ${health.data.meta ? "Meta on" : "AI not connected"}`
+                : "solver unreachable · AI not connected"}
+            </p>
+          </>
+        }
+      />
 
       <aside className="flex min-h-0 flex-col gap-4 overflow-auto border-r border-gray-200 bg-white p-4">
         <StepNav steps={designSteps} active={activeDesignStep} label="Design" onSelect={goDesign} />

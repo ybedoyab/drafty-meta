@@ -87,6 +87,10 @@ test("the studio panels show one step at a time and paginate through them", asyn
   await expect(page.getByRole("heading", { name: "Part", exact: true })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Loads" })).toHaveCount(0);
   await expect(page.getByText("What the part is: shape, size, and material.")).toBeVisible();
+  await expect(page.getByRole("link", { name: "Capabilities" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Dashboard" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Projects" })).toBeVisible();
+  await expect(page.locator('nav[aria-label="Primary"] a[href="/capabilities"] svg')).toBeVisible();
   await showDesignStep(page, "Loads");
   await expect(page.getByRole("heading", { name: "Loads" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Part", exact: true })).toHaveCount(0);
