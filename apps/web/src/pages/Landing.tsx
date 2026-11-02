@@ -66,7 +66,6 @@ export function Landing() {
         {/* ── Hero (kept) ──────────────────────────────────── */}
         <div className="grid gap-10 py-12 lg:grid-cols-[minmax(0,1.1fr)_minmax(300px,0.9fr)] lg:items-start lg:py-16">
           <div>
-            {/* Animated wordmark; Logo serves the still image to reduced-motion viewers. */}
             <Logo className="mb-8 h-12 w-auto" />
             <p className="text-sm font-medium uppercase tracking-[0.16em] text-slate-500">
               Preliminary engineering assistant
