@@ -49,6 +49,6 @@ button {
 .field input:focus,
 .field select:focus,
 .field textarea:focus {
-  outline: 2px solid #c7d2fe;
-  border-color: #4f46e5;
+  outline: 2px solid #bfdbfe;
+  border-color: #1e40af;
 }

@@ -55,7 +55,7 @@ export function GridControl({
                     }}
                     className={`rounded border px-1 py-1 text-[11px] ${
                       active
-                        ? "border-indigo-600 bg-indigo-50 font-medium text-indigo-700"
+                        ? "border-blue-800 bg-blue-50 font-medium text-blue-800"
                         : "border-gray-200 bg-white text-gray-700"
                     }`}
                   >

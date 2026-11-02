@@ -280,16 +280,16 @@ export function Workstation() {
             <img src={logo} alt="Drafty" className="h-9 w-auto" />
           </Link>
           <nav className="flex items-center gap-1 text-sm font-medium">
-            <Link to="/" className="rounded-md px-3 py-1.5 text-gray-600 hover:bg-indigo-50 hover:text-indigo-600">
+            <Link to="/" className="rounded-md px-3 py-1.5 text-gray-600 hover:bg-blue-50 hover:text-blue-800">
               Dashboard
             </Link>
-            <Link to="/projects" className="rounded-md px-3 py-1.5 text-gray-600 hover:bg-indigo-50 hover:text-indigo-600">
+            <Link to="/projects" className="rounded-md px-3 py-1.5 text-gray-600 hover:bg-blue-50 hover:text-blue-800">
               Projects
             </Link>
-            <Link to="/scenario/new" className="rounded-md px-3 py-1.5 text-gray-600 hover:bg-indigo-50 hover:text-indigo-600">
+            <Link to="/scenario/new" className="rounded-md px-3 py-1.5 text-gray-600 hover:bg-blue-50 hover:text-blue-800">
               {scenarioId ? "Back to scenario" : "New Problem"}
             </Link>
-            <Link to="/studio" className="rounded-md bg-indigo-50 px-3 py-1.5 text-indigo-700">
+            <Link to="/studio" className="rounded-md bg-blue-50 px-3 py-1.5 text-blue-800">
               Studio
             </Link>
           </nav>
@@ -302,14 +302,14 @@ export function Workstation() {
       </header>
 
       <aside className="overflow-auto border-r border-gray-200 bg-white p-4">
-        <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-indigo-600">1. Start here</p>
+        <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-blue-800">1. Start here</p>
         <button
           type="button"
           onClick={() => void loadExample()}
           disabled={exampleBusy}
-          className="mb-4 w-full rounded-2xl border border-indigo-100 bg-gradient-to-br from-white to-indigo-50 p-4 text-left shadow-sm transition hover:border-indigo-300 hover:shadow-md disabled:opacity-60"
+          className="mb-4 w-full rounded-2xl border border-blue-100 bg-gradient-to-br from-white to-blue-50 p-4 text-left shadow-sm transition hover:border-blue-300 hover:shadow-md disabled:opacity-60"
         >
-          <p className="text-xs font-semibold uppercase tracking-wide text-indigo-600">Example</p>
+          <p className="text-xs font-semibold uppercase tracking-wide text-blue-800">Example</p>
           <p className="mt-1 text-sm font-semibold text-gray-900">
             {exampleBusy ? "Building the example solid…" : "Load cantilever example"}
           </p>
@@ -317,7 +317,7 @@ export function Workstation() {
             300 × 20 × 12 mm steel beam, fixed at one end, 100 N downward at the free end. No AI key required.
           </p>
         </button>
-        <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-indigo-600">2. Part</p>
+        <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-blue-800">2. Part</p>
         <div className="grid grid-cols-2 gap-2">
           <label className="field col-span-2">
             <span>Name</span>
@@ -394,7 +394,7 @@ export function Workstation() {
               ? `${selectedMaterial.name}: E ${formatEngineering(selectedMaterial.youngs_modulus_pa / 1e9, 3)} GPa, nu ${selectedMaterial.poisson_ratio}, density ${selectedMaterial.density_kg_m3} kg/m3, yield ${formatEngineering(selectedMaterial.yield_strength_pa / 1e6, 3)} MPa. ${selectedMaterial.caveat}`
               : "Typical values near 20 °C. Not a certified material certificate."}
           </p>
-          <p className="col-span-2 mt-4 text-xs font-semibold uppercase tracking-wide text-indigo-600">
+          <p className="col-span-2 mt-4 text-xs font-semibold uppercase tracking-wide text-blue-800">
             3. Hold and load
           </p>
           <label className="field">
@@ -484,7 +484,7 @@ export function Workstation() {
           <div className="mt-2 max-h-36 space-y-2 overflow-auto text-xs leading-5">
             {chat.map((entry, index) => (
               <p key={`${entry.role}-${index}`}>
-                <span className="font-medium text-indigo-600">{entry.role === "you" ? "You" : "Drafty"}: </span>
+                <span className="font-medium text-blue-800">{entry.role === "you" ? "You" : "Drafty"}: </span>
                 {entry.text}
               </p>
             ))}
@@ -557,7 +557,7 @@ export function Workstation() {
         </div>
         {!previewUrl && !result && !activeId && (
           <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-            <div className="rounded-2xl border border-indigo-100 bg-white px-8 py-6 text-center shadow-lg">
+            <div className="rounded-2xl border border-blue-100 bg-white px-8 py-6 text-center shadow-lg">
               <p className="text-lg font-semibold text-gray-900">Ready to generate?</p>
               <p className="mt-1 text-sm text-gray-500">Load the example or enter dimensions, then preview the solid.</p>
             </div>
@@ -586,7 +586,7 @@ export function Workstation() {
       </main>
 
       <aside className="overflow-auto border-l border-gray-200 bg-white p-4 text-sm">
-        <h2 className="text-xs font-semibold uppercase tracking-wider text-indigo-600">4. Run and read</h2>
+        <h2 className="text-xs font-semibold uppercase tracking-wider text-blue-800">4. Run and read</h2>
         <div className="mt-2 grid grid-cols-2 gap-2">
           <NumberField label="Mesh mm" value={form.meshMm} onChange={(meshMm) => setForm({ ...form, meshMm })} />
           <label className="field">
@@ -698,7 +698,7 @@ export function Workstation() {
           </label>
         </div>
         <p className="mt-1 text-[11px] leading-4 text-gray-500">
-          The blue marker is the fixed support on the selected bounding-box face. The red arrow starts at the load-face
+          The orange marker is the fixed support on the selected bounding-box face. The red arrow starts at the load-face
           centroid and points in the applied-force direction. It is not the displacement. These six faces are presets,
           not picked B-rep faces.
         </p>
@@ -747,7 +747,7 @@ export function Workstation() {
               (name) => (
                 <a
                   key={name}
-                  className="text-indigo-600 hover:underline"
+                  className="text-blue-800 hover:underline"
                   href={artifactUrl(activeId, name)}
                   onClick={(event) => {
                     event.preventDefault();
@@ -766,7 +766,7 @@ export function Workstation() {
         <div className="overflow-auto">
           <div className="flex items-center justify-between px-3 py-1">
             <p className="text-xs font-medium text-gray-500">Jobs</p>
-            <button type="button" className="text-xs text-indigo-700" onClick={() => setLogOpen((value) => !value)}>
+            <button type="button" className="text-xs text-blue-800" onClick={() => setLogOpen((value) => !value)}>
               {logOpen ? "Hide solver log" : "Solver log"}
             </button>
           </div>
@@ -785,7 +785,7 @@ export function Workstation() {
               {(jobs.data ?? []).map((item) => (
                 <tr
                   key={item.id}
-                  className={item.id === activeId ? "bg-indigo-50" : "hover:bg-slate-50"}
+                  className={item.id === activeId ? "bg-blue-50" : "hover:bg-slate-50"}
                   onClick={() => setActiveId(item.id)}
                 >
                   <td className="cursor-pointer px-3 py-1">{item.id.slice(0, 8)}</td>
@@ -902,7 +902,7 @@ function stageClass(stage: string, job: Job | undefined) {
     "completed",
   ];
   if (!job) return "text-gray-400";
-  if (job.status === stage) return "font-medium text-indigo-600";
+  if (job.status === stage) return "font-medium text-blue-800";
   const current = order.indexOf(job.status);
   const index = order.indexOf(stage);
   if (current >= 0 && index < current) return "text-gray-900";

@@ -82,7 +82,7 @@ export function Projects() {
                     />
                     <button
                       type="submit"
-                      className="text-indigo-700 hover:underline disabled:opacity-50"
+                      className="text-blue-800 hover:underline disabled:opacity-50"
                       disabled={renaming.isPending}
                     >
                       Save
@@ -121,7 +121,7 @@ export function Projects() {
               <div className="flex shrink-0 items-center gap-3">
                 <Link
                   to="/scenario/new"
-                  className="text-indigo-700 hover:underline"
+                  className="text-blue-800 hover:underline"
                   onClick={() => rememberScenarioId(localStorage, item.id)}
               >
                   Open

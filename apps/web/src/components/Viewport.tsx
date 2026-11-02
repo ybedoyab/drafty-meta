@@ -180,10 +180,10 @@ function Markers({
     <group>
       <mesh position={held}>
         <boxGeometry args={[mark, mark, mark]} />
-        <meshBasicMaterial color="#2563eb" />
+        <meshBasicMaterial color="#1e40af" />
       </mesh>
       <Html position={held} center sprite zIndexRange={[20, 0]}>
-        <div className="pointer-events-none whitespace-nowrap rounded bg-white px-1.5 py-0.5 text-[11px] font-medium text-blue-700 shadow">
+        <div className="pointer-events-none whitespace-nowrap rounded bg-white px-1.5 py-0.5 text-[11px] font-medium text-blue-800 shadow">
           Fixed support
         </div>
       </Html>

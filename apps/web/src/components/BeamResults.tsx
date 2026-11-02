@@ -41,7 +41,7 @@ export function BeamResults({
       <div className="flex flex-wrap gap-2">
         <button
           type="button"
-          className="rounded-md bg-indigo-600 px-3 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-50"
+          className="rounded-md bg-blue-800 px-3 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-50"
           disabled={!canRun}
           onClick={onRun}
         >

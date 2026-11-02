@@ -688,8 +688,8 @@ export function Scenario() {
               const height = session.segmentation?.height || Math.max(object.bottom, 1);
               return (
                 <svg key={object.object_id} viewBox={`0 0 ${width} ${height}`} className="mt-2 h-40 w-full rounded border border-slate-200 bg-slate-50">
-                  <rect x={object.left} y={object.top} width={Math.max(object.right - object.left, 1)} height={Math.max(object.bottom - object.top, 1)} fill="none" stroke="#4f46e5" />
-                  {object.path && <path d={object.path} transform={`translate(${object.left} ${object.top})`} fill="rgba(79,70,229,0.25)" />}
+                  <rect x={object.left} y={object.top} width={Math.max(object.right - object.left, 1)} height={Math.max(object.bottom - object.top, 1)} fill="none" stroke="#1e40af" />
+                  {object.path && <path d={object.path} transform={`translate(${object.left} ${object.top})`} fill="rgba(30,64,175,0.22)" />}
                 </svg>
               );
             })}
