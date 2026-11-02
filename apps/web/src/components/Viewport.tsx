@@ -1,8 +1,9 @@
-import { Center, GizmoHelper, GizmoViewport, Html, OrbitControls, useGLTF } from "@react-three/drei";
+import { Center, GizmoHelper, GizmoViewport, Grid, Html, OrbitControls, useGLTF } from "@react-three/drei";
 import { Canvas, useThree } from "@react-three/fiber";
 import { Suspense, useEffect, useMemo } from "react";
 import * as THREE from "three";
 import { turbo } from "@/lib/colormap";
+import { resolveGridFloor } from "@/lib/grid";
 import { faceCentroid, loadDirection } from "@/lib/markers";
 import type { SurfaceResult } from "@/lib/api";
 
@@ -26,6 +27,9 @@ export function Viewport({
   loadLabel,
   fitRadius,
   zUp = false,
+  gridVisible = true,
+  gridStepM = 0.01,
+  floorOffset,
 }: {
   previewUrl: string | null;
   surface: SurfaceResult | null;
@@ -44,6 +48,11 @@ export function Viewport({
   fitRadius: number;
   /** Orbit with Z up, so a part modelled along Z stands upright. Studio keeps the default. */
   zUp?: boolean;
+  /** Measured reference grid under the part. One cell equals gridStepM meters. */
+  gridVisible?: boolean;
+  gridStepM?: number;
+  /** Distance from the part center to its lowest face, in meters. Falls back to the surface bbox. */
+  floorOffset?: number;
 }) {
   return (
     <Canvas key={orthographic ? "ortho" : "persp"} orthographic={orthographic} camera={{ position: [0.45, -0.35, 0.28], fov: 35, zoom: orthographic ? 400 : 1, up: zUp ? [0, 0, 1] : [0, 1, 0] }}>
@@ -76,6 +85,15 @@ export function Viewport({
           )}
         </Suspense>
       </Center>
+      {gridVisible && (
+        <MeasuredGrid
+          surface={surface}
+          stepM={gridStepM}
+          fitRadius={fitRadius}
+          floorOffset={floorOffset}
+          zUp={zUp}
+        />
+      )}
       <CameraRig view={cameraView} nonce={cameraNonce} radius={fitRadius} />
       <OrbitControls makeDefault />
       <GizmoHelper alignment="bottom-right" margin={[72, 72]}>
@@ -205,6 +223,54 @@ function CameraRig({ view, nonce, radius }: { view: CameraView; nonce: number; r
     camera.updateProjectionMatrix();
   }, [camera, view, nonce, radius, size.width, size.height]);
   return null;
+}
+
+function MeasuredGrid({
+  surface,
+  stepM,
+  fitRadius,
+  floorOffset,
+  zUp,
+}: {
+  surface: SurfaceResult | null;
+  stepM: number;
+  fitRadius: number;
+  floorOffset: number | undefined;
+  zUp: boolean;
+}) {
+  const floor = useMemo(() => {
+    const axis = zUp ? 2 : 1;
+    let modelHalf: number | null = null;
+    if (surface) {
+      let min = Infinity;
+      let max = -Infinity;
+      for (const vertex of surface.vertices_m) {
+        min = Math.min(min, vertex[axis]);
+        max = Math.max(max, vertex[axis]);
+      }
+      if (Number.isFinite(min) && Number.isFinite(max) && max > min) modelHalf = (max - min) / 2;
+    }
+    return resolveGridFloor([floorOffset, modelHalf], fitRadius * 0.5);
+  }, [surface, floorOffset, fitRadius, zUp]);
+  const lift = Math.max(fitRadius * 0.005, stepM * 0.15);
+  const distance = floor + lift;
+  return (
+    <Grid
+      position={zUp ? [0, 0, -distance] : [0, -distance, 0]}
+      rotation={zUp ? [Math.PI / 2, 0, 0] : undefined}
+      cellSize={stepM}
+      cellThickness={0.6}
+      cellColor="#cbd5e1"
+      sectionSize={stepM * 5}
+      sectionThickness={1.2}
+      sectionColor="#94a3b8"
+      fadeDistance={Math.max(fitRadius * 8, stepM * 60)}
+      fadeStrength={2.5}
+      followCamera={false}
+      side={THREE.DoubleSide}
+      infiniteGrid
+    />
+  );
 }
 
 function buildGeometry(

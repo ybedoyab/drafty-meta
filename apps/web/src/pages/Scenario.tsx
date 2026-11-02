@@ -6,6 +6,7 @@ import { Suspense, useEffect, useRef, useState, type ReactNode } from "react";
 import { SiteHeader } from "@/components/SiteHeader";
 import { BeamResults } from "@/components/BeamResults";
 import { Viewport } from "@/components/Viewport";
+import { GridControl } from "@/components/GridControl";
 import { MicButton, SpeakButton } from "@/components/Voice";
 import { Button } from "@/components/ui/button";
 import {
@@ -45,6 +46,7 @@ import {
   type PartSummary,
   type ScenarioForm,
 } from "@/lib/scenario";
+import { DEFAULT_GRID_STEP_MM, gridStepMeters } from "@/lib/grid";
 
 const IBEAM = "simply_supported_ibeam";
 const ANALYSIS_LABEL: Record<string, string> = {
@@ -911,12 +913,22 @@ function GeometryPanel({
   error: string | null;
   onDownload: (name: string) => void;
 }) {
+  const [gridVisible, setGridVisible] = useState(true);
+  const [gridStepMm, setGridStepMm] = useState<number>(DEFAULT_GRID_STEP_MM);
   const points = spec.profile.points;
   const height = points.length ? points[points.length - 1].height_m - points[0].height_m : 0;
   const width = 2 * Math.max(0, ...points.map((point) => point.radius_m));
   return (
     <Panel title="Geometry">
       <div className="relative h-64 rounded border border-slate-200">
+        <div className="absolute left-2 top-2 z-10">
+          <GridControl
+            visible={gridVisible}
+            stepMm={gridStepMm}
+            onVisibleChange={setGridVisible}
+            onStepChange={setGridStepMm}
+          />
+        </div>
         <Suspense fallback={null}>
           <Viewport
             previewUrl={previewUrl}
@@ -934,6 +946,9 @@ function GeometryPanel({
             direction={[0, 0, -1]}
             loadLabel=""
             fitRadius={Math.max(height, width) / 2}
+            gridVisible={gridVisible}
+            gridStepM={gridStepMeters(gridStepMm)}
+            floorOffset={height / 2}
             zUp
           />
         </Suspense>

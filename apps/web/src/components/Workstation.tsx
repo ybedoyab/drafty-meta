@@ -3,6 +3,7 @@ import { Link, useSearchParams } from "react-router-dom";
 import logo from "@/assets/logo.png";
 import { Suspense, useEffect, useMemo, useState } from "react";
 import { Viewport, type CameraView, type Shade } from "@/components/Viewport";
+import { GridControl } from "@/components/GridControl";
 import { Button } from "@/components/ui/button";
 import {
   artifactUrl,
@@ -24,6 +25,7 @@ import {
   type SimulationResult,
 } from "@/lib/api";
 import { turbo } from "@/lib/colormap";
+import { DEFAULT_GRID_STEP_MM, gridStepMeters } from "@/lib/grid";
 import { loadDirection } from "@/lib/markers";
 import {
   SURFACES,
@@ -85,6 +87,8 @@ export function Workstation() {
   const [chat, setChat] = useState<{ role: "you" | "drafty"; text: string }[]>([]);
   const [imageId, setImageId] = useState<string | null>(null);
   const [wireframe, setWireframe] = useState(false);
+  const [gridVisible, setGridVisible] = useState(true);
+  const [gridStepMm, setGridStepMm] = useState<number>(DEFAULT_GRID_STEP_MM);
   const [shade, setShade] = useState<Shade>("von_mises");
   const [orthographic, setOrthographic] = useState(false);
   const [cameraView, setCameraView] = useState<CameraView>("iso");
@@ -261,6 +265,7 @@ export function Workstation() {
     }
     return Math.hypot(form.lengthMm, form.widthMm, form.heightMm) / 2000 || 0.15;
   }, [result, form.lengthMm, form.widthMm, form.heightMm]);
+  const partHalfHeightM = ((form.kind === "cantilever_beam" ? form.heightMm : form.thicknessMm) / 1000) / 2;
   const loadAxis = loadDirection([form.directionX, form.directionY, form.directionZ]).axisLabel;
   const loadLabel =
     form.loadMode === "pressure" ? `Pressure ${form.magnitude} MPa ${loadAxis}` : `${form.magnitude} N ${loadAxis}`;
@@ -505,6 +510,9 @@ export function Workstation() {
             direction={[form.directionX, form.directionY, form.directionZ]}
             loadLabel={loadLabel}
             fitRadius={fitRadius}
+            gridVisible={gridVisible}
+            gridStepM={gridStepMeters(gridStepMm)}
+            floorOffset={partHalfHeightM}
           />
         </Suspense>
         <div className="pointer-events-none absolute left-3 top-3 rounded-lg border border-gray-200 bg-white/90 px-3 py-1 text-xs text-gray-500 shadow-sm">
@@ -513,6 +521,12 @@ export function Workstation() {
             : "CAD preview · meters"}
         </div>
         <div className="absolute left-3 top-12 flex flex-wrap gap-1">
+          <GridControl
+            visible={gridVisible}
+            stepMm={gridStepMm}
+            onVisibleChange={setGridVisible}
+            onStepChange={setGridStepMm}
+          />
           {(["iso", "front", "top", "right"] as const).map((view) => (
             <button
               key={view}
