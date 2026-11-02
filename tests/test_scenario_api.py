@@ -153,6 +153,25 @@ def test_confirmed_beam_elements_run_and_a_solid_model_stays_closed(tmp_path, mo
     assert list(tmp_path.glob("jobs/**")) == []
 
 
+def test_deleting_a_scenario_removes_it_from_the_list(tmp_path, monkeypatch):
+    with _client(tmp_path, monkeypatch) as client:
+        first = client.post("/api/v1/scenarios").json()["id"]
+        second = client.post("/api/v1/scenarios").json()["id"]
+        deleted = client.delete(f"/api/v1/scenarios/{first}")
+        missing = client.get(f"/api/v1/scenarios/{first}")
+        again = client.delete(f"/api/v1/scenarios/{first}")
+        kept = client.get(f"/api/v1/scenarios/{second}")
+        listed = client.get("/api/v1/scenarios")
+        malformed = client.delete("/api/v1/scenarios/not-a-uuid")
+    assert deleted.status_code == 200
+    assert deleted.json() == {"id": first, "deleted": True, "name": "Untitled"}
+    assert missing.status_code == 404
+    assert again.status_code == 404
+    assert kept.status_code == 200
+    assert [item["id"] for item in listed.json()["scenarios"]] == [second]
+    assert malformed.status_code == 404
+
+
 def test_rejecting_a_suggestion_keeps_the_typed_span(tmp_path, monkeypatch):
     with _client(tmp_path, monkeypatch) as client:
         created = client.post("/api/v1/scenarios")

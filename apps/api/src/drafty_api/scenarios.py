@@ -19,6 +19,7 @@ from drafty_api.auth import current_access_token, current_owner
 from drafty_api.images import inspect_image
 from drafty_api.settings import settings
 from drafty_api.storage import (
+    delete_remote_scenario,
     download_private_object,
     fetch_scenario,
     list_remote_scenarios,
@@ -331,6 +332,19 @@ def _is_user_project(session: dict) -> bool:
 @router.get("/api/v1/scenarios/{scenario_id}")
 def get_scenario(scenario_id: str, request: Request) -> dict:
     return _public(read_scenario(scenario_id, current_owner(request)))
+
+
+@router.delete("/api/v1/scenarios/{scenario_id}")
+def delete_scenario(scenario_id: str, request: Request) -> dict:
+    """Delete a scenario the caller owns, locally and in the mirror. Unknown ids stay 404."""
+
+    owner = current_owner(request)
+    session = read_scenario(scenario_id, owner)
+    removed_remote = delete_remote_scenario(scenario_id, current_access_token())
+    if settings.production and removed_remote is not True:
+        raise HTTPException(status_code=503, detail="The scenario was not deleted.")
+    shutil.rmtree(scenario_dir(scenario_id), ignore_errors=True)
+    return {"id": scenario_id, "deleted": True, "name": session.get("name") or "Untitled"}
 
 
 @router.post("/api/v1/scenarios/{scenario_id}/turn")

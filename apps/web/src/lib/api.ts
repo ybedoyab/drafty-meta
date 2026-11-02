@@ -377,6 +377,9 @@ export interface BeamAnalysis {
 
 export const createScenario = () => api<ScenarioSession>("/api/v1/scenarios", { method: "POST" });
 
+export const deleteScenario = (id: string) =>
+  api<{ id: string; deleted: boolean; name: string }>(`/api/v1/scenarios/${id}`, { method: "DELETE" });
+
 export const loadDemo = (
   kind: "classroom" | "bracket",
   scenarioId: string | null,

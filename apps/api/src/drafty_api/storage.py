@@ -134,6 +134,24 @@ def mirror_scenario(session: dict, access_token: str | None, snapshot: bool = Fa
     return "mirrored"
 
 
+def delete_remote_scenario(scenario_id: str, access_token: str | None) -> bool | None:
+    """Delete a mirrored scenario row with the caller's token so RLS applies. None when unconfigured."""
+
+    if not access_token or not settings.supabase_auth_configured:
+        return None
+    base = settings.supabase_url.rstrip("/")
+    response = httpx.delete(
+        f"{base}/rest/v1/scenarios",
+        headers={
+            "apikey": settings.supabase_publishable_key,
+            "Authorization": f"Bearer {access_token}",
+        },
+        params={"id": f"eq.{scenario_id}"},
+        timeout=30,
+    )
+    return response.status_code < 400
+
+
 def fetch_scenario(scenario_id: str, access_token: str | None) -> dict | None:
     if not access_token or not settings.supabase_auth_configured:
         return None

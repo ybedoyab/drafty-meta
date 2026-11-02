@@ -113,6 +113,11 @@ export function rememberScenarioId(storage: Storage, id: string) {
   storage.setItem(KEY, JSON.stringify({ version: 2, id }));
 }
 
+export function forgetScenarioId(storage: Storage, id?: string) {
+  if (id !== undefined && recallScenarioId(storage) !== id) return;
+  storage.removeItem(KEY);
+}
+
 export function recallScenarioId(storage: Storage): string | null {
   try {
     const parsed = JSON.parse(storage.getItem(KEY) || "") as { version?: number; id?: string };

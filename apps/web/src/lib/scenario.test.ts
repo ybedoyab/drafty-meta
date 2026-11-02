@@ -6,6 +6,7 @@ import {
   groupFields,
   inputsFromForm,
   recallScenarioId,
+  forgetScenarioId,
   rememberScenarioId,
   scenarioFields,
   type PartCatalogView,
@@ -110,5 +111,9 @@ describe("scenario inputs", () => {
     expect(recallScenarioId(memory)).toBeNull();
     rememberScenarioId(memory, "11111111-1111-4111-8111-111111111111");
     expect(recallScenarioId(memory)).toBe("11111111-1111-4111-8111-111111111111");
+    forgetScenarioId(memory, "22222222-2222-4222-8222-222222222222");
+    expect(recallScenarioId(memory)).toBe("11111111-1111-4111-8111-111111111111");
+    forgetScenarioId(memory, "11111111-1111-4111-8111-111111111111");
+    expect(recallScenarioId(memory)).toBeNull();
   });
 });
