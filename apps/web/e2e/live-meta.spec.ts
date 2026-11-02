@@ -2,6 +2,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, test } from "@playwright/test";
 
+async function showInspectorStep(page: import("@playwright/test").Page, label: string) {
+  await page.locator('nav[aria-label="Inspector steps"]').getByRole("button", { name: new RegExp(label) }).click();
+}
+
 const here = path.dirname(fileURLToPath(import.meta.url));
 const beam = path.join(here, "fixtures", "beam-sketch.png");
 const section = path.join(here, "fixtures", "isection-sketch.png");
@@ -44,6 +48,7 @@ test("a real Muse Spark turn reads two sketches and keeps the span unset", async
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/scenario/new");
   await expect(page.getByText("Muse Spark ready")).toBeVisible();
+  await showInspectorStep(page, "Evidence");
   await page.getByLabel("Evidence images").setInputFiles([beam, section]);
   await expect(page.getByText("beam-sketch.png")).toBeVisible();
   await expect(page.getByText("isection-sketch.png")).toBeVisible();
@@ -55,10 +60,13 @@ test("a real Muse Spark turn reads two sketches and keeps the span unset", async
   await expect(page.getByText("muse-spark-1.3 · Responses API")).toBeVisible();
   await expect(page.getByText("not a valid engineering record")).toHaveCount(0);
   expect(questions).toBeGreaterThan(0);
+  await showInspectorStep(page, "Inputs");
   await expect(page.getByText("headcount is not a floor load").first()).toBeVisible();
   await expect(page.getByLabel("Span m")).toHaveValue("");
+  await showInspectorStep(page, "Results");
   await expect(page.getByText("3D simulation is not available").first()).toBeVisible();
   await expect(page.getByRole("button", { name: "Run 3D simulation" })).toBeDisabled();
+  await showInspectorStep(page, "Evidence");
   await expect(page.getByText("Not a measured drawing").first()).toBeVisible();
   const links = page.locator("a[href^='http']");
   const linkCount = await links.count();

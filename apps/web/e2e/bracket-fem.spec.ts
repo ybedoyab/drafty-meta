@@ -1,5 +1,9 @@
 import { expect, test } from "@playwright/test";
 
+async function showInspectorStep(page: import("@playwright/test").Page, label: string) {
+  await page.locator('nav[aria-label="Inspector steps"]').getByRole("button", { name: new RegExp(label) }).click();
+}
+
 test("an approved bracket runs CalculiX and one real optimization", async ({ page, request }) => {
   test.setTimeout(360_000);
   const health = await request.get("http://127.0.0.1:8000/api/v1/health");
@@ -13,6 +17,7 @@ test("an approved bracket runs CalculiX and one real optimization", async ({ pag
     "Design an aluminum bracket. Force 200 N. Legs 80 mm by 80 mm. Thickness 8 mm. Bracket width 40 mm. Displacement limit 1 mm.",
   );
   await page.getByRole("button", { name: "Send" }).click();
+  await showInspectorStep(page, "Results");
   await page.getByLabel("Fixed face").selectOption("xmin");
   await page.getByLabel("Load face").selectOption("zmax");
   await page.getByRole("button", { name: "Confirm faces" }).click();

@@ -1,4 +1,8 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
+
+async function showInspectorStep(page: Page, label: string) {
+  await page.locator('nav[aria-label="Inspector steps"]').getByRole("button", { name: new RegExp(label) }).click();
+}
 
 const png = Buffer.from(
   "89504e470d0a1a0a0000000d4948445200000001000000010802000000907753de0000000c4944415408d763f8cfc0000000030001c7e4e3d30000000049454e44ae426082",
@@ -16,6 +20,7 @@ test("a classroom scenario asks for missing data and does not open a 3D solve", 
   await expect(page.getByText("AI not connected")).toBeVisible();
   await page.getByRole("button", { name: "Load Classroom Demo" }).click();
   await expect(page.getByText("classroom-v1").first()).toBeVisible();
+  await showInspectorStep(page, "Inputs");
   await expect(page.getByText("30 students").first()).toBeVisible();
   await expect(page.getByLabel("Span m")).toHaveValue("6");
   await expect(page.getByLabel("Tributary width m")).toHaveValue("2.5");
@@ -28,9 +33,12 @@ test("a classroom scenario asks for missing data and does not open a 3D solve", 
   await expect(page.getByLabel("Web thickness mm")).toHaveValue("6");
   await expect(page.getByLabel("Supports")).toHaveValue("simply supported");
   await expect(page.getByLabel("Jurisdiction")).toHaveValue("Colombia");
+  await showInspectorStep(page, "Basis");
   await expect(page.getByText("NSR-10 Title B, Table B.4.2.1-1").first()).toBeVisible();
+  await showInspectorStep(page, "Load path");
   await expect(page.getByText("12500.0 N/m").first()).toBeVisible();
   await expect(page.getByText("not a finite-element result").first()).toBeVisible();
+  await showInspectorStep(page, "Results");
   await expect(page.getByText("3D simulation is not available").first()).toBeVisible();
   await expect(page.getByRole("button", { name: "Run 3D simulation" })).toBeDisabled();
   await page.getByRole("button", { name: "Run Demo Analysis" }).click();
@@ -38,9 +46,12 @@ test("a classroom scenario asks for missing data and does not open a 3D solve", 
   await expect(page.getByText("not a certification").first()).toBeVisible();
   await expect(page.getByText("Euler-Bernoulli beam elements").first()).toBeVisible();
   await expect(page.getByRole("button", { name: "Run 3D simulation" })).toBeDisabled();
+  await showInspectorStep(page, "Inputs");
   await page.getByLabel("Span m").fill("5");
+  await showInspectorStep(page, "Results");
   await page.getByRole("button", { name: "Compare this edit" }).click();
   await expect(page.getByText("Edited, 5 m")).toBeVisible();
+  await showInspectorStep(page, "Evidence");
   await page.getByLabel("Evidence images").setInputFiles([
     { name: "plan.png", mimeType: "image/png", buffer: png },
     { name: "photo.png", mimeType: "image/png", buffer: png },
@@ -54,13 +65,16 @@ test("a classroom scenario asks for missing data and does not open a 3D solve", 
     node.scrollTop = 0;
   });
   await page.screenshot({ path: "../../docs/screenshots/scenario-workspace-1440x900.png" });
+  await showInspectorStep(page, "Results");
   await page.getByRole("heading", { name: "Beam-element results" }).scrollIntoViewIfNeeded();
   await page.screenshot({ path: "../../docs/screenshots/scenario-model-1440x900.png" });
   await page.setViewportSize({ width: 1366, height: 768 });
   await page.screenshot({ path: "../../docs/screenshots/scenario-model-1366x768.png" });
   await page.reload();
   await expect(page.getByText("12500.0 N/m").first()).toBeVisible();
+  await showInspectorStep(page, "Evidence");
   await expect(page.getByText("photo.png")).toBeVisible();
+  await showInspectorStep(page, "Results");
   await expect(page.getByRole("heading", { name: "Beam-element results" })).toBeVisible();
   await page.setViewportSize({ width: 390, height: 844 });
   await page.getByRole("heading", { name: "Beam-element results" }).scrollIntoViewIfNeeded();
@@ -70,12 +84,38 @@ test("a classroom scenario asks for missing data and does not open a 3D solve", 
   expect(pageErrors).toEqual([]);
 });
 
+test("the inspector shows one step at a time and paginates through them", async ({ page }) => {
+  await page.goto("/scenario/new");
+  await page.getByRole("button", { name: "Load Classroom Demo" }).click();
+  await expect(page.getByRole("heading", { name: "Load path" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Inputs" })).toHaveCount(0);
+  await expect(page.locator('nav[aria-label="Inspector steps"]').getByRole("button", { name: /Checklist/ })).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Inspector" })).toHaveCount(0);
+  await expect(page.getByRole("progressbar")).toHaveCount(0);
+  await expect(page.getByText("How the load travels to the supports, before any result is trusted.")).toBeVisible();
+  await showInspectorStep(page, "Inputs");
+  await expect(page.getByRole("heading", { name: "Inputs" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Load path" })).toHaveCount(0);
+  await expect(page.getByText("The numbers and choices Drafty is using, one group at a time.")).toBeVisible();
+  await expect(page.getByText("How the load travels to the supports, before any result is trusted.")).toHaveCount(0);
+  await page.locator('nav[aria-label="Inspector pagination"]').getByRole("button", { name: /Next/ }).click();
+  await expect(page.getByRole("heading", { name: "Evidence" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Inputs" })).toHaveCount(0);
+  await page.locator('nav[aria-label="Inspector pagination"]').getByRole("button", { name: /Inputs/ }).click();
+  await expect(page.getByRole("heading", { name: "Inputs" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Evidence" })).toHaveCount(0);
+  await showInspectorStep(page, "Results");
+  await expect(page.getByRole("button", { name: "Run Demo Analysis" })).toBeVisible();
+  await expect(page.getByText("Last step")).toBeVisible();
+});
+
 test("a failed send leaves the scenario and the typed span in place", async ({ page }) => {
   const pageErrors: string[] = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
   await page.route("**/api/v1/scenarios/*/turn", (route) => route.abort());
   await page.goto("/scenario/new");
   await expect(page.getByRole("heading", { name: "Scenario assistant" })).toBeVisible();
+  await showInspectorStep(page, "Inputs");
   await page.getByLabel("Span m").fill("6");
   await page.getByLabel("Describe the problem").fill("Review the span I typed.");
   await page.getByRole("button", { name: "Send" }).click();
@@ -95,6 +135,7 @@ test("an aluminum bracket opens in Studio and does not start CalculiX", async ({
     "Design an aluminum bracket. Force 200 N. Legs 80 mm by 80 mm. Thickness 8 mm. Bracket width 40 mm. Displacement limit 1 mm.",
   );
   await page.getByRole("button", { name: "Send" }).click();
+  await showInspectorStep(page, "Results");
   await expect(page.getByText("Choose the fixed face")).toBeVisible();
   await expect(page.getByRole("button", { name: "Approve and open Studio" })).toHaveCount(0);
   await page.getByLabel("Fixed face").selectOption("xmin");
@@ -119,6 +160,7 @@ test("an aluminum bracket opens in Studio and does not start CalculiX", async ({
 test("a bracket demo asks for the physical faces before Studio", async ({ page }) => {
   await page.goto("/scenario/new");
   await page.getByRole("button", { name: "Load Bracket Demo" }).click();
+  await showInspectorStep(page, "Results");
   await expect(page.getByLabel("Fixed face")).toHaveValue("xmin");
   await expect(page.getByLabel("Load face")).toHaveValue("zmax");
   await expect(page.getByRole("button", { name: "Approve and open Studio" })).toHaveCount(0);
@@ -253,13 +295,17 @@ test("a chess pawn builds a revolved profile with a preview and downloads, and n
   await expect(page.getByText("AI not connected")).toBeVisible();
   await page.getByLabel("Describe the problem").fill("I want to design a basic chess pawn to render in 3D.");
   await page.getByRole("button", { name: "Send" }).click();
+  await showInspectorStep(page, "Inputs");
   await expect(page.getByLabel("Height mm")).toBeVisible();
   await expect(page.getByLabel("Span m")).toHaveCount(0);
   await page.getByLabel("Describe the problem").fill("Staunton pawn, 50 mm tall, 28 mm base, STEP, decorative PLA.");
   await page.getByRole("button", { name: "Send" }).click();
+  await showInspectorStep(page, "Model");
   await expect(page.getByRole("heading", { name: "Geometry" })).toBeVisible();
   await expect(page.getByText("no structural check was run").first()).toBeVisible();
+  await showInspectorStep(page, "Inputs");
   await expect(page.getByLabel("Height mm")).toHaveValue("50");
+  await showInspectorStep(page, "Model");
   await expect(page.getByText("Building the preview.")).toHaveCount(0, { timeout: 60_000 });
   const download = page.waitForEvent("download");
   await page.getByRole("button", { name: "Download STL" }).click();

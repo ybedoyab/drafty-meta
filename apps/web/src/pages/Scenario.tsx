@@ -1,4 +1,4 @@
-import { Box, GraduationCap, PanelRightClose, PanelRightOpen } from "lucide-react";
+import { Box, Check, ChevronLeft, ChevronRight, CircleAlert, GraduationCap, PanelRightClose, PanelRightOpen } from "lucide-react";
 import { OrbitControls } from "@react-three/drei";
 import { Canvas } from "@react-three/fiber";
 import { Link, useNavigate } from "react-router-dom";
@@ -74,6 +74,15 @@ const PHASE_LABEL: Record<string, string> = {
 
 const WORKFLOW = ["understand", "research", "model", "validate", "simulate", "optimize"] as const;
 
+type InspectorStepId = "inputs" | "evidence" | "model" | "basis" | "results";
+type InspectorStep = {
+  id: InspectorStepId;
+  label: string;
+  hint: string;
+  status: "done" | "attention" | "todo";
+  badge?: string;
+};
+
 export function Scenario() {
   const [session, setSession] = useState<ScenarioSession | null>(null);
   const [form, setForm] = useState<ScenarioForm>(emptyForm);
@@ -88,6 +97,8 @@ export function Scenario() {
   const [loadFace, setLoadFace] = useState("");
   const [bracket, setBracket] = useState({ legX: "80", legZ: "80", width: "40", thickness: "8", force: "200", limit: "1" });
   const [inspectorOpen, setInspectorOpen] = useState(true);
+  const [inspectorStep, setInspectorStep] = useState<InspectorStepId>("inputs");
+  const [followGuide, setFollowGuide] = useState(true);
   const evidenceRef = useRef<HTMLInputElement | null>(null);
   const [linkedJobs, setLinkedJobs] = useState<Awaited<ReturnType<typeof getJob>>[]>([]);
   const [geometryUrl, setGeometryUrl] = useState<string | null>(null);
@@ -391,6 +402,24 @@ export function Scenario() {
   const unsupported = catalog?.status === "unsupported";
   const formPart = catalog?.form_part ?? null;
   const isBeamForm = formPart?.id === IBEAM;
+  const inputFields = formPart ? formFields(formPart) : [];
+  const filledInputs = inputFields.filter((field) => (form[field.name] ?? "").trim() !== "").length;
+  const evidenceCount = session?.evidence.length ?? 0;
+  const hasModelStep = isBeamForm || Boolean(session?.geometry_spec);
+  const inspectorSteps: InspectorStep[] = [
+    // Missing items are shown inside Inputs, where they can be fixed.
+    ...(formPart ? [{ id: "inputs", label: "Inputs", hint: "The numbers and choices Drafty is using, one group at a time.", status: filledInputs >= inputFields.length ? "done" : "attention", badge: `${filledInputs}/${inputFields.length}` } satisfies InspectorStep] : []),
+    { id: "evidence", label: "Evidence", hint: "Photos or drawings that support the description. They are not measured drawings.", status: evidenceCount > 0 ? "done" : "todo", badge: evidenceCount > 0 ? String(evidenceCount) : undefined },
+    ...(hasModelStep ? [{ id: "model", label: isBeamForm ? "Load path" : "Model", hint: isBeamForm ? "How the load travels to the supports, before any result is trusted." : "The geometry built from your description.", status: session?.analysis || session?.geometry_spec ? "done" : "todo" } satisfies InspectorStep] : []),
+    { id: "basis", label: "Basis", hint: "Assumptions and sources behind the numbers, kept separate from the numbers.", status: (session?.assumptions.length ?? 0) + (session?.sources.length ?? 0) > 0 ? "done" : "todo" },
+    { id: "results", label: "Results", hint: "Run the check, review the result, and decide what happens next.", status: session?.analysis || session?.studio_spec || linkedJobs.length > 0 ? "done" : domain === "mechanical" ? "attention" : "todo" },
+  ];
+  const suggestedStep: InspectorStepId = !session ? "inputs" : unsupported ? "results" : session.missing.length > 0 && formPart ? "inputs" : formPart && filledInputs < inputFields.length ? "inputs" : domain === "mechanical" && session.studio_spec ? "results" : session.analysis ? "results" : hasModelStep ? "model" : formPart ? "inputs" : "evidence";
+  const activeStep: InspectorStepId = inspectorSteps.some((step) => step.id === inspectorStep) ? inspectorStep : (inspectorSteps[0]?.id ?? "inputs");
+  const activeIndex = Math.max(0, inspectorSteps.findIndex((step) => step.id === activeStep));
+  function goToStep(id: InspectorStepId) { setFollowGuide(false); setInspectorStep(id); }
+  function goRelative(offset: number) { const next = inspectorSteps[activeIndex + offset]; if (next) goToStep(next.id); }
+  useEffect(() => { if (followGuide) setInspectorStep(suggestedStep); }, [followGuide, suggestedStep]);
   return (
     <div className="flex h-screen flex-col bg-slate-100 text-slate-900">
       <SiteHeader />
@@ -542,43 +571,33 @@ export function Scenario() {
         </section>
 
         {inspectorOpen && (
-        <aside className="min-h-0 min-w-0 space-y-4 overflow-auto">
-          <Panel title="Still needed">
-            {session?.missing.length ? (
-              <ul className="list-disc space-y-1 pl-4 text-sm">
-                {session.missing.map((item) => (
-                  <li key={item}>{item}</li>
-                ))}
-              </ul>
-            ) : unsupported ? (
-              <p className="text-sm text-slate-600">
-                Nothing is collected for {catalog?.requested_part ? withArticle(catalog.requested_part) : "this request"}. Drafty can't model it yet.
-              </p>
-            ) : (
-              <p className="text-sm text-slate-600">The preliminary record has the inputs it knows how to use.</p>
-            )}
-            {questions.length > 0 && (
-              <div className="mt-3">
-                <ul className="list-disc space-y-1 pl-4 text-sm">
-                  {questions.map((item) => (
-                    <li key={item}>{item}</li>
-                  ))}
+        <aside className="flex min-h-0 min-w-0 flex-col gap-4 overflow-auto">
+          <InspectorNav steps={inspectorSteps} active={activeStep} suggested={suggestedStep} following={followGuide} onSelect={goToStep} onResumeGuide={() => { setFollowGuide(true); setInspectorStep(suggestedStep); }} />
+          {unsupported && catalog && <SupportedParts parts={catalog.parts} requested={catalog.requested_part} />}
+          {activeStep === "inputs" && formPart && (
+          <Panel title="Inputs" description={inspectorSteps.find((step) => step.id === "inputs")?.hint}>
+            <p className="mb-2 text-xs text-slate-500">{formPart.name}. Values are stored in SI and checked on the server.</p>
+            {(session?.missing.length ?? 0) > 0 && (
+              <div className="mb-3 rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-950">
+                <p className="font-medium">Still needed</p>
+                <ul className="mt-1 list-disc space-y-1 pl-4">
+                  {(session?.missing ?? []).map((item) => (<li key={item}>{item}</li>))}
                 </ul>
-                <Button className="mt-3" type="button" disabled={busy} onClick={() => void dismiss()}>
-                  Reject suggestion
-                </Button>
               </div>
             )}
-          </Panel>
-          {unsupported && catalog && <SupportedParts parts={catalog.parts} requested={catalog.requested_part} />}
-          {formPart && (
-          <Panel title="Inputs">
-            <p className="mb-2 text-xs text-slate-500">{formPart.name}. Values are stored in SI and checked on the server.</p>
+            {questions.length > 0 && (
+              <div className="mb-3 text-sm">
+                <ul className="list-disc space-y-1 pl-4">
+                  {questions.map((item) => (<li key={item}>{item}</li>))}
+                </ul>
+                <Button className="mt-2" type="button" disabled={busy} onClick={() => void dismiss()}>Reject suggestion</Button>
+              </div>
+            )}
             {isBeamForm && session?.inputs.student_count ? (
               <p className="mb-2 text-sm">Occupancy context: {session.inputs.student_count} students. A headcount is not a floor load.</p>
             ) : null}
             {session?.demo?.kind === "bracket" && formPart.id === "l_bracket" ? (
-              <p className="text-sm text-slate-600">Edit the demo numbers in the simulation gate below.</p>
+              <p className="text-sm text-slate-600">Edit the demo numbers in the Results step.</p>
             ) : (
               groupFields(formFields(formPart)).map(([group, fields]) => (
                 <details key={group} open className="border-b border-slate-200 py-2">
@@ -608,15 +627,17 @@ export function Scenario() {
             )}
           </Panel>
           )}
-          {session?.geometry_spec && (
+          {activeStep === "model" && session?.geometry_spec && (
             <GeometryPanel
               spec={session.geometry_spec}
               previewUrl={geometryUrl}
               error={geometryError}
+              description={isBeamForm ? undefined : inspectorSteps.find((step) => step.id === "model")?.hint}
               onDownload={(name) => void downloadGeometry(name)}
             />
           )}
-          <Panel title="Evidence">
+          {activeStep === "evidence" && (
+          <Panel title="Evidence" description={inspectorSteps.find((step) => step.id === "evidence")?.hint}>
             <div
               className="rounded-md border border-dashed border-slate-300 p-3"
               onDragOver={(event) => event.preventDefault()}
@@ -694,9 +715,10 @@ export function Scenario() {
               );
             })}
           </Panel>
-        <section className="min-w-0 space-y-4">
-          {isBeamForm && (
-          <Panel title="Load path">
+          )}
+          {activeStep === "model" && isBeamForm && (
+          <div className="min-w-0 space-y-4">
+          <Panel title="Load path" description={inspectorSteps.find((step) => step.id === "model")?.hint}>
             <BeamFigure
               span={session?.inputs.span_m ?? null}
               lineLoad={session?.calculation?.q_line_n_per_m ?? null}
@@ -724,10 +746,13 @@ export function Scenario() {
             )}
             <ProfilePreview form={form} spanM={session?.inputs.span_m ?? null} />
           </Panel>
+          </div>
           )}
-          <div className="grid gap-4 lg:grid-cols-2">
-            <Panel title="Assumptions">
+          {activeStep === "basis" && (
+          <div className="space-y-4">
+            <Panel title="Assumptions" description={inspectorSteps.find((step) => step.id === "basis")?.hint}>
               <ul className="space-y-2 text-sm">
+                {(session?.assumptions ?? []).length === 0 && <li className="text-slate-600">No assumptions recorded yet. They will appear here as Drafty works.</li>}
                 {(session?.assumptions ?? []).map((item) => (
                   <li key={item.name}>
                     <span className="font-medium">{item.status}.</span> {item.statement}
@@ -740,6 +765,7 @@ export function Scenario() {
             </Panel>
             <Panel title="Sources">
               <ul className="space-y-3 text-sm">
+                {(session?.sources ?? []).length === 0 && <li className="text-slate-600">No sources yet. Checked references and retrieved pages will be listed here, separately.</li>}
                 {(session?.sources ?? []).map((item, index) => (
                   <li key={`${item.origin}-${item.url ?? item.title}-${index}`}>
                     <p className="font-medium">{item.title}</p>
@@ -754,7 +780,9 @@ export function Scenario() {
               </ul>
             </Panel>
           </div>
-          <Panel title="Simulation gate">
+          )}
+          {activeStep === "results" && (
+          <Panel title="Results" description={inspectorSteps.find((step) => step.id === "results")?.hint}>
             {domain === "mechanical" && session?.studio_spec && (
               <div className="space-y-2 text-sm">
                 <p>Parametric L-bracket, CAD schema. Simulator: CalculiX solid FEM, not started.</p>
@@ -866,7 +894,8 @@ export function Scenario() {
               ))}
             </ul>
           </Panel>
-        </section>
+          )}
+          <InspectorFooter steps={inspectorSteps} activeIndex={activeIndex} onRelative={goRelative} onSelect={goToStep} />
         </aside>
         )}
       </main>
@@ -874,10 +903,46 @@ export function Scenario() {
   );
 }
 
-function Panel({ title, children }: { title: string; children: ReactNode }) {
+function InspectorNav({ steps, active, suggested, following, onSelect, onResumeGuide }: { steps: InspectorStep[]; active: InspectorStepId; suggested: InspectorStepId; following: boolean; onSelect: (id: InspectorStepId) => void; onResumeGuide: () => void }) {
+  const suggestedLabel = steps.find((step) => step.id === suggested)?.label ?? suggested;
+  return (
+    <section className="sticky top-0 z-10 rounded-lg border border-slate-200 bg-white p-4" aria-label="Inspector">
+      <nav className="flex flex-wrap gap-1.5" aria-label="Inspector steps">
+        {steps.map((step, index) => {
+          const isActive = step.id === active;
+          return (
+            <button key={step.id} type="button" onClick={() => onSelect(step.id)} aria-current={isActive ? "step" : undefined} className={isActive ? "inline-flex items-center gap-1.5 rounded-full bg-slate-900 px-2.5 py-1.5 text-xs font-medium text-white" : "inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"}>
+              {step.status === "done" ? <Check className="h-3.5 w-3.5" aria-hidden /> : step.status === "attention" ? <CircleAlert className="h-3.5 w-3.5" aria-hidden /> : <span className="text-[10px] text-slate-400" aria-hidden>{index + 1}</span>}
+              {step.label}
+              {step.badge && <span className={isActive ? "rounded-full bg-white/20 px-1.5 text-[10px]" : "rounded-full bg-slate-100 px-1.5 text-[10px] text-slate-600"}>{step.badge}</span>}
+              {step.id === suggested && !isActive && <span className="text-[10px] font-normal text-slate-400">suggested</span>}
+            </button>
+          );
+        })}
+      </nav>
+      {!following && suggested !== active && (
+        <button type="button" onClick={onResumeGuide} className="mt-3 text-xs font-medium text-slate-800 underline">Go to suggested step: {suggestedLabel}</button>
+      )}
+    </section>
+  );
+}
+function InspectorFooter({ steps, activeIndex, onRelative, onSelect }: { steps: InspectorStep[]; activeIndex: number; onRelative: (offset: number) => void; onSelect: (id: InspectorStepId) => void }) {
+  const next = steps[activeIndex + 1];
+  const prev = steps[activeIndex - 1];
+  if (!prev && !next) return null;
+  return (
+    <nav className="sticky bottom-0 z-10 mt-auto flex items-center justify-between gap-2 rounded-lg border border-slate-200 bg-white p-3" aria-label="Inspector pagination">
+      <Button type="button" disabled={!prev} onClick={() => onRelative(-1)}><ChevronLeft className="mr-1 h-4 w-4" aria-hidden />{prev ? prev.label : "Back"}</Button>
+      <span className="text-xs text-slate-500">{activeIndex + 1} / {steps.length}</span>
+      {next ? <Button type="button" variant="primary" onClick={() => onSelect(next.id)}>Next: {next.label}<ChevronRight className="ml-1 h-4 w-4" aria-hidden /></Button> : <span className="text-xs font-medium text-slate-600">Last step</span>}
+    </nav>
+  );
+}
+function Panel({ title, description, children }: { title: string; description?: string; children: ReactNode }) {
   return (
     <section className="rounded-lg border border-slate-200 bg-white p-4">
       <h2 className="text-sm font-semibold">{title}</h2>
+      {description && <p className="mt-1 text-sm text-slate-600">{description}</p>}
       <div className="mt-3">{children}</div>
     </section>
   );
@@ -907,7 +972,9 @@ function GeometryPanel({
   previewUrl,
   error,
   onDownload,
+  description,
 }: {
+  description?: string;
   spec: NonNullable<ScenarioSession["geometry_spec"]>;
   previewUrl: string | null;
   error: string | null;
@@ -919,7 +986,7 @@ function GeometryPanel({
   const height = points.length ? points[points.length - 1].height_m - points[0].height_m : 0;
   const width = 2 * Math.max(0, ...points.map((point) => point.radius_m));
   return (
-    <Panel title="Geometry">
+    <Panel title="Geometry" description={description}>
       <div className="relative h-64 rounded border border-slate-200">
         <div className="absolute left-2 top-2 z-10">
           <GridControl
