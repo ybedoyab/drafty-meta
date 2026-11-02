@@ -2,9 +2,10 @@ import { Box, GraduationCap, PanelRightClose, PanelRightOpen } from "lucide-reac
 import { OrbitControls } from "@react-three/drei";
 import { Canvas } from "@react-three/fiber";
 import { Link, useNavigate } from "react-router-dom";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { Suspense, useEffect, useRef, useState, type ReactNode } from "react";
 import { SiteHeader } from "@/components/SiteHeader";
 import { BeamResults } from "@/components/BeamResults";
+import { Viewport } from "@/components/Viewport";
 import { MicButton, SpeakButton } from "@/components/Voice";
 import { Button } from "@/components/ui/button";
 import {
@@ -16,11 +17,13 @@ import {
   createScenario,
   deleteScenarioEvidence,
   dismissScenario,
+  downloadScenarioGeometry,
   downloadScenarioReport,
   getHealth,
   getScenario,
   loadDemo,
   scenarioEvidenceUrl,
+  scenarioGeometryUrl,
   segmentScenario,
   turnScenario,
   uploadScenarioEvidence,
@@ -29,15 +32,39 @@ import {
 import {
   CLASSROOM_PROMPT,
   emptyForm,
+  fieldLabel,
+  formFields,
   formFromInputs,
+  groupFields,
   inputsFromForm,
   recallScenarioId,
   rememberScenarioId,
+  scenarioFields,
   stageStudioSpec,
+  type PartInput,
+  type PartSummary,
   type ScenarioForm,
 } from "@/lib/scenario";
 
+const IBEAM = "simply_supported_ibeam";
+const ANALYSIS_LABEL: Record<string, string> = {
+  none: "geometry only",
+  analytical: "closed-form checks",
+  "beam-element": "beam elements",
+  calculix: "CalculiX solid FEM",
+};
+
+function withArticle(noun: string): string {
+  return `${/^[aeiou]/i.test(noun) ? "an" : "a"} ${noun}`;
+}
+
+/** Form text for every chat part, from the registry the server sent with this session. */
+function formOf(session: ScenarioSession): ScenarioForm {
+  return formFromInputs(session.inputs, scenarioFields(session.part_catalog));
+}
+
 const PHASE_LABEL: Record<string, string> = {
+  unsupported: "Part not supported yet",
   collecting: "Collecting the problem",
   asking: "Asking for missing data",
   "interpreting-evidence": "Reading attached images",
@@ -64,6 +91,8 @@ export function Scenario() {
   const [inspectorOpen, setInspectorOpen] = useState(true);
   const evidenceRef = useRef<HTMLInputElement | null>(null);
   const [linkedJobs, setLinkedJobs] = useState<Awaited<ReturnType<typeof getJob>>[]>([]);
+  const [geometryUrl, setGeometryUrl] = useState<string | null>(null);
+  const [geometryError, setGeometryError] = useState<string | null>(null);
   const turnAbort = useRef<AbortController | null>(null);
   const navigate = useNavigate();
 
@@ -99,7 +128,7 @@ export function Scenario() {
         if (cancel) return;
         rememberScenarioId(localStorage, next.id);
         setSession(next);
-        setForm(formFromInputs(next.inputs));
+        setForm(formOf(next));
       })
       .catch((reason) => {
         if (!cancel) setError(reason instanceof Error ? reason.message : "The scenario service is unavailable.");
@@ -124,7 +153,43 @@ export function Scenario() {
     };
   }, [session?.jobs]);
 
-  async function submit(message: string, patch?: Partial<ScenarioForm>) {
+  const geometryKey = session?.geometry_spec ? JSON.stringify(session.geometry_spec.profile) : "";
+  useEffect(() => {
+    setGeometryUrl(null);
+    setGeometryError(null);
+    if (!session || !geometryKey) return;
+    let cancel = false;
+    let created: string | null = null;
+    scenarioGeometryUrl(session.id, "preview.glb")
+      .then((url) => {
+        if (cancel) URL.revokeObjectURL(url);
+        else {
+          created = url;
+          setGeometryUrl(url);
+        }
+      })
+      .catch((reason) => {
+        if (!cancel) setGeometryError(reason instanceof Error ? reason.message : "The preview could not be built.");
+      });
+    return () => {
+      cancel = true;
+      if (created) URL.revokeObjectURL(created);
+    };
+    // The preview depends only on the stored profile, not on every session field.
+  }, [session?.id, geometryKey]);
+
+  async function downloadGeometry(name: string) {
+    if (!session?.geometry_spec) return;
+    setError(null);
+    try {
+      const suffix = name.slice(name.lastIndexOf("."));
+      await downloadScenarioGeometry(session.id, name, `${session.geometry_spec.profile.name}${suffix}`);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "The file could not be built.");
+    }
+  }
+
+  async function submit(message: string, patch?: ScenarioForm) {
     if (!session) return;
     const nextForm = { ...form, ...patch };
     setForm(nextForm);
@@ -134,10 +199,11 @@ export function Scenario() {
     setBusy(true);
     setError(null);
     try {
-      const next = await turnScenario(session.id, { message, inputs: inputsFromForm(nextForm) }, controller.signal);
+      const fields = formFields(session.part_catalog?.form_part);
+      const next = await turnScenario(session.id, { message, inputs: inputsFromForm(nextForm, fields) }, controller.signal);
       if (controller.signal.aborted) return;
       setSession(next);
-      setForm(formFromInputs(next.inputs));
+      setForm(formOf(next));
       setDraft("");
     } catch (reason) {
       if (controller.signal.aborted) {
@@ -173,7 +239,7 @@ export function Scenario() {
       const next = await loadDemo(kind, session.id, overrides);
       rememberScenarioId(localStorage, next.id);
       setSession(next);
-      setForm(formFromInputs(next.inputs));
+      setForm(formOf(next));
       if (next.suggested_faces) {
         setSupportFace(next.suggested_faces.support_face);
         setLoadFace(next.suggested_faces.load_face);
@@ -231,10 +297,10 @@ export function Scenario() {
         method: "euler-bernoulli",
         elements: 16,
         compare,
-        inputs: inputsFromForm(form),
+        inputs: inputsFromForm(form, formFields(session.part_catalog?.form_part)),
       });
       setSession(next);
-      if (!compare) setForm(formFromInputs(next.inputs));
+      if (!compare) setForm(formOf(next));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "The beam analysis failed.");
     } finally {
@@ -322,6 +388,10 @@ export function Scenario() {
   const questions = session?.model_questions ?? [];
   const domain = session?.engineering?.domain ?? "unknown";
   const workflow = session?.workflow ?? "understand";
+  const catalog = session?.part_catalog;
+  const unsupported = catalog?.status === "unsupported";
+  const formPart = catalog?.form_part ?? null;
+  const isBeamForm = formPart?.id === IBEAM;
   return (
     <div className="flex h-screen flex-col bg-slate-100 text-slate-900">
       <SiteHeader />
@@ -478,6 +548,10 @@ export function Scenario() {
                   <li key={item}>{item}</li>
                 ))}
               </ul>
+            ) : unsupported ? (
+              <p className="text-sm text-slate-600">
+                Nothing is collected for {catalog?.requested_part ? withArticle(catalog.requested_part) : "this request"}. Drafty can't model it yet.
+              </p>
             ) : (
               <p className="text-sm text-slate-600">The preliminary record has the inputs it knows how to use.</p>
             )}
@@ -494,41 +568,51 @@ export function Scenario() {
               </div>
             )}
           </Panel>
-          {domain !== "mechanical" && (
+          {unsupported && catalog && <SupportedParts parts={catalog.parts} requested={catalog.requested_part} />}
+          {formPart && (
           <Panel title="Inputs">
-            {session?.inputs.student_count ? (
+            <p className="mb-2 text-xs text-slate-500">{formPart.name}. Values are stored in SI and checked on the server.</p>
+            {isBeamForm && session?.inputs.student_count ? (
               <p className="mb-2 text-sm">Occupancy context: {session.inputs.student_count} students. A headcount is not a floor load.</p>
             ) : null}
-            <details open className="border-b border-slate-200 py-2">
-              <summary className="cursor-pointer text-sm font-medium">Geometry</summary>
-              <div className="mt-2 grid gap-2 sm:grid-cols-2">
-                <Field label="Span m" value={form.spanM} onChange={(spanM) => setForm({ ...form, spanM })} />
-                <Field label="Depth mm" value={form.depthMm} onChange={(depthMm) => setForm({ ...form, depthMm })} />
-                <Field label="Flange width mm" value={form.flangeWidthMm} onChange={(flangeWidthMm) => setForm({ ...form, flangeWidthMm })} />
-                <Field label="Flange thickness mm" value={form.flangeThicknessMm} onChange={(flangeThicknessMm) => setForm({ ...form, flangeThicknessMm })} />
-                <Field label="Web thickness mm" value={form.webThicknessMm} onChange={(webThicknessMm) => setForm({ ...form, webThicknessMm })} />
-              </div>
-            </details>
-            <details open className="border-b border-slate-200 py-2">
-              <summary className="cursor-pointer text-sm font-medium">Materials and loads</summary>
-              <div className="mt-2 grid gap-2 sm:grid-cols-2">
-                <Field label="Jurisdiction" value={form.jurisdiction} onChange={(jurisdiction) => setForm({ ...form, jurisdiction })} />
-                <Field label="Tributary width m" value={form.tributaryM} onChange={(tributaryM) => setForm({ ...form, tributaryM })} />
-                <Field label="Dead load kN/m²" value={form.deadKn} onChange={(deadKn) => setForm({ ...form, deadKn })} />
-                <Field label="Live load kN/m²" value={form.liveKn} onChange={(liveKn) => setForm({ ...form, liveKn })} />
-                <Field label="Beam self-weight N/m" value={form.selfWeight} onChange={(selfWeight) => setForm({ ...form, selfWeight })} />
-                <Field label="Supports" value={form.supports} onChange={(supports) => setForm({ ...form, supports })} />
-              </div>
-            </details>
-            <Button
-              className="mt-3"
-              type="button"
-              disabled={busy || !session}
-              onClick={() => void submit("Use the Colombia classroom minimum.", { jurisdiction: "Colombia" })}
-            >
-              Use Colombia NSR-10 classroom minimum
-            </Button>
+            {session?.demo?.kind === "bracket" && formPart.id === "l_bracket" ? (
+              <p className="text-sm text-slate-600">Edit the demo numbers in the simulation gate below.</p>
+            ) : (
+              groupFields(formFields(formPart)).map(([group, fields]) => (
+                <details key={group} open className="border-b border-slate-200 py-2">
+                  <summary className="cursor-pointer text-sm font-medium">{group}</summary>
+                  <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                    {fields.map((field) => (
+                      <PartField
+                        key={field.name}
+                        field={field}
+                        value={form[field.name] ?? ""}
+                        onChange={(value) => setForm({ ...form, [field.name]: value })}
+                      />
+                    ))}
+                  </div>
+                </details>
+              ))
+            )}
+            {isBeamForm && (
+              <Button
+                className="mt-3"
+                type="button"
+                disabled={busy || !session}
+                onClick={() => void submit("Use the Colombia classroom minimum.", { jurisdiction: "Colombia" })}
+              >
+                Use Colombia NSR-10 classroom minimum
+              </Button>
+            )}
           </Panel>
+          )}
+          {session?.geometry_spec && (
+            <GeometryPanel
+              spec={session.geometry_spec}
+              previewUrl={geometryUrl}
+              error={geometryError}
+              onDownload={(name) => void downloadGeometry(name)}
+            />
           )}
           <Panel title="Evidence">
             <div
@@ -609,6 +693,7 @@ export function Scenario() {
             })}
           </Panel>
         <section className="min-w-0 space-y-4">
+          {isBeamForm && (
           <Panel title="Load path">
             <BeamFigure
               span={session?.inputs.span_m ?? null}
@@ -637,6 +722,7 @@ export function Scenario() {
             )}
             <ProfilePreview form={form} spanM={session?.inputs.span_m ?? null} />
           </Panel>
+          )}
           <div className="grid gap-4 lg:grid-cols-2">
             <Panel title="Assumptions">
               <ul className="space-y-2 text-sm">
@@ -767,6 +853,10 @@ export function Scenario() {
               />
             )}
             {domain === "unknown" && <p className="text-sm">No solver is selected yet.</p>}
+            {unsupported && <p className="text-sm">No solver exists for this request. Nothing was built or started.</p>}
+            {domain === "geometry" && (
+              <p className="text-sm">No solver exists for this part. It is geometry only: no structural check was run.</p>
+            )}
             {!session && <p className="text-sm">The scenario is still loading.</p>}
             <ul className="mt-3 list-disc space-y-1 pl-4 text-sm text-slate-700">
               {(session?.verification ?? []).map((item) => (
@@ -788,6 +878,105 @@ function Panel({ title, children }: { title: string; children: ReactNode }) {
       <h2 className="text-sm font-semibold">{title}</h2>
       <div className="mt-3">{children}</div>
     </section>
+  );
+}
+
+function PartField({ field, value, onChange }: { field: PartInput; value: string; onChange: (value: string) => void }) {
+  if (field.kind === "choice") {
+    return (
+      <label className="text-sm">
+        {fieldLabel(field)}
+        <select className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1" value={value} onChange={(event) => onChange(event.target.value)}>
+          <option value="">Not chosen</option>
+          {field.choices.map((choice) => (
+            <option key={choice} value={choice}>
+              {choice}
+            </option>
+          ))}
+        </select>
+      </label>
+    );
+  }
+  return <Field label={fieldLabel(field)} value={value} onChange={onChange} />;
+}
+
+function GeometryPanel({
+  spec,
+  previewUrl,
+  error,
+  onDownload,
+}: {
+  spec: NonNullable<ScenarioSession["geometry_spec"]>;
+  previewUrl: string | null;
+  error: string | null;
+  onDownload: (name: string) => void;
+}) {
+  const points = spec.profile.points;
+  const height = points.length ? points[points.length - 1].height_m - points[0].height_m : 0;
+  const width = 2 * Math.max(0, ...points.map((point) => point.radius_m));
+  return (
+    <Panel title="Geometry">
+      <div className="relative h-64 rounded border border-slate-200">
+        <Suspense fallback={null}>
+          <Viewport
+            previewUrl={previewUrl}
+            surface={null}
+            scale={1}
+            wireframe={false}
+            shade="geometry"
+            orthographic={false}
+            cameraView="iso"
+            cameraNonce={0}
+            contourMin={null}
+            contourMax={null}
+            support=""
+            loadSurface=""
+            direction={[0, 0, -1]}
+            loadLabel=""
+            fitRadius={Math.max(height, width) / 2}
+            zUp
+          />
+        </Suspense>
+        {!previewUrl && (
+          <p className="absolute inset-x-0 top-1/2 text-center text-sm text-slate-500">{error ?? "Building the preview."}</p>
+        )}
+      </div>
+      <p className="mt-2 text-sm">
+        Revolved profile, {points.length} points, {(height * 1000).toFixed(1)} mm tall, {(width * 1000).toFixed(1)} mm across.
+        Volume {(spec.volume_m3 * 1e6).toFixed(2)} cm³, calculated from the profile.
+      </p>
+      <p className="mt-1 text-sm text-slate-600">Geometry only. No structural check was run. Files are in millimetres.</p>
+      <div className="mt-3 flex flex-wrap gap-2">
+        <Button type="button" onClick={() => onDownload("model.step")}>
+          Download STEP
+        </Button>
+        <Button type="button" onClick={() => onDownload("model.stl")}>
+          Download STL
+        </Button>
+      </div>
+    </Panel>
+  );
+}
+
+function SupportedParts({ parts, requested }: { parts: PartSummary[]; requested: string | null }) {
+  return (
+    <Panel title="Supported parts">
+      <p className="text-sm">
+        Drafty can't model {requested ? withArticle(requested) : "that request"} yet. No geometry, file, or calculation was created. It can model:
+      </p>
+      <ul className="mt-2 space-y-2 text-sm">
+        {parts.map((part) => (
+          <li key={part.id}>
+            <span className="font-medium">{part.name}</span>
+            <span className="text-slate-500"> · {part.where === "scenario" ? "this chat" : "Studio"}</span>
+            <span className="block text-slate-600">{part.description}</span>
+            <span className="block text-xs text-slate-500">
+              {part.analysis.map((item) => ANALYSIS_LABEL[item] ?? item).join(", ")}. Exports {part.exports.join(", ")}.
+            </span>
+          </li>
+        ))}
+      </ul>
+    </Panel>
   );
 }
 
@@ -854,10 +1043,10 @@ function BeamFigure({
 }
 
 function ProfilePreview({ form, spanM }: { form: ScenarioForm; spanM: number | null }) {
-  const depth = Number(form.depthMm) / 1000;
-  const width = Number(form.flangeWidthMm) / 1000;
-  const flange = Number(form.flangeThicknessMm) / 1000;
-  const web = Number(form.webThicknessMm) / 1000;
+  const depth = Number(form.depth_m ?? "") / 1000;
+  const width = Number(form.flange_width_m ?? "") / 1000;
+  const flange = Number(form.flange_thickness_m ?? "") / 1000;
+  const web = Number(form.web_thickness_m ?? "") / 1000;
   const length = spanM && spanM > 0 ? spanM : 1;
   const webHeight = depth - 2 * flange;
   const ready = depth > 0 && width > web && flange > 0 && web > 0 && webHeight > 0;

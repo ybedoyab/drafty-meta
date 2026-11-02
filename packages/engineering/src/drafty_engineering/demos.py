@@ -1,5 +1,6 @@
 """Versioned demo presets. Loading one does not call a model or a solver."""
 
+from drafty_engineering.catalog import get_part
 from drafty_engineering.plan import build_scenario, evaluate_bracket, workflow_stage
 from drafty_engineering.scenario import classroom_kwargs, evaluate_classroom
 
@@ -117,10 +118,7 @@ def _record(*, kind: str, version: str, inputs: dict, study: dict, description: 
         has_analysis=False,
         has_comparison=False,
     )
-    families = {
-        "simply_supported_ibeam": "simply supported classroom I-beam, preliminary",
-        "l_bracket": "parametric L-bracket, pending approval",
-    }
+    part = get_part(inputs.get("physical_system"))
     return {
         "demo": {
             "kind": kind,
@@ -133,7 +131,7 @@ def _record(*, kind: str, version: str, inputs: dict, study: dict, description: 
         "workflow": workflow,
         "message": message,
         "model_proposal": {
-            "family": families.get(str(inputs.get("physical_system")), "unset"),
+            "family": (part.proposal or part.name) if part else "unset",
             "ready_for_3d_simulation": False,
             "ready_for_beam_elements": bool(study.get("ready_for_beam_elements")),
             "reason": study.get("reason") or "",

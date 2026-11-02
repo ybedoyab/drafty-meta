@@ -222,6 +222,45 @@ test("speech playback explains when the browser has no speech engine", async ({ 
   await expect(page.getByText("Speech playback is not available on this device.").first()).toBeVisible();
 });
 
+test("an unsupported part lists what Drafty can model instead of the beam form", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/scenario/new");
+  await expect(page.getByText("AI not connected")).toBeVisible();
+  await page.getByLabel("Describe the problem").fill("Make me a 3D model of a coffee mug for printing.");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByText("Drafty can't model a coffee mug yet.").first()).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Supported parts" })).toBeVisible();
+  await expect(page.getByText("Part not supported yet")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Inputs" })).toHaveCount(0);
+  await expect(page.getByLabel("Span m")).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Load path" })).toHaveCount(0);
+  if (process.env.DRAFTY_SCREENSHOT_DIR) {
+    await page.screenshot({ path: `${process.env.DRAFTY_SCREENSHOT_DIR}/unsupported-part.png` });
+  }
+});
+
+test("a chess pawn builds a revolved profile with a preview and downloads, and no solve", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/scenario/new");
+  await expect(page.getByText("AI not connected")).toBeVisible();
+  await page.getByLabel("Describe the problem").fill("I want to design a basic chess pawn to render in 3D.");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByLabel("Height mm")).toBeVisible();
+  await expect(page.getByLabel("Span m")).toHaveCount(0);
+  await page.getByLabel("Describe the problem").fill("Staunton pawn, 50 mm tall, 28 mm base, STEP, decorative PLA.");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByRole("heading", { name: "Geometry" })).toBeVisible();
+  await expect(page.getByText("no structural check was run").first()).toBeVisible();
+  await expect(page.getByLabel("Height mm")).toHaveValue("50");
+  await expect(page.getByText("Building the preview.")).toHaveCount(0, { timeout: 60_000 });
+  const download = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Download STL" }).click();
+  expect((await download).suggestedFilename()).toBe("staunton-pawn.stl");
+  if (process.env.DRAFTY_SCREENSHOT_DIR) {
+    await page.screenshot({ path: `${process.env.DRAFTY_SCREENSHOT_DIR}/pawn-geometry.png`, fullPage: true });
+  }
+});
+
 test("landing screenshots", async ({ page }) => {
   await page.setViewportSize({ width: 1366, height: 768 });
   await page.goto("/");

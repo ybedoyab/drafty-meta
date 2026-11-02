@@ -25,6 +25,7 @@ export function Viewport({
   direction,
   loadLabel,
   fitRadius,
+  zUp = false,
 }: {
   previewUrl: string | null;
   surface: SurfaceResult | null;
@@ -41,9 +42,11 @@ export function Viewport({
   direction: [number, number, number];
   loadLabel: string;
   fitRadius: number;
+  /** Orbit with Z up, so a part modelled along Z stands upright. Studio keeps the default. */
+  zUp?: boolean;
 }) {
   return (
-    <Canvas key={orthographic ? "ortho" : "persp"} orthographic={orthographic} camera={{ position: [0.45, -0.35, 0.28], fov: 35, zoom: orthographic ? 400 : 1 }}>
+    <Canvas key={orthographic ? "ortho" : "persp"} orthographic={orthographic} camera={{ position: [0.45, -0.35, 0.28], fov: 35, zoom: orthographic ? 400 : 1, up: zUp ? [0, 0, 1] : [0, 1, 0] }}>
       <color attach="background" args={["#f8fafc"]} />
       <ambientLight intensity={0.85} />
       <directionalLight position={[1, -1, 2]} intensity={1.2} />

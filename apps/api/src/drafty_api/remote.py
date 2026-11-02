@@ -207,6 +207,26 @@ def remote_preview(spec: dict) -> bytes:
     return bytes(payload)
 
 
+def remote_geometry(profile: dict) -> dict[str, bytes]:
+    """STEP, STL, and the GLB preview for a revolved profile, built on Modal."""
+
+    import modal
+
+    call = modal.Function.from_name("drafty-engineering", "generate_revolved").spawn(profile)
+    try:
+        payload = call.get(timeout=50)
+    except TimeoutError as exc:
+        _cancel_call(call)
+        raise HTTPException(
+            status_code=504,
+            detail="The geometry is still building on Modal. Try again in a moment.",
+        ) from exc
+    names = ("model.step", "model.stl", "preview.glb")
+    if not isinstance(payload, dict) or any(not isinstance(payload.get(name), (bytes, bytearray)) for name in names):
+        raise HTTPException(status_code=502, detail="Modal did not return the geometry files.")
+    return {name: bytes(payload[name]) for name in names}
+
+
 _PROVIDER_CACHE: dict = {"at": 0.0, "value": None}
 
 

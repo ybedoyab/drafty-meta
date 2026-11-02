@@ -2,13 +2,16 @@
 
 import hashlib
 import json
+import math
+import shutil
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, RedirectResponse
-from pydantic import BaseModel, Field
+from fastapi.responses import FileResponse, RedirectResponse, Response
+from pydantic import BaseModel, Field, ValidationError
 
 from drafty_ai.client import configured
 from drafty_ai.scenario_agent import advance_scenario, blank_inputs
@@ -24,9 +27,11 @@ from drafty_api.storage import (
     upload_private_object,
 )
 from drafty_engineering.beam_fem import analyze_simply_supported_udl
+from drafty_engineering.catalog import PARTS, catalog_view, scenario_parts
 from drafty_engineering.demos import bracket_record, classroom_record
 from drafty_engineering.plan import build_scenario, evaluate_bracket, proposed_bracket_spec, workflow_stage
 from drafty_engineering.scenario import classroom_kwargs, evaluate_classroom
+from drafty_engineering.spec import RevolvedProfile
 
 router = APIRouter()
 MAX_IMAGES = 8
@@ -34,26 +39,12 @@ MAX_IMAGE_BYTES = 8 * 1024 * 1024
 MAX_VISION_BYTES = 4 * 1024 * 1024
 ROLES = {"context", "drawing", "photo", "screenshot"}
 EXTENSIONS = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp"}
-
-
-class ScenarioInputs(BaseModel):
-    jurisdiction: str = ""
-    span_m: float | None = None
-    tributary_width_m: float | None = None
-    dead_n_per_m2: float | None = None
-    live_n_per_m2: float | None = None
-    beam_self_weight_n_per_m: float | None = None
-    depth_m: float | None = None
-    flange_width_m: float | None = None
-    flange_thickness_m: float | None = None
-    web_thickness_m: float | None = None
-    student_count: int | None = None
-    supports: str = ""
+GEOMETRY_FILES = {"preview.glb": "model/gltf-binary", "model.step": "model/step", "model.stl": "model/stl"}
 
 
 class TurnBody(BaseModel):
     message: str = ""
-    inputs: ScenarioInputs = Field(default_factory=ScenarioInputs)
+    inputs: dict[str, Any] = Field(default_factory=dict)
     model: str | None = None
 
 
@@ -61,7 +52,31 @@ class AnalyzeBody(BaseModel):
     method: str = "euler-bernoulli"
     elements: int = Field(default=16, ge=2, le=64)
     compare: bool = False
-    inputs: ScenarioInputs = Field(default_factory=ScenarioInputs)
+    inputs: dict[str, Any] = Field(default_factory=dict)
+
+
+def clean_inputs(raw: dict[str, Any]) -> dict:
+    """Keep only inputs the registry lists, typed as the registry says. Faces use their own route."""
+
+    fields = {item.name: item for part in scenario_parts() for item in part.inputs}
+    cleaned: dict = {}
+    for key, value in raw.items():
+        field = fields.get(key)
+        if field is None or field.kind == "face":
+            continue
+        if field.kind == "number":
+            if value is None:
+                cleaned[key] = None
+                continue
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+                raise HTTPException(status_code=422, detail=f"{field.label} must be a finite number in {field.unit}.")
+            cleaned[key] = float(value)
+            continue
+        text = "" if value is None else str(value).strip()[:200]
+        if field.kind == "choice" and text and text not in field.choices:
+            raise HTTPException(status_code=422, detail=f"{field.label} must be one of {', '.join(field.choices)}.")
+        cleaned[key] = text
+    return cleaned
 
 
 def scenario_dir(scenario_id: str) -> Path:
@@ -126,7 +141,16 @@ def _write(session: dict, snapshot: bool = False, mirror: bool = True) -> None:
 def _public(session: dict) -> dict:
     shown = dict(session)
     shown.pop("owner_id", None)
+    inputs = shown.get("inputs") or {}
+    shown["part_catalog"] = catalog_view(inputs.get("physical_system"), inputs.get("requested_part"))
     return shown
+
+
+@router.get("/api/v1/parts")
+def list_parts() -> dict:
+    """The registry of parts Drafty can build, with the inputs each one needs."""
+
+    return {"parts": [part.public() for part in PARTS.values()]}
 
 
 @router.get("/api/v1/scenarios")
@@ -312,7 +336,7 @@ def get_scenario(scenario_id: str, request: Request) -> dict:
 @router.post("/api/v1/scenarios/{scenario_id}/turn")
 def scenario_turn(scenario_id: str, body: TurnBody, request: Request) -> dict:
     session = read_scenario(scenario_id, current_owner(request))
-    merged = _merge_inputs(session, body.inputs.model_dump())
+    merged = _merge_inputs(session, clean_inputs(body.inputs))
     urls, withheld = _vision_urls(session) if configured() else ([], False)
     updated = advance_scenario(
         {**session, "inputs": merged},
@@ -530,7 +554,7 @@ def analyze_scenario(scenario_id: str, body: AnalyzeBody, request: Request) -> d
         )
     if body.compare and not session.get("analysis"):
         raise HTTPException(status_code=422, detail="Run the confirmed beam before comparing an edit.")
-    merged = _merge_inputs(session, body.inputs.model_dump())
+    merged = _merge_inputs(session, clean_inputs(body.inputs))
     try:
         solved = _beam_record(merged, body.elements)
     except ValueError as exc:
@@ -548,6 +572,61 @@ def analyze_scenario(scenario_id: str, body: AnalyzeBody, request: Request) -> d
     session["updated_at"] = datetime.now(UTC).isoformat()
     _write(session)
     return _public(session)
+
+
+@router.get("/api/v1/scenarios/{scenario_id}/geometry/{name}", response_model=None)
+def scenario_geometry(scenario_id: str, name: str, request: Request) -> FileResponse | Response:
+    """Build STEP, STL, or the GLB preview from the server-built profile. No solver runs."""
+
+    owner = current_owner(request)
+    session = read_scenario(scenario_id, owner)
+    media = GEOMETRY_FILES.get(name)
+    if media is None:
+        raise HTTPException(status_code=404, detail="Geometry file not found.")
+    spec = session.get("geometry_spec") or {}
+    if spec.get("kind") != "revolved_profile":
+        raise HTTPException(status_code=404, detail="This scenario has no geometry to export.")
+    try:
+        profile = RevolvedProfile.model_validate(spec.get("profile"))
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail="The stored profile is not valid.") from exc
+    filename = f"{profile.name}{Path(name).suffix}"
+    if settings.production:
+        from drafty_api.jobs import charge_preview
+        from drafty_api.remote import remote_geometry
+
+        charge_preview(owner)
+        files = remote_geometry(profile.model_dump())
+        return Response(
+            content=files[name],
+            media_type=media,
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+    digest = hashlib.sha256(profile.model_dump_json().encode()).hexdigest()[:20]
+    directory = settings.data_dir / "geometry" / digest
+    if not (directory / name).exists():
+        _build_geometry(profile, directory, owner)
+    return FileResponse(directory / name, media_type=media, filename=filename)
+
+
+def _build_geometry(profile: RevolvedProfile, directory: Path, owner: str) -> None:
+    from drafty_api.jobs import charge_preview
+    from drafty_engineering.cad import export_revolved
+    from drafty_engineering.errors import DraftyError
+
+    charge_preview(owner)
+    staging = directory.with_name(f"{directory.name}-{uuid.uuid4().hex[:8]}")
+    try:
+        export_revolved(profile, staging)
+    except DraftyError as exc:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    try:
+        staging.replace(directory)
+    except OSError:
+        shutil.rmtree(staging, ignore_errors=True)
+        if not directory.exists():
+            raise
 
 
 @router.get("/api/v1/scenarios/{scenario_id}/report")

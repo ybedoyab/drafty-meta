@@ -6,6 +6,7 @@ import re
 import httpx
 
 from drafty_ai.client import MetaNotConfigured, MetaRequestError, configured
+from drafty_engineering.catalog import UNKNOWN, UNSUPPORTED, scenario_domains, scenario_parts
 
 ALLOWED_RESPONSE_MODELS = {"muse-spark-1.3", "muse-wonder-1.0"}
 REPLY_FORMAT = {
@@ -19,10 +20,10 @@ REPLY_FORMAT = {
             "message": {"type": "string"},
             "questions": {"type": "array", "items": {"type": "string"}},
             "observations": {"type": "array", "items": {"type": "string"}},
-            "domain": {"type": "string", "enum": ["structural", "mechanical", "unknown"]},
+            "domain": {"type": "string", "enum": [*scenario_domains(), UNSUPPORTED, UNKNOWN]},
             "physical_system": {
                 "type": "string",
-                "enum": ["simply_supported_ibeam", "l_bracket", "unknown"],
+                "enum": [*(part.id for part in scenario_parts()), UNSUPPORTED, UNKNOWN],
             },
             "tool": {
                 "type": "string",
