@@ -21,6 +21,15 @@ button {
   font: inherit;
 }
 
+/* Text fields without their own bg class use the theme surface, not the browser's grey
+   dark-mode default. :where() keeps specificity at zero so utility classes still win. */
+@layer base {
+  :where(input:not([type="checkbox"], [type="radio"], [type="range"], [type="color"], [type="file"]), select, textarea) {
+    background-color: rgb(var(--c-surface));
+    color: inherit;
+  }
+}
+
 .field {
   display: flex;
   flex-direction: column;
