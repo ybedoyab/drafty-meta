@@ -1,3 +1,4 @@
+import { cn } from "@/lib/utils";
 import gearAnimated from "@/assets/gear.gif";
 import gearStill from "@/assets/gear.png";
 import wordmarkAnimated from "@/assets/logo.gif";
@@ -19,6 +20,8 @@ export function Logo({
   still?: boolean;
 }) {
   const { animated, still } = IMAGES[variant];
+  // The artwork is black; in dark mode invert it and screen away any background box.
+  className = cn(className, "dark:invert dark:mix-blend-screen");
   if (alwaysStill) return <img src={still} alt="Drafty" className={className} />;
   return (
     <picture className="contents">

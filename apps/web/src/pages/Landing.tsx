@@ -210,13 +210,13 @@ export function Landing() {
               >
                 <defs>
                   <marker id="cycle-arrow" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
-                    <path d="M0 0 L6 3 L0 6 Z" fill="#94a3b8" />
+                    <path className="fill-slate-400" d="M0 0 L6 3 L0 6 Z" />
                   </marker>
                 </defs>
-                <path d="M54 9 A42 42 0 0 1 91 46" fill="none" stroke="#cbd5e1" strokeWidth="0.8" markerEnd="url(#cycle-arrow)" />
-                <path d="M91 54 A42 42 0 0 1 54 91" fill="none" stroke="#cbd5e1" strokeWidth="0.8" markerEnd="url(#cycle-arrow)" />
-                <path d="M46 91 A42 42 0 0 1 9 54" fill="none" stroke="#cbd5e1" strokeWidth="0.8" markerEnd="url(#cycle-arrow)" />
-                <path d="M9 46 A42 42 0 0 1 46 9" fill="none" stroke="#cbd5e1" strokeWidth="0.8" markerEnd="url(#cycle-arrow)" />
+                <path className="stroke-slate-300" d="M54 9 A42 42 0 0 1 91 46" fill="none" strokeWidth="0.8" markerEnd="url(#cycle-arrow)" />
+                <path className="stroke-slate-300" d="M91 54 A42 42 0 0 1 54 91" fill="none" strokeWidth="0.8" markerEnd="url(#cycle-arrow)" />
+                <path className="stroke-slate-300" d="M46 91 A42 42 0 0 1 9 54" fill="none" strokeWidth="0.8" markerEnd="url(#cycle-arrow)" />
+                <path className="stroke-slate-300" d="M9 46 A42 42 0 0 1 46 9" fill="none" strokeWidth="0.8" markerEnd="url(#cycle-arrow)" />
               </svg>
               <div className="pointer-events-none absolute left-1/2 top-1/2 hidden w-36 -translate-x-1/2 -translate-y-1/2 flex-col items-center text-center lg:flex">
                 <RotateCw className="h-5 w-5 text-blue-800" aria-hidden />

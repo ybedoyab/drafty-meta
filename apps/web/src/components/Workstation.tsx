@@ -41,6 +41,7 @@ import {
 } from "@/lib/design";
 import { takeStudioSpec } from "@/lib/scenario";
 import { Logo } from "@/components/Logo";
+import { ThemeToggle } from "@/components/ThemeToggle";
 
 const STAGES = ["queued", "geometry", "meshing", "solving", "postprocessing", "completed"] as const;
 const MATERIALS = [
@@ -294,11 +295,14 @@ export function Workstation() {
             </Link>
           </nav>
         </div>
-        <p className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-gray-600">
-          {health.data
-            ? `solver ${health.data.solver.mode} · ${health.data.meta ? "Meta on" : "AI not connected"}`
-            : "solver unreachable · AI not connected"}
-        </p>
+        <div className="flex items-center gap-2">
+          <p className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-gray-600">
+            {health.data
+              ? `solver ${health.data.solver.mode} · ${health.data.meta ? "Meta on" : "AI not connected"}`
+              : "solver unreachable · AI not connected"}
+          </p>
+          <ThemeToggle />
+        </div>
       </header>
 
       <aside className="overflow-auto border-r border-gray-200 bg-white p-4">
