@@ -296,6 +296,11 @@ def advance_scenario(
     meta_turns = int(state.get("meta_turns") or 0)
     output_tokens = int(state.get("output_tokens") or 0)
     context_reset = False
+    # Switching models starts a fresh Meta conversation: a previous_response_id
+    # belongs to the model that created it. Saved inputs and messages are kept.
+    switched_model = bool(model and model_name and model != model_name)
+    if switched_model:
+        response_id = None
     withheld = ""
     accepted = ""
     questions: list[str] = []
@@ -368,6 +373,11 @@ def advance_scenario(
                 requested_tool = parsed.tool
                 parsed_claims = parsed.claims[:2]
             search_sources = _search_sources(result.get("citations") or [])
+            if switched_model:
+                withheld = (
+                    f"Switched to {model_name or model}. This turn started a new Meta conversation. "
+                    "Saved inputs were kept. " + withheld
+                ).strip()
             if context_reset:
                 withheld = (
                     "The previous Meta conversation could not be resumed, so this turn started a new one. "

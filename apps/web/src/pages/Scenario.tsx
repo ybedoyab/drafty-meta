@@ -9,6 +9,7 @@ import { BeamResults } from "@/components/BeamResults";
 import { Viewport } from "@/components/Viewport";
 import { GridControl } from "@/components/GridControl";
 import { MicButton, SpeakButton } from "@/components/Voice";
+import { ModelPicker } from "@/components/ModelPicker";
 import { Button } from "@/components/ui/button";
 import {
   analyzeScenario,
@@ -22,6 +23,7 @@ import {
   downloadScenarioGeometry,
   downloadScenarioReport,
   getHealth,
+  getModels,
   getScenario,
   loadDemo,
   scenarioEvidenceUrl,
@@ -41,7 +43,12 @@ import {
   formFromInputs,
   groupFields,
   inputsFromForm,
+  isMetaModelId,
+  META_MODELS,
+  metaModel,
   messageSegments,
+  recallModelId,
+  rememberModelId,
   recallScenarioId,
   rememberScenarioId,
   scenarioFields,
@@ -92,6 +99,8 @@ export function Scenario() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [metaReady, setMetaReady] = useState(false);
+  const [models, setModels] = useState(META_MODELS);
+  const [selectedModelId, setSelectedModelId] = useState<string>(() => recallModelId(localStorage));
   const [segmentPrompt, setSegmentPrompt] = useState("bracket");
   const [supportFace, setSupportFace] = useState("");
   const [loadFace, setLoadFace] = useState("");
@@ -123,6 +132,7 @@ export function Scenario() {
   useEffect(() => {
     let cancel = false;
     const saved = recallScenarioId(localStorage);
+    // load the saved scenario, or create a fresh one below
     const load = async () => {
       if (saved) {
         try {
@@ -199,6 +209,33 @@ export function Scenario() {
     }
   }
 
+  useEffect(() => {
+    let cancel = false;
+    getModels()
+      .then((body) => {
+        if (cancel || !body.models?.length) return;
+        setModels(body.models);
+        setSelectedModelId((current) => (isMetaModelId(body.models, current) ? current : body.default_model));
+      })
+      .catch(() => {
+        // The built-in Spark/Wonder list stays usable if the catalog is unreachable.
+      });
+    return () => {
+      cancel = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    const sessionModel = session?.model;
+    if (isMetaModelId(models, sessionModel)) setSelectedModelId(sessionModel);
+  }, [models, session?.model]);
+
+  function chooseModel(id: string) {
+    if (!isMetaModelId(models, id)) return;
+    setSelectedModelId(id);
+    rememberModelId(localStorage, id);
+  }
+
   async function submit(message: string, patch?: ScenarioForm) {
     if (!session) return;
     const nextForm = { ...form, ...patch };
@@ -210,7 +247,7 @@ export function Scenario() {
     setError(null);
     try {
       const fields = formFields(session.part_catalog?.form_part);
-      const next = await turnScenario(session.id, { message, inputs: inputsFromForm(nextForm, fields) }, controller.signal);
+      const next = await turnScenario(session.id, { message, inputs: inputsFromForm(nextForm, fields), model: selectedModelId }, controller.signal);
       if (controller.signal.aborted) return;
       setSession(next);
       setForm(formOf(next));
@@ -458,7 +495,7 @@ export function Scenario() {
               <p className="text-xs font-medium uppercase tracking-[0.14em] text-slate-500">
                 <span className="block">{PHASE_LABEL[session?.phase ?? "collecting"] ?? "Collecting the problem"}</span>
                 <span className="mt-1 block normal-case tracking-normal">
-                  {connected ? `${session?.model ?? "muse-spark-1.3"} · Responses API` : metaReady ? "Muse Spark ready" : "AI not connected"}
+                  {connected ? `${metaModel(models, session?.model ?? selectedModelId).name} · Responses API` : metaReady ? `${metaModel(models, selectedModelId).name} ready` : "AI not connected"}
                 </span>
               </p>
               <h1 className="text-xl font-semibold">Scenario assistant</h1>
@@ -548,6 +585,9 @@ export function Scenario() {
                 onTranscript={(text) => setDraft((current) => (current ? `${current} ${text}` : text))}
                 onError={setError}
               />
+              <div className="ml-auto">
+                <ModelPicker models={models} value={selectedModelId} onChange={chooseModel} disabled={busy || !session} configured={metaReady} />
+              </div>
               <Button type="submit" variant="primary" disabled={busy || !session || !draft.trim()}>
                 Send
               </Button>

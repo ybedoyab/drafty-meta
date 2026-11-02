@@ -13,7 +13,7 @@ from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, RedirectResponse, Response
 from pydantic import BaseModel, Field, ValidationError
 
-from drafty_ai.client import configured
+from drafty_ai.client import ALLOWED_MODELS, DEFAULT_MODEL, configured, model_catalog
 from drafty_ai.scenario_agent import advance_scenario, blank_inputs
 from drafty_api.auth import current_access_token, current_owner
 from drafty_api.images import inspect_image
@@ -149,6 +149,13 @@ def _public(session: dict) -> dict:
     inputs = shown.get("inputs") or {}
     shown["part_catalog"] = catalog_view(inputs.get("physical_system"), inputs.get("requested_part"))
     return shown
+
+
+@router.get("/api/v1/models")
+def list_models() -> dict:
+    """Meta chat models the scenario assistant can switch between. No secret is returned."""
+
+    return {"models": model_catalog(), "default_model": DEFAULT_MODEL, "configured": configured()}
 
 
 @router.get("/api/v1/parts")
@@ -367,6 +374,9 @@ def rename_scenario(scenario_id: str, body: RenameBody, request: Request) -> dic
 
 @router.post("/api/v1/scenarios/{scenario_id}/turn")
 def scenario_turn(scenario_id: str, body: TurnBody, request: Request) -> dict:
+    if body.model is not None and body.model not in ALLOWED_MODELS:
+        allowed = ", ".join(sorted(ALLOWED_MODELS))
+        raise HTTPException(status_code=422, detail=f"Model '{body.model}' is not available. Choose one of: {allowed}.")
     session = read_scenario(scenario_id, current_owner(request))
     merged = _merge_inputs(session, clean_inputs(body.inputs))
     urls, withheld = _vision_urls(session) if configured() else ([], False)

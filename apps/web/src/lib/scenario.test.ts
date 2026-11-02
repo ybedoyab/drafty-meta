@@ -5,7 +5,12 @@ import {
   formFromInputs,
   groupFields,
   inputsFromForm,
+  isMetaModelId,
+  META_MODELS,
+  metaModel,
   messageSegments,
+  recallModelId,
+  rememberModelId,
   recallScenarioId,
   forgetScenarioId,
   rememberScenarioId,
@@ -118,6 +123,31 @@ describe("scenario inputs", () => {
     expect(recallScenarioId(memory)).toBe("11111111-1111-4111-8111-111111111111");
     forgetScenarioId(memory, "11111111-1111-4111-8111-111111111111");
     expect(recallScenarioId(memory)).toBeNull();
+  });
+});
+
+describe("meta models", () => {
+  it("offers Spark as the default and Wonder for harder work", () => {
+    expect(META_MODELS.map((model) => model.id)).toEqual(["muse-spark-1.3", "muse-wonder-1.0"]);
+    expect(metaModel(META_MODELS, null).id).toBe("muse-spark-1.3");
+    expect(metaModel(META_MODELS, "muse-wonder-1.0").name).toBe("Muse Wonder 1.0");
+    expect(metaModel(META_MODELS, "not-a-model").id).toBe("muse-spark-1.3");
+    expect(isMetaModelId(META_MODELS, "muse-wonder-1.0")).toBe(true);
+    expect(isMetaModelId(META_MODELS, "gpt-5")).toBe(false);
+    expect(isMetaModelId(META_MODELS, null)).toBe(false);
+  });
+
+  it("remembers only a known model choice", () => {
+    const storage = new Map<string, string>();
+    const memory = {
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => storage.set(key, value),
+    } as unknown as Storage;
+    expect(recallModelId(memory)).toBe("muse-spark-1.3");
+    rememberModelId(memory, "muse-wonder-1.0");
+    expect(recallModelId(memory)).toBe("muse-wonder-1.0");
+    rememberModelId(memory, "not-a-model");
+    expect(recallModelId(memory)).toBe("muse-wonder-1.0");
   });
 });
 

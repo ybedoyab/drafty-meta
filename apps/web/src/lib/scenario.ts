@@ -111,6 +111,60 @@ export function groupFields(fields: PartInput[]): [string, PartInput[]][] {
 export const CLASSROOM_PROMPT =
   "I need a steel I-beam supporting a classroom floor for approximately 30 students. Research the applicable loads, ask me for the missing dimensions, propose a preliminary structural model, and explain the checks required.";
 
+export interface MetaModel {
+  id: string;
+  name: string;
+  short_name: string;
+  description: string;
+  detail: string;
+  default: boolean;
+}
+
+/** Fallback matching the server catalog, so the picker works before /api/v1/models answers. */
+export const META_MODELS: MetaModel[] = [
+  {
+    id: "muse-spark-1.3",
+    name: "Muse Spark 1.3",
+    short_name: "Spark 1.3",
+    description: "Most efficient for simpler tasks",
+    detail: "Fast everyday model for collecting inputs and routine turns.",
+    default: true,
+  },
+  {
+    id: "muse-wonder-1.0",
+    name: "Muse Wonder 1.0",
+    short_name: "Wonder 1.0",
+    description: "For your toughest challenges",
+    detail: "Deeper reasoning for complex work and harder questions.",
+    default: false,
+  },
+];
+
+export const DEFAULT_MODEL_ID = META_MODELS.find((model) => model.default)?.id ?? META_MODELS[0].id;
+
+export function isMetaModelId(models: MetaModel[], id: string | null | undefined): id is string {
+  return Boolean(id) && models.some((model) => model.id === id);
+}
+
+export function metaModel(models: MetaModel[], id: string | null | undefined): MetaModel {
+  return models.find((model) => model.id === id) ?? models.find((model) => model.default) ?? models[0] ?? META_MODELS[0];
+}
+
+const MODEL_KEY = "drafty.scenario.model.v1";
+
+export function rememberModelId(storage: Storage, id: string) {
+  if (isMetaModelId(META_MODELS, id)) storage.setItem(MODEL_KEY, id);
+}
+
+export function recallModelId(storage: Storage): string {
+  try {
+    const saved = storage.getItem(MODEL_KEY);
+    return isMetaModelId(META_MODELS, saved) ? saved : DEFAULT_MODEL_ID;
+  } catch {
+    return DEFAULT_MODEL_ID;
+  }
+}
+
 const KEY = "drafty.scenario.v2";
 const STUDIO_KEY = "drafty.studio.pending";
 

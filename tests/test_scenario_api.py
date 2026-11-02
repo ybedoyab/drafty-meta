@@ -52,6 +52,30 @@ def test_classroom_turn_calculates_on_the_server_and_refuses_simulation(tmp_path
     assert body["sources"][0]["origin"] == "checked template"
 
 
+def test_model_catalog_and_turn_model_validation(tmp_path, monkeypatch):
+    with _client(tmp_path, monkeypatch) as client:
+        catalog = client.get("/api/v1/models")
+        scenario_id = client.post("/api/v1/scenarios").json()["id"]
+        wonder = client.post(
+            f"/api/v1/scenarios/{scenario_id}/turn",
+            json={"message": "A classroom floor for 30 students.", "inputs": {}, "model": "muse-wonder-1.0"},
+        )
+        unknown = client.post(
+            f"/api/v1/scenarios/{scenario_id}/turn",
+            json={"message": "Hi.", "inputs": {}, "model": "gpt-5"},
+        )
+    assert catalog.status_code == 200
+    body = catalog.json()
+    assert [model["id"] for model in body["models"]] == ["muse-spark-1.3", "muse-wonder-1.0"]
+    assert body["default_model"] == "muse-spark-1.3"
+    assert body["models"][1]["name"] == "Muse Wonder 1.0"
+    assert "MODEL_API_KEY" not in catalog.text
+    # Offline turns accept a valid choice without calling Meta; unknown ids are refused.
+    assert wonder.status_code == 200
+    assert unknown.status_code == 422
+    assert "muse-wonder-1.0" in unknown.json()["detail"]
+
+
 def test_scenario_resume_upload_and_removal(tmp_path, monkeypatch):
     with _client(tmp_path, monkeypatch) as client:
         scenario_id = client.post("/api/v1/scenarios").json()["id"]

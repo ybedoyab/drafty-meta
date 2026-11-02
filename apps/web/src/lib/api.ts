@@ -144,6 +144,14 @@ async function errorMessage(response: Response) {
 
 export const getHealth = () => api<Health>("/api/v1/health");
 
+export interface MetaModelsResponse {
+  models: import("./scenario").MetaModel[];
+  default_model: string;
+  configured: boolean;
+}
+
+export const getModels = () => api<MetaModelsResponse>("/api/v1/models");
+
 export const getParts = async () => {
   const body = await api<{ parts: import("./scenario").PartSummary[] }>("/api/v1/parts");
   return body.parts;
