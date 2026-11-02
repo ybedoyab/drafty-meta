@@ -6,6 +6,7 @@ import { turbo } from "@/lib/colormap";
 import { resolveGridFloor } from "@/lib/grid";
 import { faceCentroid, loadDirection } from "@/lib/markers";
 import type { SurfaceResult } from "@/lib/api";
+import { useTheme } from "@/lib/theme";
 
 export type Shade = "von_mises" | "displacement" | "geometry";
 export type CameraView = "iso" | "front" | "top" | "right";
@@ -54,9 +55,10 @@ export function Viewport({
   /** Distance from the part center to its lowest face, in meters. Falls back to the surface bbox. */
   floorOffset?: number;
 }) {
+  const dark = useTheme() === "dark";
   return (
     <Canvas key={orthographic ? "ortho" : "persp"} orthographic={orthographic} camera={{ position: [0.45, -0.35, 0.28], fov: 35, zoom: orthographic ? 400 : 1, up: zUp ? [0, 0, 1] : [0, 1, 0] }}>
-      <color attach="background" args={["#f8fafc"]} />
+      <color attach="background" args={[dark ? "#0f172a" : "#f8fafc"]} />
       <ambientLight intensity={0.85} />
       <directionalLight position={[1, -1, 2]} intensity={1.2} />
       <Center>
@@ -97,7 +99,7 @@ export function Viewport({
       <CameraRig view={cameraView} nonce={cameraNonce} radius={fitRadius} />
       <OrbitControls makeDefault />
       <GizmoHelper alignment="bottom-right" margin={[72, 72]}>
-        <GizmoViewport axisColors={["#ef4444", "#22c55e", "#3b82f6"]} labelColor="#334155" />
+        <GizmoViewport axisColors={["#ef4444", "#22c55e", "#3b82f6"]} labelColor={dark ? "#e2e8f0" : "#334155"} />
       </GizmoHelper>
       <axesHelper args={[0.08]} />
     </Canvas>
@@ -168,6 +170,7 @@ function Markers({
   loadLabel: string;
   fitRadius: number;
 }) {
+  const dark = useTheme() === "dark";
   const marker = useMemo(() => {
     const origin = faceCentroid(surface.vertices_m, loadSurface);
     const { unit } = loadDirection(direction);
@@ -180,7 +183,7 @@ function Markers({
     <group>
       <mesh position={held}>
         <boxGeometry args={[mark, mark, mark]} />
-        <meshBasicMaterial color="#1e40af" />
+        <meshBasicMaterial color={dark ? "#60a5fa" : "#1e40af"} />
       </mesh>
       <Html position={held} center sprite zIndexRange={[20, 0]}>
         <div className="pointer-events-none whitespace-nowrap rounded bg-white px-1.5 py-0.5 text-[11px] font-medium text-blue-800 shadow">
@@ -252,6 +255,7 @@ function MeasuredGrid({
     }
     return resolveGridFloor([floorOffset, modelHalf], fitRadius * 0.5);
   }, [surface, floorOffset, fitRadius, zUp]);
+  const dark = useTheme() === "dark";
   const lift = Math.max(fitRadius * 0.005, stepM * 0.15);
   const distance = floor + lift;
   return (
@@ -260,10 +264,10 @@ function MeasuredGrid({
       rotation={zUp ? [Math.PI / 2, 0, 0] : undefined}
       cellSize={stepM}
       cellThickness={0.6}
-      cellColor="#cbd5e1"
+      cellColor={dark ? "#334155" : "#cbd5e1"}
       sectionSize={stepM * 5}
       sectionThickness={1.2}
-      sectionColor="#94a3b8"
+      sectionColor={dark ? "#64748b" : "#94a3b8"}
       fadeDistance={Math.max(fitRadius * 8, stepM * 60)}
       fadeStrength={2.5}
       followCamera={false}

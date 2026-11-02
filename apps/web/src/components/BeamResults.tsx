@@ -184,9 +184,9 @@ function Chart({
         role="img"
         aria-label={`${title}, from ${chartNumber(min, span)} to ${chartNumber(max, span)} ${unit} along the span`}
       >
-        <polygon points={area} fill="#e2e8f0" />
-        <line x1="0" y1={zero} x2={width} y2={zero} stroke="#94a3b8" strokeDasharray="4 3" vectorEffect="non-scaling-stroke" />
-        <polyline fill="none" stroke="#1e293b" strokeWidth="2" points={curve.join(" ")} vectorEffect="non-scaling-stroke" />
+        <polygon className="fill-slate-200" points={area} />
+        <line className="stroke-slate-400" x1="0" y1={zero} x2={width} y2={zero} strokeDasharray="4 3" vectorEffect="non-scaling-stroke" />
+        <polyline className="stroke-slate-800" fill="none" strokeWidth="2" points={curve.join(" ")} vectorEffect="non-scaling-stroke" />
       </svg>
       <div className="mt-1 flex justify-between font-mono text-xs text-slate-500">
         <span>{chartNumber(first, 1)} m</span>

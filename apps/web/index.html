@@ -5,6 +5,16 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Drafty</title>
     <link rel="icon" type="image/png" href="/logo.png" />
+    <script>
+      // Set the theme before first paint so dark-mode viewers never see a light flash.
+      // Keep in sync with src/lib/theme.ts.
+      (function () {
+        var pref = null;
+        try { pref = localStorage.getItem("drafty-theme"); } catch (e) {}
+        var dark = pref === "dark" || (pref !== "light" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+        if (dark) document.documentElement.classList.add("dark");
+      })();
+    </script>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link

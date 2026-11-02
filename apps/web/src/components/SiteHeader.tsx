@@ -4,6 +4,7 @@ import { Box, FolderOpen, LayoutDashboard, ListChecks, Plus, UserRound } from "l
 import { useAuth } from "@/lib/auth";
 import { supabase } from "@/lib/supabase";
 import { Logo } from "@/components/Logo";
+import { ThemeToggle } from "@/components/ThemeToggle";
 
 export function SiteHeader({ trailing }: { trailing?: ReactNode }) {
   const { session } = useAuth();
@@ -37,6 +38,7 @@ export function SiteHeader({ trailing }: { trailing?: ReactNode }) {
         </nav>
       </div>
       <div className="flex items-center gap-2">
+        <ThemeToggle />
         {session ? (
           <button
             type="button"

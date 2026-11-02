@@ -1108,33 +1108,33 @@ function BeamFigure({
   return (
     <figure>
       <svg viewBox="0 0 640 210" className="h-48 w-full rounded border border-slate-200 bg-slate-50" role="img" aria-label="Simply supported beam with uniform load, span, and end reactions">
-        <line x1="80" y1="40" x2="560" y2="40" stroke="#991b1b" strokeWidth="2" />
+        <line className="stroke-red-800" x1="80" y1="40" x2="560" y2="40" strokeWidth="2" />
         {Array.from({ length: 13 }, (_, index) => (
           <g key={index}>
-            <line x1={80 + index * 40} y1="40" x2={80 + index * 40} y2="78" stroke="#dc2626" strokeWidth="2" />
-            <path d={`M${80 + index * 40 - 4} 72 l4 8 l4 -8`} fill="none" stroke="#dc2626" strokeWidth="2" />
+            <line className="stroke-red-600" x1={80 + index * 40} y1="40" x2={80 + index * 40} y2="78" strokeWidth="2" />
+            <path className="stroke-red-600" d={`M${80 + index * 40 - 4} 72 l4 8 l4 -8`} fill="none" strokeWidth="2" />
           </g>
         ))}
-        <line x1="80" y1="96" x2="560" y2="96" stroke="#0f172a" strokeWidth="8" />
-        <path d="M80 104 l-16 22 h32 z" fill="none" stroke="#1d4ed8" strokeWidth="2" />
-        <line x1="64" y1="128" x2="96" y2="128" stroke="#1d4ed8" strokeWidth="2" />
-        <circle cx="560" cy="112" r="8" fill="none" stroke="#1d4ed8" strokeWidth="2" />
-        <line x1="544" y1="128" x2="576" y2="128" stroke="#1d4ed8" strokeWidth="2" />
-        <path d="M80 150 l0 22" stroke="#1e3a8a" strokeWidth="2" />
-        <path d="M74 164 l6 8 l6 -8" fill="none" stroke="#1e3a8a" strokeWidth="2" />
-        <path d="M560 150 l0 22" stroke="#1e3a8a" strokeWidth="2" />
-        <path d="M554 164 l6 8 l6 -8" fill="none" stroke="#1e3a8a" strokeWidth="2" />
-        <line x1="80" y1="188" x2="560" y2="188" stroke="#334155" strokeWidth="1" />
-        <text x="250" y="24" fontSize="14" fill="#991b1b">
+        <line className="stroke-slate-900" x1="80" y1="96" x2="560" y2="96" strokeWidth="8" />
+        <path className="stroke-blue-700" d="M80 104 l-16 22 h32 z" fill="none" strokeWidth="2" />
+        <line className="stroke-blue-700" x1="64" y1="128" x2="96" y2="128" strokeWidth="2" />
+        <circle className="stroke-blue-700" cx="560" cy="112" r="8" fill="none" strokeWidth="2" />
+        <line className="stroke-blue-700" x1="544" y1="128" x2="576" y2="128" strokeWidth="2" />
+        <path className="stroke-blue-900" d="M80 150 l0 22" strokeWidth="2" />
+        <path className="stroke-blue-900" d="M74 164 l6 8 l6 -8" fill="none" strokeWidth="2" />
+        <path className="stroke-blue-900" d="M560 150 l0 22" strokeWidth="2" />
+        <path className="stroke-blue-900" d="M554 164 l6 8 l6 -8" fill="none" strokeWidth="2" />
+        <line className="stroke-slate-700" x1="80" y1="188" x2="560" y2="188" strokeWidth="1" />
+        <text className="fill-red-800" x="250" y="24" fontSize="14">
           q = {lineLoad == null ? "not calculated" : `${lineLoad.toFixed(0)} N/m`}
         </text>
-        <text x="270" y="204" fontSize="14" fill="#334155">
+        <text className="fill-slate-700" x="270" y="204" fontSize="14">
           L = {span == null ? "unknown" : `${span} m`}
         </text>
-        <text x="8" y="168" fontSize="12" fill="#1e3a8a">
+        <text className="fill-blue-900" x="8" y="168" fontSize="12">
           R = {reaction == null ? "—" : `${reaction.toFixed(0)} N`}
         </text>
-        <text x="500" y="168" fontSize="12" fill="#1e3a8a">
+        <text className="fill-blue-900" x="500" y="168" fontSize="12">
           R = {reaction == null ? "—" : `${reaction.toFixed(0)} N`}
         </text>
       </svg>
