@@ -267,6 +267,112 @@ def download_private_object(object_path: str) -> bytes | None:
     return response.content
 
 
+def private_object_exists(object_path: str) -> bool | None:
+    """True/False when storage answers; None when Supabase is not configured."""
+
+    if not settings.supabase_configured:
+        return None
+    base = settings.supabase_url.rstrip("/")
+    key = settings.supabase_secret
+    response = httpx.head(
+        f"{base}/storage/v1/object/artifacts/{object_path}",
+        headers={"apikey": key, "Authorization": f"Bearer {key}"},
+        timeout=30,
+    )
+    if response.status_code == 404:
+        return False
+    if response.status_code >= 400:
+        # Some Storage deployments reject HEAD; fall back to a ranged GET.
+        probe = httpx.get(
+            f"{base}/storage/v1/object/artifacts/{object_path}",
+            headers={"apikey": key, "Authorization": f"Bearer {key}", "Range": "bytes=0-0"},
+            timeout=30,
+        )
+        if probe.status_code == 404:
+            return False
+        if probe.status_code >= 400:
+            return False
+        return True
+    return True
+
+
+def delete_private_objects(object_paths: list[str]) -> tuple[int, list[str]]:
+    """Idempotent multi-delete. Missing objects count as success. Returns (removed, errors)."""
+
+    removed = 0
+    errors: list[str] = []
+    for path in object_paths:
+        if not path or path.startswith("geometry/"):
+            # Shared content-addressed geometry must never be deleted from this helper.
+            if path.startswith("geometry/"):
+                errors.append(f"refused:{path}")
+            continue
+        if delete_private_object(path):
+            removed += 1
+        else:
+            errors.append(path)
+    return removed, errors
+
+
+def call_service_rpc(function_name: str, payload: dict) -> object | None:
+    """Invoke a Postgres RPC with the service role. None means the backend did not answer."""
+
+    if not settings.supabase_configured:
+        return None
+    try:
+        response = httpx.post(
+            f"{settings.supabase_url.rstrip('/')}/rest/v1/rpc/{function_name}",
+            headers={
+                "apikey": settings.supabase_secret,
+                "Authorization": f"Bearer {settings.supabase_secret}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            timeout=30,
+        )
+    except httpx.HTTPError:
+        return None
+    if response.status_code >= 400:
+        return None
+    if response.content in (b"", b"null"):
+        return None
+    try:
+        return response.json()
+    except json.JSONDecodeError:
+        return None
+
+
+def charge_preview_quota_remote(owner_id: str, limit: int) -> bool | None:
+    """Atomic hourly preview charge. True/False from RPC; None when unavailable."""
+
+    result = call_service_rpc(
+        "charge_preview_quota",
+        {"p_owner_id": owner_id, "p_limit": int(limit)},
+    )
+    if result is None:
+        return None
+    return bool(result)
+
+
+def claim_geometry_build_lock_remote(digest: str, owner_id: str, ttl_seconds: int = 120) -> bool | None:
+    """Try to claim a short-lived per-digest build lock. None when the backend is unavailable."""
+
+    result = call_service_rpc(
+        "claim_geometry_build_lock",
+        {"p_digest": digest, "p_owner_id": owner_id, "p_ttl_seconds": int(ttl_seconds)},
+    )
+    if result is None:
+        return None
+    return bool(result)
+
+
+def release_geometry_build_lock_remote(digest: str, owner_id: str) -> None:
+    call_service_rpc(
+        "release_geometry_build_lock",
+        {"p_digest": digest, "p_owner_id": owner_id},
+    )
+
+
 def _upload(client: httpx.Client, base: str, key: str, job_id: str, name: str, path: Path) -> None:
     content_type = CONTENT_TYPES.get(path.suffix.lower(), "application/octet-stream")
     with path.open("rb") as handle:

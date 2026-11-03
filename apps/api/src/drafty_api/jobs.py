@@ -332,6 +332,25 @@ def _spawn(directory: Path) -> subprocess.Popen | None:
 
 
 def charge_preview(owner_id: str) -> None:
+    """Enforce the hourly preview quota.
+
+    Production uses an atomic Supabase RPC so serverless instances share one counter
+    and fails closed when that backend is unavailable. Local development keeps a
+    file-backed counter under the process data directory.
+    """
+
+    if settings.production:
+        from drafty_api.storage import charge_preview_quota_remote
+
+        if not settings.supabase_configured:
+            raise HTTPException(status_code=503, detail="Preview quota backend is unavailable.")
+        allowed = charge_preview_quota_remote(owner_id, settings.drafty_max_previews_per_hour)
+        if allowed is None:
+            raise HTTPException(status_code=503, detail="Preview quota backend is unavailable.")
+        if not allowed:
+            raise HTTPException(status_code=429, detail="Hourly preview limit reached.")
+        return
+
     path = settings.data_dir / "preview-quota.json"
     with _job_lock():
         payload = {"owners": {}}

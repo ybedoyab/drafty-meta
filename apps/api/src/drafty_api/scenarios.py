@@ -351,17 +351,32 @@ def get_scenario(scenario_id: str, request: Request) -> dict:
 def delete_scenario(scenario_id: str, request: Request) -> dict:
     """Delete a scenario the caller owns, with explicit cleanup of linked resources.
 
-    Removes: mirrored scenario row, private evidence objects, linked jobs (cancel + local
-    job directories), and the local scenario directory. Shared content-addressed geometry
-    digests under data/geometry/ are immutable cache and are not deleted with the scenario.
+    Deletion policy (idempotent and retryable):
+    - Delete: mirrored scenario row; private evidence objects under evidence/{scenario_id}/;
+      owned remote jobs for this scenario (results + artifact metadata cascade); private FEM
+      storage under {job_id}/; local job directories; local scenario directory.
+    - Cancel: active Modal function calls for those owned jobs.
+    - Retain: shared content-addressed geometry under geometry/{digest}/ (never removed here).
+
+    Owned job/evidence cleanup runs before the scenario row is removed so a partial failure
+    can be retried while the scenario still exists. Missing objects and already-deleted jobs
+    count as success.
     """
 
     owner = current_owner(request)
     session = read_scenario(scenario_id, owner)
+    cleanup = _cleanup_scenario_resources(session, owner)
+    if cleanup.get("errors"):
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "message": "Scenario cleanup was incomplete. Retry the delete.",
+                "cleanup": cleanup,
+            },
+        )
     removed_remote = delete_remote_scenario(scenario_id, current_access_token())
     if settings.production and removed_remote is not True:
         raise HTTPException(status_code=503, detail="The scenario was not deleted.")
-    cleanup = _cleanup_scenario_resources(session, owner)
     shutil.rmtree(scenario_dir(scenario_id), ignore_errors=True)
     return {
         "id": scenario_id,
@@ -545,10 +560,16 @@ def assert_scenario_allows_solver(session: dict) -> None:
 
 
 def _cleanup_scenario_resources(session: dict, owner_id: str) -> dict:
-    """Cancel linked jobs, drop local job dirs, and delete private evidence objects."""
+    """Cancel Modal, purge owned remote jobs/FEM files, drop local dirs, delete evidence.
+
+    Shared geometry/ cache entries are explicitly retained. Partial failures are listed in
+    ``errors`` so the caller can retry without treating missing objects as failure.
+    """
 
     from drafty_api.jobs import job_dir, request_cancel
+    from drafty_api.remote import list_remote_jobs_for_scenario, purge_remote_job
 
+    errors: list[str] = []
     evidence_removed = 0
     for item in session.get("evidence") or []:
         media = item.get("media_type")
@@ -558,27 +579,77 @@ def _cleanup_scenario_resources(session: dict, owner_id: str) -> dict:
         path = f"evidence/{session['id']}/{item['id']}{ext}"
         if delete_private_object(path):
             evidence_removed += 1
-    jobs_cancelled = 0
-    jobs_removed = 0
+        elif settings.supabase_configured:
+            errors.append(f"evidence:{path}")
+
+    job_ids: list[str] = []
+    seen: set[str] = set()
     for entry in session.get("jobs") or []:
         job_id = str(entry.get("id") or "")
-        if not job_id:
-            continue
+        if job_id and job_id not in seen:
+            seen.add(job_id)
+            job_ids.append(job_id)
+    try:
+        for remote_job in list_remote_jobs_for_scenario(str(session["id"]), owner_id):
+            job_id = str(remote_job.get("id") or "")
+            if job_id and job_id not in seen:
+                seen.add(job_id)
+                job_ids.append(job_id)
+    except Exception as exc:
+        errors.append(f"list_jobs:{type(exc).__name__}")
+
+    jobs_cancelled = 0
+    jobs_removed = 0
+    remote_jobs_purged = 0
+    storage_removed = 0
+    for job_id in job_ids:
         try:
             request_cancel(job_id, owner_id)
             jobs_cancelled += 1
         except HTTPException:
             pass
+        except Exception as exc:
+            errors.append(f"cancel:{job_id}:{type(exc).__name__}")
+        try:
+            report = purge_remote_job(job_id, owner_id)
+            if report.get("cancelled"):
+                jobs_cancelled += 1
+            storage_removed += int(report.get("storage_removed") or 0)
+            if report.get("row_deleted"):
+                remote_jobs_purged += 1
+            for item in report.get("errors") or []:
+                # Geometry refusals must never block scenario deletion; they are policy.
+                if str(item).startswith("refused:geometry/"):
+                    continue
+                errors.append(f"purge:{job_id}:{item}")
+        except Exception as exc:
+            errors.append(f"purge:{job_id}:{type(exc).__name__}")
         try:
             shutil.rmtree(job_dir(job_id), ignore_errors=True)
             jobs_removed += 1
-        except HTTPException:
-            pass
+        except Exception as exc:
+            errors.append(f"local_job:{job_id}:{type(exc).__name__}")
+
     return {
         "evidence_objects": evidence_removed,
         "jobs_cancelled": jobs_cancelled,
         "jobs_removed": jobs_removed,
+        "remote_jobs_purged": remote_jobs_purged,
+        "fem_storage_removed": storage_removed,
         "geometry_cache": "retained",
+        "policy": {
+            "deleted": [
+                "evidence_objects",
+                "owned_jobs",
+                "results",
+                "artifact_metadata",
+                "private_fem_files",
+                "local_job_dirs",
+            ],
+            "cancelled": ["active_modal_calls"],
+            "retained": ["shared_geometry_cache"],
+        },
+        "errors": errors,
     }
 
 

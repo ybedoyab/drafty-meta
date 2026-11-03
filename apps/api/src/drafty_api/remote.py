@@ -111,6 +111,22 @@ def list_remote_jobs(owner_id: str) -> list[dict]:
     )
 
 
+def list_remote_jobs_for_scenario(scenario_id: str, owner_id: str) -> list[dict]:
+    """Owned jobs linked to a scenario. Empty when Supabase is not configured."""
+
+    _uuid(scenario_id)
+    return _select(
+        "jobs",
+        {
+            "scenario_id": f"eq.{scenario_id}",
+            "owner_id": f"eq.{owner_id}",
+            "select": "id,owner_id,status,kind,scenario_id,compute",
+            "order": "created_at.desc",
+            "limit": "100",
+        },
+    )
+
+
 def cancel_remote_job(job_id: str, owner_id: str) -> dict:
     job = read_remote_job(job_id, owner_id)
     if job.get("status") in TERMINAL_REMOTE:
@@ -126,6 +142,75 @@ def cancel_remote_job(job_id: str, owner_id: str) -> dict:
         except Exception:
             pass
     return read_remote_job(job_id, owner_id)
+
+
+def purge_remote_job(job_id: str, owner_id: str) -> dict:
+    """Cancel Modal if active, delete private FEM storage, then delete the job row.
+
+    Idempotent: missing jobs/objects are success. Shared geometry/ objects are never touched.
+    Cascades remove results, artifacts metadata, and job_dispatch.
+    """
+
+    from drafty_api.storage import delete_private_objects
+
+    _uuid(job_id)
+    report = {
+        "job_id": job_id,
+        "cancelled": False,
+        "storage_removed": 0,
+        "row_deleted": False,
+        "errors": [],
+    }
+    rows = _select("jobs", {"id": f"eq.{job_id}", "owner_id": f"eq.{owner_id}", "select": "*"})
+    if rows:
+        job = rows[0]
+        if job.get("status") not in TERMINAL_REMOTE:
+            try:
+                cancel_remote_job(job_id, owner_id)
+                report["cancelled"] = True
+            except HTTPException as exc:
+                report["errors"].append(f"cancel:{exc.detail}")
+            except Exception as exc:
+                report["errors"].append(f"cancel:{type(exc).__name__}")
+    artifact_rows = _select("artifacts", {"job_id": f"eq.{job_id}", "select": "name,storage_path"})
+    paths: list[str] = []
+    for item in artifact_rows:
+        storage_path = str(item.get("storage_path") or "").lstrip("/")
+        if storage_path and not storage_path.startswith("geometry/"):
+            paths.append(storage_path)
+        name = str(item.get("name") or "")
+        if name and "/" not in name and "\\" not in name:
+            paths.append(f"{job_id}/{name}")
+    for name in ARTIFACT_NAMES:
+        paths.append(f"{job_id}/{name}")
+    # Deduplicate while preserving order.
+    seen: set[str] = set()
+    unique_paths = []
+    for path in paths:
+        if path in seen:
+            continue
+        seen.add(path)
+        unique_paths.append(path)
+    removed, storage_errors = delete_private_objects(unique_paths)
+    report["storage_removed"] = removed
+    report["errors"].extend(storage_errors)
+    if settings.supabase_configured:
+        try:
+            response = httpx.delete(
+                f"{settings.supabase_url.rstrip('/')}/rest/v1/jobs",
+                headers=_service_headers(),
+                params={"id": f"eq.{job_id}", "owner_id": f"eq.{owner_id}"},
+                timeout=30,
+            )
+            if response.status_code < 400:
+                report["row_deleted"] = True
+            else:
+                report["errors"].append(f"job_row:{response.status_code}")
+        except httpx.HTTPError as exc:
+            report["errors"].append(f"job_row:{type(exc).__name__}")
+    else:
+        report["row_deleted"] = True
+    return report
 
 
 def complete_remote_job(job_id: str, token: str, payload: dict) -> dict:
