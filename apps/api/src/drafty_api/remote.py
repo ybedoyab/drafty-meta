@@ -147,8 +147,9 @@ def cancel_remote_job(job_id: str, owner_id: str) -> dict:
 def purge_remote_job(job_id: str, owner_id: str) -> dict:
     """Cancel Modal if active, delete private FEM storage, then delete the job row.
 
-    Idempotent: missing jobs/objects are success. Shared geometry/ objects are never touched.
-    Cascades remove results, artifacts metadata, and job_dispatch.
+    Idempotent and retryable: missing jobs/objects are success. Shared geometry/ objects
+    are never touched. The job row (and cascaded artifact metadata) is kept when any
+    private artifact delete fails so a later retry can finish cleanup without orphans.
     """
 
     from drafty_api.storage import delete_private_objects
@@ -159,6 +160,7 @@ def purge_remote_job(job_id: str, owner_id: str) -> dict:
         "cancelled": False,
         "storage_removed": 0,
         "row_deleted": False,
+        "retryable": False,
         "errors": [],
     }
     rows = _select("jobs", {"id": f"eq.{job_id}", "owner_id": f"eq.{owner_id}", "select": "*"})
@@ -193,7 +195,13 @@ def purge_remote_job(job_id: str, owner_id: str) -> dict:
         unique_paths.append(path)
     removed, storage_errors = delete_private_objects(unique_paths)
     report["storage_removed"] = removed
-    report["errors"].extend(storage_errors)
+    # Policy refusals (geometry/) are not cleanup failures.
+    blocking_storage = [item for item in storage_errors if not str(item).startswith("refused:")]
+    report["errors"].extend(blocking_storage)
+    if blocking_storage:
+        report["retryable"] = True
+        # Keep the job row and artifact metadata so a later purge can finish storage deletes.
+        return report
     if settings.supabase_configured:
         try:
             response = httpx.delete(
@@ -206,8 +214,10 @@ def purge_remote_job(job_id: str, owner_id: str) -> dict:
                 report["row_deleted"] = True
             else:
                 report["errors"].append(f"job_row:{response.status_code}")
+                report["retryable"] = True
         except httpx.HTTPError as exc:
             report["errors"].append(f"job_row:{type(exc).__name__}")
+            report["retryable"] = True
     else:
         report["row_deleted"] = True
     return report

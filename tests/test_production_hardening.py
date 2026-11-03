@@ -395,3 +395,106 @@ def test_local_manifest_includes_generator_revision(tmp_path, monkeypatch):
     assert manifest["generator_revision"] == GENERATOR_REVISION
     on_disk = json.loads((Path(tmp_path) / "geometry" / digest / MANIFEST_NAME).read_text(encoding="utf-8"))
     assert on_disk["generator_revision"] == GENERATOR_REVISION
+
+
+def test_purge_remote_job_keeps_row_when_storage_delete_fails(monkeypatch):
+    from drafty_api.remote import purge_remote_job
+
+    job_id = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+    owner = "owner-purge"
+    monkeypatch.setattr(settings, "supabase_url", "https://example.supabase.co")
+    monkeypatch.setattr(settings, "supabase_secret_key", "service-role")
+    deleted_rows = {"count": 0}
+
+    def _select(table, params):
+        if table == "jobs":
+            return [{"id": job_id, "owner_id": owner, "status": "completed"}]
+        if table == "artifacts":
+            return [{"name": "results.json", "storage_path": f"{job_id}/results.json"}]
+        return []
+
+    def _delete_objects(paths):
+        return 0, [f"{job_id}/results.json"]
+
+    def _httpx_delete(*_a, **_k):
+        deleted_rows["count"] += 1
+        raise AssertionError("job row must not be deleted while storage cleanup failed")
+
+    monkeypatch.setattr("drafty_api.remote._select", _select)
+    monkeypatch.setattr("drafty_api.storage.delete_private_objects", _delete_objects)
+    monkeypatch.setattr("drafty_api.remote.httpx.delete", _httpx_delete)
+
+    first = purge_remote_job(job_id, owner)
+    assert first["row_deleted"] is False
+    assert first["retryable"] is True
+    assert first["errors"] == [f"{job_id}/results.json"]
+    assert deleted_rows["count"] == 0
+
+    remaining = {"paths": [f"{job_id}/results.json"]}
+
+    def _delete_retry(paths):
+        removed = list(remaining["paths"])
+        remaining["paths"] = []
+        return len(removed), []
+
+    row_deleted = {"ok": False}
+
+    class _Response:
+        status_code = 204
+
+    def _httpx_delete_ok(*_a, **_k):
+        row_deleted["ok"] = True
+        return _Response()
+
+    monkeypatch.setattr("drafty_api.storage.delete_private_objects", _delete_retry)
+    monkeypatch.setattr("drafty_api.remote.httpx.delete", _httpx_delete_ok)
+    second = purge_remote_job(job_id, owner)
+    assert second["row_deleted"] is True
+    assert second["retryable"] is False
+    assert second["errors"] == []
+    assert remaining["paths"] == []
+    assert row_deleted["ok"] is True
+
+
+def test_geometry_lock_contention_returns_retryable_without_modal(tmp_path, monkeypatch):
+    from drafty_api.geometry_cache import load_or_build_geometry
+
+    monkeypatch.setattr(settings, "drafty_data_dir", str(tmp_path))
+    monkeypatch.setattr(settings, "drafty_env", "production")
+    monkeypatch.setattr(settings, "supabase_url", "https://example.supabase.co")
+    monkeypatch.setattr(settings, "supabase_secret_key", "service-role")
+    profile = _profile()
+    modal_calls = {"n": 0}
+
+    def _remote(_profile):
+        modal_calls["n"] += 1
+        raise AssertionError("Modal must not start when another instance holds the lock")
+
+    monkeypatch.setattr("drafty_api.geometry_cache.read_remote_cache", lambda *_a, **_k: None)
+    monkeypatch.setattr("drafty_api.geometry_cache._claim_remote_lock", lambda *_a, **_k: False)
+    monkeypatch.setattr("drafty_api.geometry_cache._wait_for_cache", lambda *_a, **_k: None)
+    monkeypatch.setattr("drafty_api.remote.remote_geometry", _remote)
+
+    with pytest.raises(HTTPException) as exc:
+        load_or_build_geometry(profile, "owner-lock")
+    assert exc.value.status_code == 503
+    detail = exc.value.detail
+    assert isinstance(detail, dict)
+    assert detail.get("retryable") is True
+    assert modal_calls["n"] == 0
+
+
+def test_geometry_lock_backend_unavailable_fails_closed(tmp_path, monkeypatch):
+    from drafty_api.geometry_cache import load_or_build_geometry
+
+    monkeypatch.setattr(settings, "drafty_data_dir", str(tmp_path))
+    monkeypatch.setattr(settings, "drafty_env", "production")
+    monkeypatch.setattr(settings, "supabase_url", "https://example.supabase.co")
+    monkeypatch.setattr(settings, "supabase_secret_key", "service-role")
+    profile = _profile()
+    monkeypatch.setattr("drafty_api.geometry_cache.read_remote_cache", lambda *_a, **_k: None)
+    monkeypatch.setattr("drafty_api.geometry_cache._claim_remote_lock", lambda *_a, **_k: None)
+    with pytest.raises(HTTPException) as exc:
+        load_or_build_geometry(profile, "owner-lock")
+    assert exc.value.status_code == 503
+    assert "unavailable" in str(exc.value.detail).lower()

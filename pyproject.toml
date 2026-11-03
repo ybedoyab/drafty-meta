@@ -23,7 +23,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.3", "ruff>=0.8"]
+dev = ["pytest>=8.3", "ruff>=0.8", "psycopg[binary]>=3.2"]
 modal = ["modal>=1.0"]
 viz = ["pyvista>=0.44"]
 
@@ -49,6 +49,7 @@ markers = [
     "cad: requires CadQuery",
     "mesh: requires Gmsh",
     "fem: requires CalculiX",
+    "postgres: requires a disposable PostgreSQL database (DRAFTY_TEST_DATABASE_URL)",
 ]
 
 [tool.vercel]

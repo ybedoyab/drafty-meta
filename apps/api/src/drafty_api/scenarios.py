@@ -617,9 +617,11 @@ def _cleanup_scenario_resources(session: dict, owner_id: str) -> dict:
             storage_removed += int(report.get("storage_removed") or 0)
             if report.get("row_deleted"):
                 remote_jobs_purged += 1
+            if report.get("retryable") and not report.get("row_deleted"):
+                errors.append(f"purge:{job_id}:retryable")
             for item in report.get("errors") or []:
                 # Geometry refusals must never block scenario deletion; they are policy.
-                if str(item).startswith("refused:geometry/"):
+                if str(item).startswith("refused:"):
                     continue
                 errors.append(f"purge:{job_id}:{item}")
         except Exception as exc:

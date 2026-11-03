@@ -238,7 +238,11 @@ def load_or_build_geometry(profile: RevolvedProfile, owner: str) -> tuple[dict[s
 
     Cache hits never charge preview quota and never call Modal. Misses charge once,
     build (local CadQuery or Modal), then store under the versioned content digest.
-    Per-digest locks reduce duplicate Modal work across concurrent callers when possible.
+
+    In production, a distributed per-digest lock prevents duplicate Modal builds. If
+    another instance holds the lock, this call waits briefly for the cache and then
+    returns a recoverable 503 instead of starting a second Modal job. Lock-backend
+    failures fail closed (503).
     """
 
     digest = profile_digest(profile)
@@ -252,10 +256,23 @@ def load_or_build_geometry(profile: RevolvedProfile, owner: str) -> tuple[dict[s
             return hit, True
 
         claimed_remote = _claim_remote_lock(digest, owner)
+        if claimed_remote is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Geometry build lock backend is unavailable. Retry shortly.",
+            )
         if claimed_remote is False:
             waited = _wait_for_cache(digest, attempts=24, delay_s=0.25)
             if waited is not None:
                 return waited, True
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "message": "Geometry build is in progress on another instance. Retry shortly.",
+                    "digest": digest,
+                    "retryable": True,
+                },
+            )
 
         try:
             hit = _try_read(digest)
@@ -277,8 +294,7 @@ def load_or_build_geometry(profile: RevolvedProfile, owner: str) -> tuple[dict[s
                 write_remote_cache(digest, cached)
             return cached, False
         finally:
-            if claimed_remote is True:
-                _release_remote_lock(digest, owner)
+            _release_remote_lock(digest, owner)
 
 
 def _try_read(digest: str) -> dict[str, bytes] | None:
@@ -303,6 +319,8 @@ def _wait_for_cache(digest: str, attempts: int, delay_s: float) -> dict[str, byt
 
 
 def _claim_remote_lock(digest: str, owner: str) -> bool | None:
+    """True when claimed, False when held elsewhere, None when the backend is unavailable."""
+
     if not (settings.production and settings.supabase_configured):
         return True
     from drafty_api.storage import claim_geometry_build_lock_remote
