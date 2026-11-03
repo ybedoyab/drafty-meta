@@ -35,7 +35,7 @@ def write_input(
     element_type = "C3D10" if order == 10 else "C3D4"
     lines = [
         "*HEADING",
-        f"Drafty {spec.kind} {spec.name}",
+        f"Drafty {spec.kind} {' '.join(spec.name.split())[:80]}",
         "*NODE",
     ]
     for index, point in enumerate(points, start=1):
