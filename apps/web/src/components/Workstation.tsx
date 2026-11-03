@@ -1,4 +1,4 @@
-import { Box, Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, CircleAlert, Magnet, MousePointer2, PenTool, Pencil, RotateCw, Rows3, Scaling, Trash2, Undo2 } from "lucide-react";
+import { Box, Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, CircleAlert, Magnet, MousePointer2, PenTool, Pencil, Redo2, RotateCcw, RotateCw, Rows3, Scaling, Trash2, Undo2 } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useSearchParams } from "react-router-dom";
 import { Suspense, useEffect, useMemo, useState } from "react";
@@ -42,6 +42,7 @@ import {
   type DesignSpec,
   type PartKind,
 } from "@/lib/design";
+import { canRedo, canUndo, createHistory, historyShortcut, recordHistory, redoHistory, undoHistory, type History } from "@/lib/history";
 import { takeStudioSpec } from "@/lib/scenario";
 import { axisSizesMm, hasVisualEdits, rotateForm, scaleForm } from "@/lib/transform";
 import { clampOffsets, draftPlacementM, type SketchAdditionForm } from "@/lib/sketch";
@@ -64,7 +65,20 @@ export function Workstation() {
   const queryClient = useQueryClient();
   const [params] = useSearchParams();
   const scenarioId = params.get("scenario");
-  const [form, setForm] = useState<DesignForm>(benchmarkForm);
+  const [formHistory, setFormHistory] = useState<History<DesignForm>>(() => createHistory(benchmarkForm));
+  const form = formHistory.present;
+
+  // Every edit through setForm records an undo stage. loadForm replaces the
+  // part outright (a scenario or example load), so it starts a fresh history.
+  function setForm(next: DesignForm | ((current: DesignForm) => DesignForm)) {
+    setFormHistory((current) =>
+      recordHistory(current, typeof next === "function" ? next(current.present) : next),
+    );
+  }
+
+  function loadForm(next: DesignForm) {
+    setFormHistory(createHistory(next));
+  }
   const [baselineForm, setBaselineForm] = useState<DesignForm>(benchmarkForm);
   const [bottomPanel, setBottomPanel] = useState<"edit" | "jobs">("edit");
   const [editMode, setEditMode] = useState<EditMode>("select");
@@ -83,7 +97,7 @@ export function Workstation() {
       if (pending && typeof pending === "object") {
         setSpecApplied(true);
         setBaselineForm(specToForm(pending as DesignSpec, benchmarkForm));
-        setForm((current) => specToForm(pending as DesignSpec, current));
+        loadForm(specToForm(pending as DesignSpec, benchmarkForm));
         void previewSpec(formToSpec(specToForm(pending as DesignSpec, benchmarkForm)))
           .then((url) => {
             setPreviewUrl((current) => {
@@ -103,7 +117,7 @@ export function Workstation() {
         if (cancel || scenario.studio_approval !== "confirmed" || !scenario.studio_spec) return;
         setSpecApplied(true);
         setBaselineForm(specToForm(scenario.studio_spec as unknown as DesignSpec, benchmarkForm));
-        setForm((current) => specToForm(scenario.studio_spec as unknown as DesignSpec, current));
+        loadForm(specToForm(scenario.studio_spec as unknown as DesignSpec, benchmarkForm));
         void previewSpec(formToSpec(specToForm(scenario.studio_spec as unknown as DesignSpec, benchmarkForm)))
           .then((url) => {
             if (cancel) {
@@ -256,7 +270,7 @@ export function Workstation() {
   });
 
   async function loadExample() {
-    setForm(benchmarkForm);
+    loadForm(benchmarkForm);
     setBaselineForm(benchmarkForm);
     setFormError(null);
     setExampleBusy(true);
@@ -279,6 +293,36 @@ export function Workstation() {
     setFormError(null);
     setShade("geometry");
     preview.mutate(restored);
+  }
+
+  // Undo and redo restore a whole stage, then rebuild the solid from it like
+  // any other edit. A restored sketch-only part with its piece removed has no
+  // solid to build, so the stale preview is dropped instead.
+  function restoreForm(restored: DesignForm) {
+    setFormError(null);
+    setShade("geometry");
+    if (restored.kind === "sketch_prism" && restored.additions.length === 0) {
+      setPreviewUrl((current) => {
+        if (current) URL.revokeObjectURL(current);
+        return null;
+      });
+      return;
+    }
+    preview.mutate(restored);
+  }
+
+  function undoForm() {
+    const next = undoHistory(formHistory);
+    if (next === formHistory) return;
+    setFormHistory(next);
+    restoreForm(next.present);
+  }
+
+  function redoForm() {
+    const next = redoHistory(formHistory);
+    if (next === formHistory) return;
+    setFormHistory(next);
+    restoreForm(next.present);
   }
 
   function handlePartTransform(transform: PartTransform) {
@@ -453,7 +497,19 @@ export function Workstation() {
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
       const target = event.target as HTMLElement | null;
-      if (target && ["INPUT", "SELECT", "TEXTAREA"].includes(target.tagName)) return;
+      const inField =
+        Boolean(target) &&
+        (["INPUT", "SELECT", "TEXTAREA"].includes(target!.tagName) || target!.isContentEditable);
+      const shortcut = historyShortcut(event);
+      if (shortcut && !inField && !drawOpen) {
+        // Keep the browser from treating the chord as its own undo/redo.
+        event.preventDefault();
+        if (shortcut === "undo") undoForm();
+        else redoForm();
+        return;
+      }
+      // Inside a field the chord stays with the field's own text undo.
+      if (inField) return;
       if (event.key === "1") setEditMode("select");
       else if (event.key === "2") setEditMode("scale");
       else if (event.key === "3") setEditMode("rotate");
@@ -461,7 +517,7 @@ export function Workstation() {
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  }, [formHistory, drawOpen]);
 
   return (
     <div
@@ -1123,6 +1179,34 @@ export function Workstation() {
                 </div>
                 <div className="flex-1" />
                 <div className="flex flex-col">
+                  <div className="flex gap-1.5 px-1" role="group" aria-label="History">
+                    <button
+                      type="button"
+                      disabled={!canUndo(formHistory)}
+                      title="Undo the last edit (Ctrl+Z)"
+                      onClick={undoForm}
+                      className="flex h-[76px] w-[80px] flex-col items-center justify-center gap-1 rounded-lg border border-slate-200 bg-white text-slate-700 hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      <Undo2 className="h-7 w-7" aria-hidden />
+                      <span className="text-xs font-semibold">Undo</span>
+                      <span className="text-[10px] text-slate-400">Ctrl+Z</span>
+                    </button>
+                    <button
+                      type="button"
+                      disabled={!canRedo(formHistory)}
+                      title="Redo the undone edit (Ctrl+Y or Ctrl+Shift+Z)"
+                      onClick={redoForm}
+                      className="flex h-[76px] w-[80px] flex-col items-center justify-center gap-1 rounded-lg border border-slate-200 bg-white text-slate-700 hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      <Redo2 className="h-7 w-7" aria-hidden />
+                      <span className="text-xs font-semibold">Redo</span>
+                      <span className="text-[10px] text-slate-400">Ctrl+Y</span>
+                    </button>
+                  </div>
+                  <p className="mt-1.5 text-center text-[10px] font-semibold uppercase tracking-widest text-slate-400">History</p>
+                </div>
+                <div className="mx-3 w-px shrink-0 bg-slate-200" aria-hidden />
+                <div className="flex flex-col">
                   <div className="flex gap-1.5 px-1">
                     <button
                       type="button"
@@ -1131,7 +1215,7 @@ export function Workstation() {
                       onClick={resetPart}
                       className="flex h-[76px] w-[80px] flex-col items-center justify-center gap-1 rounded-lg border border-slate-200 bg-white text-slate-700 hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
                     >
-                      <Undo2 className="h-7 w-7" aria-hidden />
+                      <RotateCcw className="h-7 w-7" aria-hidden />
                       <span className="text-xs font-semibold">Reset</span>
                       <span className="text-[10px] text-slate-400">as loaded</span>
                     </button>
@@ -1152,7 +1236,8 @@ export function Workstation() {
               </div>
               <p className="mt-1 text-[11px] leading-4 text-gray-500">
                 Click the part in the viewport to select it, then drag the gizmo handles. Scale writes the dragged size back into
-                the dimensions; Rotate turns in 90-degree steps and remaps the support and load faces.
+                the dimensions; Rotate turns in 90-degree steps and remaps the support and load faces. Ctrl+Z steps back through
+                your edits and Ctrl+Y steps forward again.
                 {form.kind === "l_bracket" && " Rotating an L-bracket cannot be written as the same kind of part, so Rotate does not apply to it."}
                 {form.kind === "perforated_plate" && " Holes stay through the thickness, so tipping a perforated plate on its edge is not offered."}
                 {form.kind === "sketch_prism" && " This part is one drawn piece. Hold and load it on its back and front faces, or draw a new piece to change its outline."}
