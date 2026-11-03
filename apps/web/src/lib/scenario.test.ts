@@ -14,6 +14,10 @@ import {
   recallScenarioId,
   forgetScenarioId,
   rememberScenarioId,
+  scenarioEntry,
+  scenarioPath,
+  shareInFlight,
+  shouldApplySession,
   scenarioFields,
   type PartCatalogView,
   type PartInput,
@@ -128,6 +132,49 @@ describe("scenario inputs", () => {
     expect(recallScenarioId(memory)).toBe("11111111-1111-4111-8111-111111111111");
     forgetScenarioId(memory, "11111111-1111-4111-8111-111111111111");
     expect(recallScenarioId(memory)).toBeNull();
+  });
+});
+
+describe("scenario entry", () => {
+  it("opens the scenario named in the route, not the remembered one", () => {
+    // Regression: identity used to live only in one localStorage slot, so
+    // opening project B (or clicking New) reopened the remembered project A.
+    expect(scenarioEntry("11111111-1111-4111-8111-111111111111")).toEqual({
+      kind: "open",
+      id: "11111111-1111-4111-8111-111111111111",
+    });
+    expect(scenarioPath("11111111-1111-4111-8111-111111111111")).toBe("/scenario/11111111-1111-4111-8111-111111111111");
+  });
+
+  it("creates only on the explicit new route", () => {
+    expect(scenarioEntry(undefined)).toEqual({ kind: "create" });
+    expect(scenarioEntry(null)).toEqual({ kind: "create" });
+    expect(scenarioEntry("")).toEqual({ kind: "create" });
+  });
+
+  it("shares one in-flight creation instead of posting twice", async () => {
+    // Regression: StrictMode mounts the entry effect twice; each used to
+    // POST /api/v1/scenarios, persisting two scenarios for one entry.
+    const slot: { current: Promise<string> | null } = { current: null };
+    let calls = 0;
+    const factory = () => {
+      calls += 1;
+      return Promise.resolve(`scenario-${calls}`);
+    };
+    const [first, second] = await Promise.all([shareInFlight(slot, factory), shareInFlight(slot, factory)]);
+    expect(calls).toBe(1);
+    expect(first).toBe("scenario-1");
+    expect(second).toBe("scenario-1");
+    await expect(shareInFlight(slot, factory)).resolves.toBe("scenario-2");
+    expect(calls).toBe(2);
+  });
+
+  it("does not apply a late result from the scenario the user left", () => {
+    // Regression: an in-flight turn/demo for A resolving after switching to
+    // B overwrote the screen, so the next edit was sent to A again.
+    expect(shouldApplySession("scenario-a", "scenario-a")).toBe(true);
+    expect(shouldApplySession("scenario-a", "scenario-b")).toBe(false);
+    expect(shouldApplySession("scenario-a", null)).toBe(false);
   });
 });
 

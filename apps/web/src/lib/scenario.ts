@@ -165,6 +165,35 @@ export function recallModelId(storage: Storage): string {
   }
 }
 
+/** The route is the source of truth for which scenario is open. */
+export type ScenarioEntry = { kind: "create" } | { kind: "open"; id: string };
+
+export function scenarioPath(id: string): string {
+  return `/scenario/${id}`;
+}
+
+export function scenarioEntry(routeId: string | null | undefined): ScenarioEntry {
+  return routeId ? { kind: "open", id: routeId } : { kind: "create" };
+}
+
+/** Run factory once while its promise is in flight; later calls start fresh. */
+export function shareInFlight<T>(slot: { current: Promise<T> | null }, factory: () => Promise<T>): Promise<T> {
+  if (!slot.current) {
+    const pending = factory();
+    slot.current = pending;
+    const clear = () => {
+      if (slot.current === pending) slot.current = null;
+    };
+    pending.then(clear, clear);
+  }
+  return slot.current;
+}
+
+/** A result may replace the screen only for the scenario still open. */
+export function shouldApplySession(resultId: string, currentId: string | null): boolean {
+  return currentId !== null && resultId === currentId;
+}
+
 const KEY = "drafty.scenario.v2";
 const STUDIO_KEY = "drafty.studio.pending";
 

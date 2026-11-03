@@ -1,7 +1,7 @@
 import { Box, Check, ChevronLeft, ChevronRight, CircleAlert, GraduationCap, PanelRightClose, PanelRightOpen } from "lucide-react";
 import { OrbitControls } from "@react-three/drei";
 import { Canvas } from "@react-three/fiber";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { Fragment, Suspense, useEffect, useRef, useState, type ReactNode } from "react";
 import { Logo } from "@/components/Logo";
 import { SiteHeader } from "@/components/SiteHeader";
@@ -49,7 +49,10 @@ import {
   messageSegments,
   recallModelId,
   rememberModelId,
-  recallScenarioId,
+  scenarioEntry,
+  scenarioPath,
+  shareInFlight,
+  shouldApplySession,
   rememberScenarioId,
   scenarioFields,
   stageStudioSpec,
@@ -114,6 +117,25 @@ export function Scenario() {
   const [geometryError, setGeometryError] = useState<string | null>(null);
   const turnAbort = useRef<AbortController | null>(null);
   const navigate = useNavigate();
+  const { scenarioId } = useParams();
+  const entry = scenarioEntry(scenarioId);
+  const creationSlot = useRef<{ current: Promise<ScenarioSession> | null }>({ current: null });
+  const openIdRef = useRef<string | null>(null);
+
+  /** Make a session the open one: screen, remembered copy, and route all agree. */
+  function adopt(next: ScenarioSession) {
+    openIdRef.current = next.id;
+    rememberScenarioId(localStorage, next.id);
+    setSession(next);
+    setForm(formOf(next));
+  }
+
+  /** Apply a result only if its scenario is still the open one. */
+  function applyIfCurrent(next: ScenarioSession): boolean {
+    if (!shouldApplySession(next.id, openIdRef.current)) return false;
+    setSession(next);
+    return true;
+  }
 
   useEffect(() => {
     let cancel = false;
@@ -129,26 +151,25 @@ export function Scenario() {
     };
   }, []);
 
+  // The route names the open scenario. "/scenario/new" creates exactly one
+  // (shareInFlight absorbs StrictMode's double effect run), then replaces
+  // itself with that scenario's route. A named scenario that cannot be
+  // loaded is an error, never a silent replacement scenario.
   useEffect(() => {
     let cancel = false;
-    const saved = recallScenarioId(localStorage);
-    // load the saved scenario, or create a fresh one below
-    const load = async () => {
-      if (saved) {
-        try {
-          return await getScenario(saved);
-        } catch (reason) {
-          if (!(reason instanceof Error) || !/not found|404/i.test(reason.message)) throw reason;
-        }
-      }
-      return createScenario();
-    };
-    load()
+    turnAbort.current?.abort();
+    openIdRef.current = entry.kind === "open" ? entry.id : null;
+    setSession(null);
+    setForm(emptyForm());
+    setDraft("");
+    setError(null);
+    const load =
+      entry.kind === "open" ? getScenario(entry.id) : shareInFlight(creationSlot.current, createScenario);
+    load
       .then((next) => {
         if (cancel) return;
-        rememberScenarioId(localStorage, next.id);
-        setSession(next);
-        setForm(formOf(next));
+        adopt(next);
+        if (entry.kind === "create") navigate(scenarioPath(next.id), { replace: true });
       })
       .catch((reason) => {
         if (!cancel) setError(reason instanceof Error ? reason.message : "The scenario service is unavailable.");
@@ -156,7 +177,9 @@ export function Scenario() {
     return () => {
       cancel = true;
     };
-  }, []);
+    // entry is derived from scenarioId on every render.
+    // Deps stay on scenarioId only: adopt/navigate read fresh refs and state setters.
+  }, [scenarioId]);
 
   useEffect(() => {
     const ids = session?.jobs ?? [];
@@ -249,7 +272,7 @@ export function Scenario() {
       const fields = formFields(session.part_catalog?.form_part);
       const next = await turnScenario(session.id, { message, inputs: inputsFromForm(nextForm, fields), model: selectedModelId }, controller.signal);
       if (controller.signal.aborted) return;
-      setSession(next);
+      if (!applyIfCurrent(next)) return;
       setForm(formOf(next));
       setDraft("");
     } catch (reason) {
@@ -283,10 +306,11 @@ export function Scenario() {
               displacement_limit_m: Number(bracket.limit) / 1000,
             }
           : undefined;
-      const next = await loadDemo(kind, session.id, overrides);
-      rememberScenarioId(localStorage, next.id);
-      setSession(next);
-      setForm(formOf(next));
+      const targetId = session.id;
+      const next = await loadDemo(kind, targetId, overrides);
+      if (!shouldApplySession(targetId, openIdRef.current)) return;
+      adopt(next);
+      if (next.id !== targetId) navigate(scenarioPath(next.id), { replace: true });
       if (next.suggested_faces) {
         setSupportFace(next.suggested_faces.support_face);
         setLoadFace(next.suggested_faces.load_face);
@@ -303,11 +327,10 @@ export function Scenario() {
     setBusy(true);
     setError(null);
     try {
-      const next = await createScenario();
-      rememberScenarioId(localStorage, next.id);
-      setSession(next);
-      setForm(emptyForm());
+      const next = await shareInFlight(creationSlot.current, createScenario);
+      adopt(next);
       setDraft("");
+      navigate(scenarioPath(next.id), { replace: true });
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "A new scenario could not be opened.");
     } finally {
@@ -321,7 +344,7 @@ export function Scenario() {
     for (const file of Array.from(files)) {
       try {
         const next = await uploadScenarioEvidence(session.id, file, role, note);
-        setSession(next);
+        if (!applyIfCurrent(next)) break;
       } catch (reason) {
         setError(reason instanceof Error ? reason.message : "The image was rejected.");
         break;
@@ -332,7 +355,7 @@ export function Scenario() {
   async function removeImage(evidenceId: string) {
     if (!session) return;
     const next = await deleteScenarioEvidence(session.id, evidenceId);
-    setSession(next);
+    applyIfCurrent(next);
   }
 
   async function runBeam(compare: boolean) {
@@ -346,7 +369,7 @@ export function Scenario() {
         compare,
         inputs: inputsFromForm(form, formFields(session.part_catalog?.form_part)),
       });
-      setSession(next);
+      if (!applyIfCurrent(next)) return;
       if (!compare) setForm(formOf(next));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "The beam analysis failed.");
@@ -370,7 +393,7 @@ export function Scenario() {
     setBusy(true);
     setError(null);
     try {
-      setSession(await confirmScenarioFaces(session.id, supportFace, loadFace));
+      applyIfCurrent(await confirmScenarioFaces(session.id, supportFace, loadFace));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "The faces could not be confirmed.");
     } finally {
@@ -397,7 +420,7 @@ export function Scenario() {
     setBusy(true);
     setError(null);
     try {
-      setSession(await rejectScenario(session.id));
+      applyIfCurrent(await rejectScenario(session.id));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "The proposal could not be rejected.");
     } finally {
@@ -410,7 +433,7 @@ export function Scenario() {
     setBusy(true);
     setError(null);
     try {
-      setSession(await segmentScenario(session.id, evidenceId, segmentPrompt));
+      applyIfCurrent(await segmentScenario(session.id, evidenceId, segmentPrompt));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Segmentation did not run.");
     } finally {
@@ -423,7 +446,7 @@ export function Scenario() {
     setBusy(true);
     setError(null);
     try {
-      setSession(await dismissScenario(session.id));
+      applyIfCurrent(await dismissScenario(session.id));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "The suggestion could not be dismissed.");
     } finally {

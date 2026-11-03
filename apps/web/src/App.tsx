@@ -55,6 +55,14 @@ export function App() {
               }
             />
             <Route
+              path="/scenario/:scenarioId"
+              element={
+                <Guard>
+                  <Scenario />
+                </Guard>
+              }
+            />
+            <Route
               path="/studio"
               element={
                 <Guard>
