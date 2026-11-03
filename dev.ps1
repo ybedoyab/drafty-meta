@@ -102,13 +102,17 @@ if (-not (Test-Path (Join-Path $WebDir "node_modules"))) {
 }
 
 if (Get-Command docker -ErrorAction SilentlyContinue) {
-    docker image inspect drafty-ccx 2>$null | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "Building the CalculiX image drafty-ccx."
-        & docker build -t drafty-ccx -f (Join-Path $Root "infra\docker\Dockerfile.ccx") (Join-Path $Root "infra\docker")
+    try {
+        docker image inspect drafty-ccx 2>$null | Out-Null
         if ($LASTEXITCODE -ne 0) {
-            Write-Host "The solver image was not built. The API will still start and report that CalculiX is missing."
+            Write-Host "Building the CalculiX image drafty-ccx."
+            & docker build -t drafty-ccx -f (Join-Path $Root "infra\docker\Dockerfile.ccx") (Join-Path $Root "infra\docker")
+            if ($LASTEXITCODE -ne 0) {
+                Write-Host "The solver image was not built. The API will still start and report that CalculiX is missing."
+            }
         }
+    } catch {
+        Write-Host "Docker is not responding. The API will start, and a solve will fail until ccx or the drafty-ccx image is available."
     }
 } else {
     Write-Host "Docker was not found. The API will start, and a solve will fail until ccx or the drafty-ccx image is available."
