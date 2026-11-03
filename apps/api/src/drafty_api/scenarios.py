@@ -446,18 +446,6 @@ def approve_model(scenario_id: str, request: Request) -> dict:
     if not session.get("studio_spec"):
         raise HTTPException(status_code=422, detail="There is no CAD model to approve.")
     session["studio_approval"] = "confirmed"
-    messages = list(session.get("messages") or [])
-    messages.append({"role": "user", "text": "The CAD model was approved for Studio."})
-    messages.append(
-        {
-            "role": "assistant",
-            "text": (
-                "The part was handed to Studio. CalculiX has not started. "
-                "Run the solid solve there if the faces and the force are the ones you want."
-            ),
-        }
-    )
-    session["messages"] = messages[-40:]
     session["version"] = int(session.get("version") or 1) + 1
     session["updated_at"] = datetime.now(UTC).isoformat()
     _write(session, snapshot=True)
