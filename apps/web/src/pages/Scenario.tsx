@@ -1,5 +1,5 @@
 import { Box, Check, ChevronLeft, ChevronRight, CircleAlert, GraduationCap, PanelRightClose, PanelRightOpen } from "lucide-react";
-import { OrbitControls } from "@react-three/drei";
+import { Grid, OrbitControls } from "@react-three/drei";
 import { Canvas } from "@react-three/fiber";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { Fragment, Suspense, useEffect, useRef, useState, type ReactNode } from "react";
@@ -60,7 +60,7 @@ import {
   type PartSummary,
   type ScenarioForm,
 } from "@/lib/scenario";
-import { DEFAULT_GRID_STEP_MM, gridStepMeters } from "@/lib/grid";
+import { DEFAULT_GRID_STEP_MM, gridPlaneDistance, gridStepMeters } from "@/lib/grid";
 
 const IBEAM = "simply_supported_ibeam";
 function withArticle(noun: string): string {
@@ -1211,6 +1211,8 @@ function BeamFigure({
 }
 
 function ProfilePreview({ form, spanM }: { form: ScenarioForm; spanM: number | null }) {
+  const [gridVisible, setGridVisible] = useState(true);
+  const [gridStepMm, setGridStepMm] = useState<number>(DEFAULT_GRID_STEP_MM);
   const depth = Number(form.depth_m ?? "") / 1000;
   const width = Number(form.flange_width_m ?? "") / 1000;
   const flange = Number(form.flange_thickness_m ?? "") / 1000;
@@ -1221,10 +1223,20 @@ function ProfilePreview({ form, spanM }: { form: ScenarioForm; spanM: number | n
   if (!ready) return <p className="mt-3 text-sm text-slate-600">Enter a valid I-section to preview the geometry. That preview is not a solved model.</p>;
   const shown = Math.min(length, Math.max(depth * 4, width * 4));
   const distance = Math.max(shown, width, depth) * 1.45;
+  const stepM = gridStepMeters(gridStepMm);
+  const gridDistance = gridPlaneDistance([depth / 2], distance / 4, stepM, distance / 2);
   return (
     <div className="mt-3">
       <div className="relative h-56 rounded border border-slate-200">
-        <Canvas camera={{ position: [distance, -distance, distance * 0.55], fov: 35 }}>
+        <div className="absolute left-2 top-2 z-10">
+          <GridControl
+            visible={gridVisible}
+            stepMm={gridStepMm}
+            onVisibleChange={setGridVisible}
+            onStepChange={setGridStepMm}
+          />
+        </div>
+        <Canvas camera={{ position: [distance, -distance, distance * 0.55], fov: 35, up: [0, 0, 1] }}>
           <ambientLight intensity={0.85} />
           <directionalLight position={[1, -1, 2]} intensity={1.1} />
           <mesh position={[0, 0, -depth / 2 + flange / 2]}>
@@ -1239,6 +1251,21 @@ function ProfilePreview({ form, spanM }: { form: ScenarioForm; spanM: number | n
             <boxGeometry args={[shown, width, flange]} />
             <meshStandardMaterial color="#94a3b8" />
           </mesh>
+          {gridVisible && (
+            <Grid
+              position={[0, 0, -gridDistance]}
+              rotation={[Math.PI / 2, 0, 0]}
+              cellSize={stepM}
+              cellThickness={0.6}
+              cellColor="#cbd5e1"
+              sectionSize={stepM * 5}
+              sectionThickness={1.2}
+              sectionColor="#94a3b8"
+              fadeDistance={Math.max(distance * 4, stepM * 60)}
+              fadeStrength={2.5}
+              infiniteGrid
+            />
+          )}
           <OrbitControls makeDefault />
         </Canvas>
       </div>
