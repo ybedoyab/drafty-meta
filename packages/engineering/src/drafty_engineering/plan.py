@@ -570,6 +570,226 @@ def proposed_studio_spec(inputs: dict) -> dict | None:
     return spec.model_dump()
 
 
+# Scenario input keys a Studio spec can overwrite on return. Every geometry
+# key of every Studio kind is cleared first, so changing the kind in Studio
+# never resurrects the previous kind's dimensions on the next chat turn.
+STUDIO_INPUT_KEYS = (
+    "beam.length_m",
+    "beam.width_m",
+    "beam.height_m",
+    "plate.length_m",
+    "plate.width_m",
+    "plate.thickness_m",
+    "holes.radius_m",
+    "holes.count_x",
+    "holes.count_y",
+    "holes.margin_m",
+    "leg_x_m",
+    "leg_z_m",
+    "bracket_thickness_m",
+    "bracket_width_m",
+    "additions.width_m",
+    "additions.height_m",
+    "additions.depth_m",
+    "force_n",
+    "load_magnitude",
+    "load_mode",
+    "material_id",
+    "support_face",
+    "load_face",
+)
+
+
+def inputs_from_studio_spec(spec: dict) -> dict | None:
+    """Scenario inputs for one validated Studio spec. None when it is not a DesignSpec."""
+
+    try:
+        design = DesignSpec.model_validate(spec)
+    except (ValueError, TypeError):
+        return None
+    load = design.loads[0]
+    patch: dict = {
+        "domain": "mechanical",
+        "physical_system": design.kind,
+        "requested_part": "",
+        "material_id": design.material_id,
+        "support_face": design.supports[0].surface,
+        "load_face": load.surface,
+        "load_mode": load.mode,
+        "load_magnitude": load.magnitude,
+    }
+    if design.kind == "l_bracket" and design.bracket is not None:
+        patch.update(
+            leg_x_m=design.bracket.leg_x_m,
+            leg_z_m=design.bracket.leg_z_m,
+            bracket_thickness_m=design.bracket.thickness_m,
+            bracket_width_m=design.bracket.width_m,
+            force_n=load.magnitude if load.mode == "force" else None,
+        )
+    elif design.kind == "cantilever_beam" and design.beam is not None:
+        patch.update(
+            **{
+                "beam.length_m": design.beam.length_m,
+                "beam.width_m": design.beam.width_m,
+                "beam.height_m": design.beam.height_m,
+            }
+        )
+    elif design.kind in {"plate", "perforated_plate"} and design.plate is not None:
+        patch.update(
+            **{
+                "plate.length_m": design.plate.length_m,
+                "plate.width_m": design.plate.width_m,
+                "plate.thickness_m": design.plate.thickness_m,
+            }
+        )
+        if design.holes is not None:
+            patch.update(
+                **{
+                    "holes.radius_m": design.holes.radius_m,
+                    "holes.count_x": design.holes.count_x,
+                    "holes.count_y": design.holes.count_y,
+                    "holes.margin_m": design.holes.margin_m,
+                }
+            )
+    elif design.kind == "sketch_prism" and design.additions:
+        addition = design.additions[0]
+        patch.update(
+            **{
+                "additions.width_m": addition.width_m,
+                "additions.height_m": addition.height_m,
+                "additions.depth_m": addition.depth_m,
+            }
+        )
+    return patch
+
+
+def apply_studio_spec(inputs: dict, spec: dict) -> dict | None:
+    """Inputs updated from a returned Studio spec. None when the spec is invalid."""
+
+    patch = inputs_from_studio_spec(spec)
+    if patch is None:
+        return None
+    merged = dict(inputs)
+    for key in STUDIO_INPUT_KEYS:
+        merged[key] = None if key not in {"material_id", "support_face", "load_face", "load_mode"} else ""
+    merged.update(patch)
+    return merged
+
+
+def _changed(label: str, old: object, new: object, fmt) -> list[str]:
+    if old is None or new is None:
+        return [f"{label} set to {fmt(new)}"] if new is not None and old != new else []
+    return [] if _same_number(old, new) else [f"{label} {fmt(old)} → {fmt(new)}"]
+
+
+def _same_number(old: object, new: object) -> bool:
+    if isinstance(old, (int, float)) and isinstance(new, (int, float)):
+        return abs(float(old) - float(new)) <= 1e-9 * max(1.0, abs(float(old)), abs(float(new)))
+    return old == new
+
+
+def _mm(value: object) -> str:
+    return f"{float(value) * 1000:g} mm"
+
+
+def _load_text(spec: dict) -> str:
+    load = (spec.get("loads") or [{}])[0]
+    unit = "Pa" if load.get("mode") == "pressure" else "N"
+    return f"{load.get('mode', 'force')} {float(load.get('magnitude') or 0):g} {unit} on {load.get('surface', '?')}"
+
+
+def describe_studio_changes(old: dict, new: dict) -> list[str]:
+    """Human-readable differences between the proposed spec and a Studio-returned one."""
+
+    changes: list[str] = []
+    if old.get("kind") != new.get("kind"):
+        changes.append(f"part changed from {old.get('kind', 'unset')} to {new.get('kind', 'unset')}")
+    else:
+        geometry = {
+            "beam": (("length_m", "length"), ("width_m", "width"), ("height_m", "height")),
+            "plate": (("length_m", "length"), ("width_m", "width"), ("thickness_m", "thickness")),
+            "bracket": (
+                ("leg_x_m", "leg along x"),
+                ("leg_z_m", "leg along z"),
+                ("thickness_m", "thickness"),
+                ("width_m", "width"),
+            ),
+        }
+        for block, fields in geometry.items():
+            before, after = old.get(block) or {}, new.get(block) or {}
+            for key, label in fields:
+                changes.extend(_changed(label, before.get(key), after.get(key), _mm))
+        before, after = old.get("holes") or {}, new.get("holes") or {}
+        for key, label in (("radius_m", "hole radius"), ("margin_m", "hole margin")):
+            changes.extend(_changed(label, before.get(key), after.get(key), _mm))
+        for key, label in (("count_x", "holes along length"), ("count_y", "holes along width")):
+            changes.extend(_changed(label, before.get(key), after.get(key), lambda v: f"{int(v)}"))
+    changes.extend(_changed("material", old.get("material_id"), new.get("material_id"), str))
+    changes.extend(_changed("mesh size", old.get("mesh_size_m"), new.get("mesh_size_m"), _mm))
+    changes.extend(
+        _changed("element order", old.get("element_order"), new.get("element_order"), lambda v: f"order {int(v)}")
+    )
+    old_load = (old.get("loads") or [{}])[0]
+    new_load = (new.get("loads") or [{}])[0]
+    if _load_text(old) != _load_text(new):
+        changes.append(f"load {_load_text(old)} → {_load_text(new)}")
+    old_dir = old_load.get("direction") or {}
+    new_dir = new_load.get("direction") or {}
+    if any(not _same_number(old_dir.get(axis), new_dir.get(axis)) for axis in ("x", "y", "z")):
+        changes.append(
+            "load direction "
+            f"({old_dir.get('x', 0):g}, {old_dir.get('y', 0):g}, {old_dir.get('z', 0):g}) → "
+            f"({new_dir.get('x', 0):g}, {new_dir.get('y', 0):g}, {new_dir.get('z', 0):g})"
+        )
+    old_support = (old.get("supports") or [{}])[0].get("surface")
+    new_support = (new.get("supports") or [{}])[0].get("surface")
+    if old_support != new_support:
+        changes.append(f"fixed face {old_support} → {new_support}")
+    old_additions = old.get("additions") or []
+    new_additions = new.get("additions") or []
+    if len(old_additions) != len(new_additions):
+        changes.append(f"sketch pieces {len(old_additions)} → {len(new_additions)}")
+    elif old_additions != new_additions:
+        changes.append("a sketch piece was edited")
+    if old.get("name") != new.get("name"):
+        changes.append(f"name {old.get('name', '')} → {new.get('name', '')}")
+    return changes
+
+
+def reconcile_studio_spec(derived: dict | None, prior: dict | None, inputs: dict) -> dict | None:
+    """Keep Studio-only edits a chat turn would otherwise rebuild away.
+
+    Inputs carry dimensions, material, faces, and load size, so the derived
+    spec already reflects chat edits. The name, mesh, element order, load
+    direction, and sketch additions live only in the spec; carry them over
+    when the kind is unchanged and the merged spec still validates.
+    """
+
+    if prior is None:
+        return derived
+    stored = {key: value for key, value in prior.items() if key not in {"approval", "studio_edited"}}
+    if derived is None:
+        if stored.get("kind") == "sketch_prism" and str(inputs.get("physical_system") or "") == "sketch_prism":
+            return stored
+        return derived
+    if stored.get("kind") != derived.get("kind"):
+        return derived
+    candidate = {
+        **derived,
+        "name": stored.get("name") or derived.get("name"),
+        "mesh_size_m": stored.get("mesh_size_m") or derived.get("mesh_size_m"),
+        "element_order": stored.get("element_order") or derived.get("element_order"),
+        "additions": stored.get("additions") or [],
+    }
+    stored_load = (stored.get("loads") or [{}])[0]
+    if stored_load.get("direction"):
+        candidate["loads"] = [{**derived["loads"][0], "direction": stored_load["direction"]}]
+    try:
+        return DesignSpec.model_validate(candidate).model_dump()
+    except (ValueError, TypeError):
+        return derived
+
+
 def build_scenario(
     *,
     description: str,

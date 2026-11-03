@@ -224,6 +224,11 @@ export function withGeometry(form: DesignForm, baseline: DesignForm): DesignForm
   };
 }
 
+/** True when the whole spec (geometry, loads, mesh, name) differs from the loaded part. */
+export function isSpecChanged(form: DesignForm, baseline: DesignForm): boolean {
+  return JSON.stringify(formToSpec(form)) !== JSON.stringify(formToSpec(baseline));
+}
+
 export function formIssues(form: DesignForm): string[] {
   const additionIssues: string[] = [];
   for (const addition of form.additions) {

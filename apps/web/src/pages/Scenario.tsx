@@ -980,7 +980,7 @@ export function Scenario() {
                 <p>Parametric {formPart?.name ?? "part"}, CAD schema. Simulator: CalculiX solid FEM, not started.</p>
                 <p>
                   Fixed face {session.inputs.support_face || "unset"}, load face {session.inputs.load_face || "unset"}.
-                  These faces were confirmed here. This is not a minimum-mass result.
+                  These faces were confirmed here. This is not a minimum-mass result.{Boolean(session.studio_spec.studio_edited) ? " This part was edited in Studio and returned, so the inputs and context follow that edit." : ""}
                 </p>
                 {session.studio_approval === "rejected" ? (
                   <p>This proposal was rejected. Revise the description and send again. CalculiX has not started.</p>

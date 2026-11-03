@@ -4,6 +4,7 @@ import {
   formIssues,
   formToSpec,
   isGeometryChanged,
+  isSpecChanged,
   mmFromMeters,
   mpaFromPascals,
   specToForm,
@@ -51,6 +52,14 @@ describe("design units", () => {
     expect(isGeometryChanged({ ...benchmarkForm, magnitude: 250 }, benchmarkForm)).toBe(false);
     expect(isGeometryChanged({ ...benchmarkForm, lengthMm: 280 }, benchmarkForm)).toBe(true);
     expect(isGeometryChanged({ ...benchmarkForm, materialId: "abs" }, benchmarkForm)).toBe(true);
+  });
+
+  it("tracks whole-spec edits for the return to the scenario", () => {
+    expect(isSpecChanged(benchmarkForm, benchmarkForm)).toBe(false);
+    expect(isSpecChanged({ ...benchmarkForm, lengthMm: 350 }, benchmarkForm)).toBe(true);
+    // A load-only edit is invisible to the geometry check but must still return.
+    expect(isSpecChanged({ ...benchmarkForm, magnitude: 250 }, benchmarkForm)).toBe(true);
+    expect(isSpecChanged({ ...benchmarkForm, meshMm: 3 }, benchmarkForm)).toBe(true);
   });
 
   it("restores the loaded geometry without touching loads or mesh", () => {

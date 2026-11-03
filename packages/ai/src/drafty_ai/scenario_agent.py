@@ -29,6 +29,7 @@ from drafty_engineering.plan import (
     evaluate_mechanical,
     neutral_study,
     proposed_studio_spec,
+    reconcile_studio_spec,
     unsupported_study,
     workflow_stage,
 )
@@ -473,6 +474,8 @@ def advance_scenario(
     )
     sources = _merge_sources(study["sources"], state.get("sources") or [], search_sources)
     studio_spec = proposed_studio_spec(inputs) if domain == "mechanical" else None
+    if domain == "mechanical":
+        studio_spec = reconcile_studio_spec(studio_spec, state.get("studio_spec"), inputs)
     if studio_spec:
         studio_spec = {**studio_spec, "approval": "pending"}
     geometry_spec = proposed_geometry_spec(inputs) if domain == "geometry" else None

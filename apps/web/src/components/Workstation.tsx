@@ -1,6 +1,6 @@
 import { Box, Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, CircleAlert, Magnet, MousePointer2, PenTool, Pencil, Redo2, RotateCcw, RotateCw, Rows3, Scaling, Trash2, Undo2 } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link, useSearchParams } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { Suspense, useEffect, useMemo, useState } from "react";
 import { Viewport, type CameraView, type DraftSketch, type EditMode, type PartTransform, type Shade } from "@/components/Viewport";
 import { DrawTool } from "@/components/DrawTool";
@@ -21,6 +21,7 @@ import {
   openArtifact,
   interpret,
   previewSpec,
+  returnStudioSpec,
   uploadReference,
   type Job,
   type SimulationResult,
@@ -33,6 +34,7 @@ import {
   benchmarkForm,
   formIssues,
   formToSpec,
+  isSpecChanged,
   formatEngineering,
   withGeometry,
   mmFromMeters,
@@ -65,6 +67,8 @@ export function Workstation() {
   const queryClient = useQueryClient();
   const [params] = useSearchParams();
   const scenarioId = params.get("scenario");
+  const navigate = useNavigate();
+  const [returning, setReturning] = useState(false);
   const [formHistory, setFormHistory] = useState<History<DesignForm>>(() => createHistory(benchmarkForm));
   const form = formHistory.present;
 
@@ -287,6 +291,27 @@ export function Workstation() {
     }
   }
 
+  // Close the circle: send the current (maybe edited) spec back so the
+  // scenario's inputs, study, and AI context follow what Studio holds. An
+  // unchanged part returns without touching the stored session.
+  async function returnToScenario() {
+    if (!scenarioId || returning) return;
+    const issues = formIssues(form);
+    if (issues.length) {
+      setFormError(issues.join(" "));
+      return;
+    }
+    setReturning(true);
+    setFormError(null);
+    try {
+      await returnStudioSpec(scenarioId, formToSpec(form));
+      navigate(`/scenario/${scenarioId}`);
+    } catch (error) {
+      setFormError(error instanceof Error ? error.message : "The part could not be returned to the scenario.");
+      setReturning(false);
+    }
+  }
+
   function resetPart() {
     const restored = withGeometry(form, baselineForm);
     setForm(restored);
@@ -472,6 +497,7 @@ export function Workstation() {
     form.loadMode === "pressure" ? `Pressure ${form.magnitude} MPa ${loadAxis}` : `${form.magnitude} N ${loadAxis}`;
   const fromScenario = Boolean(scenarioId) || specApplied;
   const geometryChanged = hasVisualEdits(form, baselineForm);
+  const specChanged = specApplied && isSpecChanged(form, baselineForm);
   // Left defines the model, right runs and reads it. Each side paginates independently.
   const designIssues = formIssues(form);
   const designSteps: StudioStep[] = [
@@ -529,9 +555,9 @@ export function Workstation() {
         trailing={
           <>
             {scenarioId && (
-              <Link to={`/scenario/${scenarioId}`} className="rounded-md px-3 py-1.5 text-sm font-medium text-gray-600 hover:bg-blue-50 hover:text-blue-800">
-                Back to scenario
-              </Link>
+              specApplied ? <button type="button" onClick={() => void returnToScenario()} disabled={returning} className="rounded-md bg-blue-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-800 disabled:opacity-60">
+                {returning ? "Returning…" : specChanged ? "Return edited part to scenario" : "Return to scenario"}
+              </button> : <Link to={`/scenario/${scenarioId}`} className="rounded-md px-3 py-1.5 text-sm font-medium text-gray-600 hover:bg-blue-50 hover:text-blue-800">Back to scenario</Link>
             )}
             <p className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-gray-600">
               {health.data

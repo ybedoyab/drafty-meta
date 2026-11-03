@@ -433,6 +433,12 @@ export const confirmScenarioFaces = (id: string, supportFace: string, loadFace: 
     body: JSON.stringify({ support_face: supportFace, load_face: loadFace }),
   });
 
+export const returnStudioSpec = (id: string, spec: DesignSpec) =>
+  api<ScenarioSession>(`/api/v1/scenarios/${id}/studio-return`, {
+    method: "POST",
+    body: JSON.stringify({ spec }),
+  });
+
 export const rejectScenario = (id: string) =>
   api<ScenarioSession>(`/api/v1/scenarios/${id}/reject`, { method: "POST" });
 
