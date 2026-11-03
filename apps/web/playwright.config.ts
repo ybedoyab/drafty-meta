@@ -1,5 +1,7 @@
 import { defineConfig, devices, type PlaywrightTestConfig } from "@playwright/test";
-import "./e2e/qa/env";
+
+// NOTE: Do not import ./e2e/qa/env here. That side-effect loader can alter process.env
+// for the Vite webServer child and broke CI regression. qa-live.spec.ts imports it instead.
 
 const argv = process.argv;
 const projectArgs = argv
