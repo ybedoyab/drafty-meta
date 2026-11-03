@@ -1,9 +1,10 @@
 # Drafty Engineering — Automated End-to-End QA Report
 
-**Tested baseline commit:** `c55173e2beeafef67dad197cc29544c46c08f8a9` (`main` after PR #1 merge)  
+**Baseline commit:** `c55173e2beeafef67dad197cc29544c46c08f8a9` (`main` after PR #1)  
 **QA harness branch:** `qa/e2e-live-harness`  
-**Report date:** 2026-11-03  
-**Batch 10A:** not started  
+**This incremental commit:** (see git tip after push)  
+**Report updated:** 2026-11-03  
+**Batch 10A:** not started · **Merge/deploy:** not performed  
 
 ## Endpoints
 
@@ -12,127 +13,123 @@
 | Local | http://127.0.0.1:5173 | http://127.0.0.1:8000 |
 | Production | https://drafty-web-umber.vercel.app | https://drafty-api.vercel.app |
 
-## Environment capabilities (observed)
+## Environment capabilities (this session)
 
 | Capability | Local | Production |
 |---|---|---|
-| `DRAFTY_AUTH_MODE` | `supabase` (forced for QA; process env had been `disabled`) | `supabase` |
-| Supabase API / auth | reachable / configured | reachable / configured |
-| Meta configured | true (reachable false in health probe) | true |
-| Modal configured / available | false / false | true / true |
-| Local CalculiX (`ccx` / `drafty-ccx`) | **unavailable** (Docker Desktop engine error; no `ccx` on PATH) | N/A (expected missing on Vercel; compute=`modal`) |
-| `DRAFTY_QA_RUN_LIVE_META` | false | false |
-| `DRAFTY_QA_RUN_LIVE_MODAL` | false | false |
+| Docker Desktop engine | **available** (Server 29.9.2) | N/A |
+| `drafty-ccx` image | **built and used** | N/A |
+| CalculiX | **available** (`mode=docker`) | unavailable on Vercel (expected; compute=`modal`) |
+| Auth | `supabase` | `supabase` |
+| Modal configured/available | false / false | true / true (health only) |
+| `DRAFTY_QA_RUN_LIVE_MODAL` | **false** | **false** |
+| `DRAFTY_QA_RUN_LIVE_META` | **false** | **false** |
 | `DRAFTY_QA_RUN_PRODUCTION` | true | true |
 
-## Regression suite (non-live)
+## Regression
 
 | Check | Result |
 |---|---|
-| Ruff | PASS |
-| Pytest non-FEM | PASS (191) |
-| Pytest postgres concurrency | NOT RUN locally (disposable Postgres not restarted this session); covered in CI on `main` |
-| Pytest FEM / CalculiX | BLOCKED — local solver unavailable |
-| Vitest | PASS (23) |
-| TypeScript + production build | PASS |
-| Existing Playwright (`scenario` / `bracket-fem`) under local `auth=supabase` | BLOCKED — deterministic suite expects unauthenticated local mode (`AI not connected` / open `/scenario/new`). CI behavior preserved (auth disabled). |
+| Ruff (touched modules) | PASS |
+| Pytest non-FEM | PASS (prior + this session) |
+| Pytest FEM (`-m fem`) | **PASS (9)** |
+| Production hardening / integration cleanup tests | **PASS (22)** |
+| Vitest / TS build | PASS (prior session; unchanged frontend product code) |
+| Deterministic `bracket-fem.spec.ts` (auth disabled) | **PASS** (~51s, includes one local optimization) |
+| Deterministic Playwright under `auth=supabase` | BLOCKED (expected; CI remains auth-disabled) |
 
-## Live QA suite (`apps/web/e2e/qa-live.spec.ts`)
+## Live QA harness fixes (this session)
 
-Credentials loaded from repository-root `.env` via `e2e/qa/env.ts`. Passwords / JWTs / service-role secrets are not logged.
+- Full bracket lifecycle: Confirm faces → Studio → Run analysis → poll job to **completed** → results/artifacts → reload → re-open Results.
+- Paid-call budget module (`e2e/qa/budget.ts`): ≤1 Modal geometry, ≤1 Modal FEM, ≤1 Meta across the process.
+- Auth hardening: wait for authenticated `/scenarios` GET; JWT probe before API helpers.
+- Artifact fetch uses authenticated API (not bare `page.request`).
+- **Defect fix:** Supabase Storage returns HTTP **400** with nested `statusCode: "404"` for missing objects; `delete_private_object` now treats that as success so local FEM scenario delete no longer 503s.
+- **Defect fix:** `purge_remote_job` skips speculative remote deletes when no remote job/artifact rows exist.
 
-### Local (`--project=qa-local`)
+## Live results
 
-| Case | Status | Notes |
+### Local (`qa-local`)
+
+| Case | Status | Evidence |
 |---|---|---|
-| Health + homepage (desktop/mobile) | PASS | auth=supabase, solver unavailable, modal=false, meta=true |
-| Sign-in, create/rename `DRAFTY_QA_*`, reload, sign-out/in | PASS | Authenticated API GET confirmed ownership |
-| Cross-user isolation (API 401/403/404) | PASS | Secondary account cannot GET/rename/DELETE primary scenario |
-| Staunton pawn geometry + STEP/STL + cache header | PASS | Second fetch `x-drafty-geometry-cache=hit`; first also `hit` (local shared digest). No FEM started |
-| Classroom Euler–Bernoulli + 5 m compare | PASS | 3D FEM disabled; beam-element results shown |
-| Aluminum bracket real CalculiX | SKIP | Local CalculiX unavailable |
-| Mocked MediaRecorder mic UI | SKIP | Control not visible / not claimed as live ASR |
-| Deletion cleanup policy | PASS | `cleanup.geometry_cache=retained`; retry → 404/503 |
-| Live Meta (one paid turn) | SKIP | `DRAFTY_QA_RUN_LIVE_META=false` |
-| Cleanup teardown | PASS | 5 QA scenarios deleted |
-
-**Local summary:** 6 PASS · 3 SKIP · 0 FAIL  
-
-### Production (`--project=qa-production`)
-
-| Case | Status | Notes |
-|---|---|---|
-| Health + homepage | PASS | compute=modal, modal=true, solver unavailable (expected), meta=true |
-| Auth persistence / rename / reload | PASS | |
-| Cross-user isolation | PASS | After signOut hardening |
-| Pawn geometry / Modal cache | SKIP | Would require Modal spend; `DRAFTY_QA_RUN_LIVE_MODAL=false` |
-| Classroom beam analysis | PASS | |
-| Bracket Modal FEM | SKIP | `DRAFTY_QA_RUN_LIVE_MODAL=false` |
-| Mocked mic UI | SKIP | |
-| Deletion cleanup | PASS | |
+| Auth / persistence / isolation / classroom beam / pawn (prior) | PASS | Prior report; not re-burned unnecessarily |
+| Aluminum bracket **real CalculiX** | **PASS** | Job `6883389d-07cb-44d3-adc9-da5d5b9e8279` (also verified `a4b6b782…`, `140dd573…`, `5a119649…` during harness iteration) |
+| Scenario deletion after FEM | **PASS** | `QA cleanup deleted: 1`; geometry cache retained |
 | Live Meta | SKIP | flag false |
-| Cleanup teardown | PASS | 4 QA resources deleted |
+| Mic / live ASR | NOT TESTED | mock only |
 
-**Production summary:** 5 PASS · 4 SKIP · 0 FAIL  
+**Representative FEM metrics (job `6883389d-07cb-44d3-adc9-da5d5b9e8279`):**
 
-## Invocation / cost accounting
+| Field | Value |
+|---|---|
+| Solver | CalculiX 2.20 · `mode=docker` |
+| Mesh | 31795 nodes · 18980 · C3D10 · order 2 · target 2.4 mm |
+| Max displacement | 1.3038230447564577e-7 m |
+| Governing von Mises | 665097.1852987445 Pa |
+| Equilibrium | **passed=true** |
+| Validation label | `solver_completed` |
+| Warnings | 5 (non-empty; exploratory / numerical notices preserved) |
+
+### Production (`qa-production`)
+
+| Case | Status | Notes |
+|---|---|---|
+| Prior auth/persistence/isolation/beam/cleanup | PASS | Prior session |
+| Pawn Modal geometry (miss→hit) | **SKIP** | `DRAFTY_QA_RUN_LIVE_MODAL=false` |
+| Bracket Modal FEM | **SKIP** | flag false — **not proven** |
+| Live Meta (one turn) | **SKIP** | `DRAFTY_QA_RUN_LIVE_META=false` |
+
+## Invocation / cost
 
 | Resource | Count | Cost |
 |---|---|---|
-| Paid Meta requests | 0 | NOT MEASURED / not invoked |
-| Paid Modal geometry builds | 0 (prod skipped by flag) | NOT MEASURED |
-| Paid Modal CalculiX solves | 0 | NOT MEASURED |
+| Paid Meta | 0 | NOT MEASURED / not invoked |
+| Paid Modal geometry | 0 | NOT MEASURED / not invoked |
+| Paid Modal CalculiX | 0 | NOT MEASURED / not invoked |
 | Paid Modal optimization | 0 | NOT MEASURED |
-
-Live transcription: **NOT TESTED** (mock MediaRecorder only).
+| Local CalculiX solves (QA + benchmarks + bracket-fem) | multiple (local Docker; not cloud-billed) | local |
 
 ## Screenshots
 
-Under `docs/qa/screenshots/` (password fields cleared before capture):
-
-- `local-homepage.png`, `local-homepage-mobile.png`
-- `local-projects-after-relogin.png`, `local-pawn-geometry.png`, `local-classroom-beam.png`
-- `production-homepage.png`, `production-homepage-mobile.png`
-- `production-projects-after-relogin.png`, `production-classroom-beam.png`
-
-## Browser / API errors
-
-- No unexpected 500s on exercised authenticated CRUD paths.
-- Production `/api/v1/health` correctly reports local CalculiX missing while Modal is available.
-- Local process env initially forced `DRAFTY_AUTH_MODE=disabled` over `.env`; QA restarted with explicit `supabase`.
+Under `docs/qa/screenshots/` (passwords cleared). New bracket capture: `local-bracket-fem.png` when produced by the harness.
 
 ## Defects
 
-| ID | Sev | Finding |
-|---|---|---|
-| D1 | P1 | `dev.ps1` aborted startup when Docker engine returned HTTP 500 on `docker image inspect` (`$ErrorActionPreference=Stop`). **Fixed** with try/catch so API/web still start. |
-| D2 | P2 | Host/shell `DRAFTY_AUTH_MODE=disabled` overrides `.env` because dotenv loads with `override=False`. Documented; QA forced `supabase` for the live run. |
-| D3 | P2 | Deterministic Playwright suite is incompatible with local `auth=supabase` without a login fixture (expected; CI remains auth-disabled). |
+| ID | Sev | Finding | Status |
+|---|---|---|---|
+| D1 | P1 | `dev.ps1` aborted on Docker inspect errors | Fixed prior |
+| D4 | P1 | Bracket live QA did not submit/await FEM | **Fixed** this session |
+| D5 | P1 | Scenario delete 503 after local FEM: Storage delete of missing objects returned HTTP 400/`not_found`, treated as failure | **Fixed** in `storage.py` |
+| D6 | P2 | Speculative remote purge for local-only jobs | **Hardened** in `remote.py` |
+| D3 | P2 | Deterministic E2E incompatible with local `auth=supabase` | Open (CI OK) |
 
 ## Cleanup
 
-- Only `DRAFTY_QA_*` scenarios created by this run were deleted.
-- Shared geometry cache retained per API cleanup policy.
-- No unrelated projects or Storage prefixes were wiped.
+- Latest successful local bracket run: scenario deleted (`cleanup deleted: 1`).
+- Shared geometry cache retained by policy.
+- Earlier iteration leftovers (pre-D5 fix) may still exist as `DRAFTY_QA_*` rows if delete 503’d before the Storage fix; re-delete via Projects or retry DELETE now that D5 is fixed.
+- Recorded leftover IDs from failed iterations (for manual retry if needed):  
+  `d27dd637-c521-44b5-932d-e205a5846b37`, `7d41ac60-112c-407b-ba55-79bb1e0645e0`, `c658a20c-7c2e-4738-98a8-89282610a2fc`, `229f8821-1538-476a-aaf9-29a320424402`, `5284c7a3-b0bf-46f8-b220-f562df3252ff`, `535f2a7f-de71-4e18-a56c-3f887de1af7f`.
 
 ## Ready for Batch 10A?
 
-**Not yet.** Auth, project CRUD, isolation, classroom beam analysis, local pawn geometry/cache, and production smoke are proven. Remaining before Batch 10A:
+**Not yet.** Local CalculiX FEM is now **proven**. Production Modal FEM/geometry and live Meta remain **unimplemented in this run** because flags are false (by design — no unpaid cloud spend).
 
-1. Restore local CalculiX (Docker Desktop or `ccx` on PATH) and run real FEM benchmarks + bracket E2E.
-2. With explicit authorization, set `DRAFTY_QA_RUN_LIVE_MODAL=true` for **one** production geometry + **one** CalculiX solve (no optimization loops).
-3. Optionally `DRAFTY_QA_RUN_LIVE_META=true` for **one** Meta turn.
-4. Keep CI deterministic suite on auth-disabled runners.
+Next actions before Batch 10A:
+
+1. Set `DRAFTY_QA_RUN_LIVE_MODAL=true` and run **one** production pawn miss→hit + **one** bracket Modal solve (harness already budget-capped).
+2. Optionally set `DRAFTY_QA_RUN_LIVE_META=true` for **one** Meta turn.
+3. Retry DELETE on any leftover QA scenario IDs listed above.
 
 ## Implemented vs proven
 
-| Area | Implemented in product | Proven end-to-end in this QA |
+| Area | Implemented | Proven end-to-end |
 |---|---|---|
-| Supabase auth + projects | yes | yes (local + production) |
-| Cross-user isolation | yes | yes (API-level) |
-| Pawn CAD + cache | yes | yes locally; production Modal path skipped by flag |
-| Classroom beam analysis | yes | yes (local + production) |
-| CalculiX FEM | yes | **not proven** here (no local solver; Modal flag off) |
-| Meta AI | yes | **not proven** (flag off) |
-| Modal pipeline | yes | health shows available in prod; **job not executed** |
-| Scenario delete / geometry retain | yes | yes |
+| Supabase auth / isolation / projects | yes | yes (prior) |
+| Local CalculiX bracket FEM | yes | **yes (this session)** |
+| Local FEM benchmarks | yes | **yes (9 passed)** |
+| Deterministic bracket + optimization E2E | yes | **yes** |
+| Production Modal geometry/FEM | yes | **no** (flag off) |
+| Meta AI live | yes | **no** (flag off) |
+| Scenario delete after FEM | yes | **yes** (after D5 fix) |

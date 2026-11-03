@@ -175,6 +175,10 @@ def purge_remote_job(job_id: str, owner_id: str) -> dict:
             except Exception as exc:
                 report["errors"].append(f"cancel:{type(exc).__name__}")
     artifact_rows = _select("artifacts", {"job_id": f"eq.{job_id}", "select": "name,storage_path"})
+    # Local-only jobs never wrote remote storage or a jobs row — skip speculative deletes.
+    if not rows and not artifact_rows:
+        report["row_deleted"] = True
+        return report
     paths: list[str] = []
     for item in artifact_rows:
         storage_path = str(item.get("storage_path") or "").lstrip("/")

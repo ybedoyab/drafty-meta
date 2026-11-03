@@ -247,7 +247,20 @@ def delete_private_object(object_path: str) -> bool:
         headers={"apikey": key, "Authorization": f"Bearer {key}"},
         timeout=30,
     )
-    return response.status_code < 400 or response.status_code == 404
+    if response.status_code < 400 or response.status_code == 404:
+        return True
+    # Supabase Storage often wraps not-found as HTTP 400 with statusCode "404".
+    try:
+        payload = response.json()
+    except json.JSONDecodeError:
+        payload = {}
+    if not isinstance(payload, dict):
+        return False
+    return str(payload.get("statusCode") or "") == "404" or payload.get("error") in {
+        "not_found",
+        "NotFound",
+        "NoSuchKey",
+    }
 
 
 def download_private_object(object_path: str) -> bytes | None:
