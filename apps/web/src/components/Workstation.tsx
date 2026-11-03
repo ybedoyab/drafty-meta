@@ -1,8 +1,8 @@
-import { Check, ChevronLeft, ChevronRight, CircleAlert } from "lucide-react";
+import { Box, Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, CircleAlert, Magnet, MousePointer2, Pencil, RotateCw, Rows3, Scaling, Undo2 } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useSearchParams } from "react-router-dom";
 import { Suspense, useEffect, useMemo, useState } from "react";
-import { Viewport, type CameraView, type Shade } from "@/components/Viewport";
+import { Viewport, type CameraView, type EditMode, type PartTransform, type Shade } from "@/components/Viewport";
 import { GridControl } from "@/components/GridControl";
 import { Button } from "@/components/ui/button";
 import {
@@ -33,6 +33,7 @@ import {
   formIssues,
   formToSpec,
   formatEngineering,
+  withGeometry,
   mmFromMeters,
   mpaFromPascals,
   specToForm,
@@ -41,6 +42,7 @@ import {
   type PartKind,
 } from "@/lib/design";
 import { takeStudioSpec } from "@/lib/scenario";
+import { axisSizesMm, hasVisualEdits, rotateForm, scaleForm } from "@/lib/transform";
 import { SiteHeader } from "@/components/SiteHeader";
 
 const STAGES = ["queued", "geometry", "meshing", "solving", "postprocessing", "completed"] as const;
@@ -61,6 +63,12 @@ export function Workstation() {
   const [params] = useSearchParams();
   const scenarioId = params.get("scenario");
   const [form, setForm] = useState<DesignForm>(benchmarkForm);
+  const [baselineForm, setBaselineForm] = useState<DesignForm>(benchmarkForm);
+  const [bottomPanel, setBottomPanel] = useState<"edit" | "jobs">("edit");
+  const [editMode, setEditMode] = useState<EditMode>("select");
+  const [partSelected, setPartSelected] = useState(false);
+  const [snapScaleToGrid, setSnapScaleToGrid] = useState(true);
+  const [bottomCollapsed, setBottomCollapsed] = useState(false);
   const [specApplied, setSpecApplied] = useState(false);
   const [compute, setCompute] = useState<"local" | "modal">("local");
   const [displacementLimitM, setDisplacementLimitM] = useState<number | null>(null);
@@ -70,6 +78,7 @@ export function Workstation() {
       const pending = takeStudioSpec(localStorage);
       if (pending && typeof pending === "object") {
         setSpecApplied(true);
+        setBaselineForm(specToForm(pending as DesignSpec, benchmarkForm));
         setForm((current) => specToForm(pending as DesignSpec, current));
         void previewSpec(formToSpec(specToForm(pending as DesignSpec, benchmarkForm)))
           .then((url) => {
@@ -89,6 +98,7 @@ export function Workstation() {
       .then((scenario) => {
         if (cancel || scenario.studio_approval !== "confirmed" || !scenario.studio_spec) return;
         setSpecApplied(true);
+        setBaselineForm(specToForm(scenario.studio_spec as unknown as DesignSpec, benchmarkForm));
         setForm((current) => specToForm(scenario.studio_spec as unknown as DesignSpec, current));
         void previewSpec(formToSpec(specToForm(scenario.studio_spec as unknown as DesignSpec, benchmarkForm)))
           .then((url) => {
@@ -194,10 +204,10 @@ export function Workstation() {
   }, [results.data]);
 
   const preview = useMutation({
-    mutationFn: async () => {
-      const issues = formIssues(form);
+    mutationFn: async (target: DesignForm) => {
+      const issues = formIssues(target);
       if (issues.length) throw new Error(issues.join(" "));
-      return previewSpec(formToSpec(form));
+      return previewSpec(formToSpec(target));
     },
     onSuccess: (url) => {
       setPreviewUrl((current) => {
@@ -243,6 +253,7 @@ export function Workstation() {
 
   async function loadExample() {
     setForm(benchmarkForm);
+    setBaselineForm(benchmarkForm);
     setFormError(null);
     setExampleBusy(true);
     try {
@@ -256,6 +267,39 @@ export function Workstation() {
     } finally {
       setExampleBusy(false);
     }
+  }
+
+  function resetPart() {
+    const restored = withGeometry(form, baselineForm);
+    setForm(restored);
+    setFormError(null);
+    setShade("geometry");
+    preview.mutate(restored);
+  }
+
+  function handlePartTransform(transform: PartTransform) {
+    if (transform.type === "scale") {
+      const next = scaleForm(form, transform.factors, snapScaleToGrid ? gridStepMm : 0);
+      if (axisSizesMm(next).every((size, index) => size === axisSizesMm(form)[index])) return;
+      setForm(next);
+      setFormError(null);
+      setShade("geometry");
+      preview.mutate(next);
+      return;
+    }
+    const rotated = rotateForm(form, transform.matrix);
+    if (!rotated) {
+      setFormError(
+        form.kind === "l_bracket"
+          ? "An L-bracket cannot be rotated into the same kind of part. Change its leg dimensions instead."
+          : "That rotation cannot be written as this kind of part. Holes must stay through the thickness.",
+      );
+      return;
+    }
+    setForm(rotated);
+    setFormError(null);
+    setShade("geometry");
+    preview.mutate(rotated);
   }
 
   async function ask() {
@@ -305,6 +349,7 @@ export function Workstation() {
   const loadLabel =
     form.loadMode === "pressure" ? `Pressure ${form.magnitude} MPa ${loadAxis}` : `${form.magnitude} N ${loadAxis}`;
   const fromScenario = Boolean(scenarioId) || specApplied;
+  const geometryChanged = hasVisualEdits(form, baselineForm);
   // Left defines the model, right runs and reads it. Each side paginates independently.
   const designIssues = formIssues(form);
   const designSteps: StudioStep[] = [
@@ -328,10 +373,21 @@ export function Workstation() {
   function goDesignRelative(offset: number) { const next = designSteps[designIndex + offset]; if (next) goDesign(next.id); }
   function goRunRelative(offset: number) { const next = runSteps[runIndex + offset]; if (next) goRun(next.id); }
   useEffect(() => { if (followRunGuide) setRunStep(suggestedRunStep); }, [followRunGuide, suggestedRunStep]);
+  useEffect(() => {
+    function onKey(event: KeyboardEvent) {
+      const target = event.target as HTMLElement | null;
+      if (target && ["INPUT", "SELECT", "TEXTAREA"].includes(target.tagName)) return;
+      if (event.key === "1") setEditMode("select");
+      else if (event.key === "2") setEditMode("scale");
+      else if (event.key === "3") setEditMode("rotate");
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   return (
     <div
-      className={`grid h-full grid-cols-[360px_minmax(0,1fr)_320px] bg-slate-100 text-gray-900 ${logOpen ? "grid-rows-[auto_minmax(0,1fr)_220px]" : "grid-rows-[auto_minmax(0,1fr)_132px]"}`}
+      className={`grid h-full grid-cols-[360px_minmax(0,1fr)_320px] bg-slate-100 text-gray-900 ${bottomCollapsed ? "grid-rows-[auto_minmax(0,1fr)_38px]" : bottomPanel === "edit" ? "grid-rows-[auto_minmax(0,1fr)_196px]" : logOpen ? "grid-rows-[auto_minmax(0,1fr)_220px]" : "grid-rows-[auto_minmax(0,1fr)_132px]"}`}
     >
       <SiteHeader
         className="col-span-3"
@@ -512,7 +568,7 @@ export function Workstation() {
           <NumberField label="Dir Z" value={form.directionZ} onChange={(directionZ) => setForm({ ...form, directionZ })} />
         </div>
         <div className="mt-3 flex gap-2">
-          <Button variant="primary" onClick={() => preview.mutate()} disabled={preview.isPending}>
+          <Button variant="primary" onClick={() => preview.mutate(form)} disabled={preview.isPending}>
             {preview.isPending ? "Building solid" : "Preview solid"}
           </Button>
         </div>
@@ -591,6 +647,10 @@ export function Workstation() {
             gridVisible={gridVisible}
             gridStepM={gridStepMeters(gridStepMm)}
             floorOffset={partHalfHeightM}
+            editMode={editMode}
+            partSelected={partSelected}
+            onPartSelectedChange={setPartSelected}
+            onPartTransform={handlePartTransform}
           />
         </Suspense>
         <div className="pointer-events-none absolute left-3 top-3 rounded-lg border border-gray-200 bg-white/90 px-3 py-1 text-xs text-gray-500 shadow-sm">
@@ -866,14 +926,142 @@ export function Workstation() {
         <StepFooter steps={runSteps} activeIndex={runIndex} label="Run" onRelative={goRunRelative} onSelect={goRun} />
       </aside>
 
-      <section className={`col-span-3 border-t border-gray-200 bg-white ${logOpen ? "grid grid-cols-[minmax(0,1fr)_360px]" : ""}`}>
+      <section className={bottomPanel === "edit" ? "col-span-3 flex min-h-0 flex-col border-t border-gray-200 bg-white" : `col-span-3 border-t border-gray-200 bg-white ${logOpen ? "grid grid-cols-[minmax(0,1fr)_360px]" : ""}`}>
         <div className="overflow-auto">
           <div className="flex items-center justify-between px-3 py-1">
-            <p className="text-xs font-medium text-gray-500">Jobs</p>
-            <button type="button" className="text-xs text-blue-800" onClick={() => setLogOpen((value) => !value)}>
+            <div className="flex items-center gap-1" role="tablist" aria-label="Bottom panel"><button type="button" role="tab" aria-selected={bottomPanel === "edit"} onClick={() => { setBottomPanel("edit"); setBottomCollapsed(false); }} className={bottomPanel === "edit" ? "inline-flex items-center gap-1.5 rounded-full bg-slate-900 px-3 py-1 text-xs font-medium text-white" : "inline-flex items-center gap-1.5 rounded-full border border-slate-200 px-3 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50"}><Pencil className="h-3.5 w-3.5" aria-hidden /> Edition tools</button><button type="button" role="tab" aria-selected={bottomPanel === "jobs"} onClick={() => { setBottomPanel("jobs"); setBottomCollapsed(false); }} className={bottomPanel === "jobs" ? "inline-flex items-center gap-1.5 rounded-full bg-slate-900 px-3 py-1 text-xs font-medium text-white" : "inline-flex items-center gap-1.5 rounded-full border border-slate-200 px-3 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50"}><Rows3 className="h-3.5 w-3.5" aria-hidden /> Jobs queue{(jobs.data ?? []).length > 0 && <span className={bottomPanel === "jobs" ? "rounded-full bg-white/20 px-1.5 text-[10px]" : "rounded-full bg-slate-100 px-1.5 text-[10px] text-slate-600"}>{(jobs.data ?? []).length}</span>}</button></div>
+            <button type="button" className={bottomPanel === "edit" ? "hidden" : "text-xs text-blue-800"} onClick={() => setLogOpen((value) => !value)}>
               {logOpen ? "Hide solver log" : "Solver log"}
             </button>
+            <button
+              type="button"
+              aria-expanded={!bottomCollapsed}
+              aria-label={bottomCollapsed ? "Show the bottom panel" : "Hide the bottom panel"}
+              title={bottomCollapsed ? "Show the bottom panel" : "Hide the bottom panel"}
+              onClick={() => setBottomCollapsed((value) => !value)}
+              className="inline-flex shrink-0 items-center gap-1 rounded-full border border-slate-200 px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50"
+            >
+              {bottomCollapsed ? <ChevronUp className="h-3.5 w-3.5" aria-hidden /> : <ChevronDown className="h-3.5 w-3.5" aria-hidden />}
+              {bottomCollapsed ? "Show" : "Hide"}
+            </button>
           </div>
+          {!bottomCollapsed && bottomPanel === "edit" && (
+            <div className="flex-1 overflow-x-auto px-3 py-2">
+              <div className="flex min-w-max items-stretch">
+                <div className="flex flex-col">
+                  <div className="flex gap-1.5 px-1" role="group" aria-label="Edit mode">
+                    {(
+                      [
+                        ["select", MousePointer2, "Select", "1"],
+                        ["scale", Scaling, "Scale", "2"],
+                        ["rotate", RotateCw, "Rotate", "3"],
+                      ] as const
+                    ).map(([mode, Icon, label, shortcut]) => (
+                      <button
+                        key={mode}
+                        type="button"
+                        aria-pressed={editMode === mode}
+                        title={`${label} (${shortcut})`}
+                        onClick={() => setEditMode(mode)}
+                        className={
+                          editMode === mode
+                            ? "flex h-[76px] w-[80px] flex-col items-center justify-center gap-1 rounded-lg bg-slate-900 text-white shadow-sm"
+                            : "flex h-[76px] w-[80px] flex-col items-center justify-center gap-1 rounded-lg border border-slate-200 bg-white text-slate-700 hover:border-slate-300 hover:bg-slate-50"
+                        }
+                      >
+                        <Icon className="h-7 w-7" aria-hidden />
+                        <span className="text-xs font-semibold">{label}</span>
+                        <span className={editMode === mode ? "text-[10px] text-slate-300" : "text-[10px] text-slate-400"}>{shortcut}</span>
+                      </button>
+                    ))}
+                  </div>
+                  <p className="mt-1.5 text-center text-[10px] font-semibold uppercase tracking-widest text-slate-400">Transform</p>
+                </div>
+                <div className="mx-3 w-px shrink-0 bg-slate-200" aria-hidden />
+                <div className="flex flex-col">
+                  <div className="flex gap-1.5 px-1">
+                    <button
+                      type="button"
+                      aria-pressed={snapScaleToGrid}
+                      title="Snap scaled dimensions to the grid step"
+                      onClick={() => setSnapScaleToGrid((value) => !value)}
+                      className={
+                        snapScaleToGrid
+                          ? "flex h-[76px] w-[80px] flex-col items-center justify-center gap-1 rounded-lg bg-slate-900 text-white shadow-sm"
+                          : "flex h-[76px] w-[80px] flex-col items-center justify-center gap-1 rounded-lg border border-slate-200 bg-white text-slate-700 hover:border-slate-300 hover:bg-slate-50"
+                      }
+                    >
+                      <Magnet className="h-7 w-7" aria-hidden />
+                      <span className="text-xs font-semibold">Snap</span>
+                      <span className={snapScaleToGrid ? "text-[10px] text-slate-300" : "text-[10px] text-slate-400"}>{gridStepMm} mm grid</span>
+                    </button>
+                  </div>
+                  <p className="mt-1.5 text-center text-[10px] font-semibold uppercase tracking-widest text-slate-400">Precision</p>
+                </div>
+                <div className="mx-3 w-px shrink-0 bg-slate-200" aria-hidden />
+                <div className="flex min-w-[230px] flex-col justify-center px-1">
+                  <p className="text-sm font-semibold text-gray-900">
+                    {
+                      {
+                        cantilever_beam: "Cantilever beam",
+                        plate: "Plate",
+                        l_bracket: "L-bracket",
+                        perforated_plate: "Perforated plate",
+                      }[form.kind]
+                    }
+                  </p>
+                  <p className="mt-0.5 font-mono text-xs text-gray-600">
+                    {axisSizesMm(form).map((size) => formatEngineering(size)).join(" x ")} mm
+                  </p>
+                  <p className="mt-0.5 text-xs text-gray-500">
+                    {selectedMaterial?.name ?? form.materialId} - {partSelected ? "part selected" : "no part selected"}
+                  </p>
+                  {geometryChanged && (
+                    <span className="mt-1.5 w-fit rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-medium text-amber-800">
+                      {fromScenario ? "Modified from the proposed part" : "Modified from the loaded part"}
+                    </span>
+                  )}
+                  <p className="mt-1.5 text-center text-[10px] font-semibold uppercase tracking-widest text-slate-400">Part</p>
+                </div>
+                <div className="flex-1" />
+                <div className="flex flex-col">
+                  <div className="flex gap-1.5 px-1">
+                    <button
+                      type="button"
+                      disabled={!geometryChanged}
+                      title="Restore the part as loaded and rebuild it"
+                      onClick={resetPart}
+                      className="flex h-[76px] w-[80px] flex-col items-center justify-center gap-1 rounded-lg border border-slate-200 bg-white text-slate-700 hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      <Undo2 className="h-7 w-7" aria-hidden />
+                      <span className="text-xs font-semibold">Reset</span>
+                      <span className="text-[10px] text-slate-400">as loaded</span>
+                    </button>
+                    <button
+                      type="button"
+                      disabled={preview.isPending}
+                      title="Rebuild the solid from the edited part"
+                      onClick={() => preview.mutate(form)}
+                      className="flex h-[76px] w-[80px] flex-col items-center justify-center gap-1 rounded-lg bg-blue-700 text-white shadow-sm hover:bg-blue-800 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      <Box className="h-7 w-7" aria-hidden />
+                      <span className="text-xs font-semibold">{preview.isPending ? "Building" : "Preview"}</span>
+                      <span className="text-[10px] text-blue-200">rebuild solid</span>
+                    </button>
+                  </div>
+                  <p className="mt-1.5 text-center text-[10px] font-semibold uppercase tracking-widest text-slate-400">Apply</p>
+                </div>
+              </div>
+              <p className="mt-1 text-[11px] leading-4 text-gray-500">
+                Click the part in the viewport to select it, then drag the gizmo handles. Scale writes the dragged size back into
+                the dimensions; Rotate turns in 90-degree steps and remaps the support and load faces.
+                {form.kind === "l_bracket" && " Rotating an L-bracket cannot be written as the same kind of part, so Rotate does not apply to it."}
+                {form.kind === "perforated_plate" && " Holes stay through the thickness, so tipping a perforated plate on its edge is not offered."}
+              </p>
+              {formError && <p className="mt-1 text-[11px] leading-4 text-amber-700">{formError}</p>}
+            </div>
+          )}
+          {!bottomCollapsed && bottomPanel === "jobs" && (
           <table className="w-full text-left font-mono text-xs">
             <thead className="text-gray-500">
               <tr>
@@ -906,8 +1094,9 @@ export function Workstation() {
               ))}
             </tbody>
           </table>
+          )}
         </div>
-        {logOpen && (
+        {!bottomCollapsed && bottomPanel === "jobs" && logOpen && (
           <pre className="overflow-auto border-l border-gray-200 bg-slate-50 p-3 font-mono text-[11px] leading-4 text-gray-600">
             {log.data?.solver || log.data?.worker || "Solver log appears after the job starts."}
           </pre>

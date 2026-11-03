@@ -154,6 +154,64 @@ export function specToForm(spec: DesignSpec, previous: DesignForm): DesignForm {
   };
 }
 
+/** The geometry-only fields the studio edition tools edit. Loads and mesh stay elsewhere. */
+export type GeometryForm = Pick<
+  DesignForm,
+  | "kind"
+  | "materialId"
+  | "lengthMm"
+  | "widthMm"
+  | "heightMm"
+  | "thicknessMm"
+  | "legXMm"
+  | "legZMm"
+  | "holeRadiusMm"
+  | "holeCountX"
+  | "holeCountY"
+  | "holeMarginMm"
+>;
+
+export function geometrySnapshot(form: DesignForm): GeometryForm {
+  return {
+    kind: form.kind,
+    materialId: form.materialId,
+    lengthMm: form.lengthMm,
+    widthMm: form.widthMm,
+    heightMm: form.heightMm,
+    thicknessMm: form.thicknessMm,
+    legXMm: form.legXMm,
+    legZMm: form.legZMm,
+    holeRadiusMm: form.holeRadiusMm,
+    holeCountX: form.holeCountX,
+    holeCountY: form.holeCountY,
+    holeMarginMm: form.holeMarginMm,
+  };
+}
+
+/** True when the geometry differs from the part as loaded (e.g. the AI-proposed part). */
+export function isGeometryChanged(form: DesignForm, baseline: DesignForm): boolean {
+  const current = geometrySnapshot(form);
+  const loaded = geometrySnapshot(baseline);
+  return (Object.keys(current) as (keyof GeometryForm)[]).some((key) => current[key] !== loaded[key]);
+}
+
+/**
+ * Restore the part as loaded: geometry plus the support/load faces and load
+ * direction a viewport rotation remaps. Load mode and magnitude, mesh, and
+ * name stay as edited.
+ */
+export function withGeometry(form: DesignForm, baseline: DesignForm): DesignForm {
+  return {
+    ...form,
+    ...geometrySnapshot(baseline),
+    support: baseline.support,
+    loadSurface: baseline.loadSurface,
+    directionX: baseline.directionX,
+    directionY: baseline.directionY,
+    directionZ: baseline.directionZ,
+  };
+}
+
 export function formIssues(form: DesignForm): string[] {
   const issues: string[] = [];
   const dimensions = [form.lengthMm, form.widthMm, form.heightMm, form.thicknessMm, form.meshMm, form.magnitude];

@@ -1,6 +1,6 @@
-import { Center, GizmoHelper, GizmoViewport, Grid, Html, OrbitControls, useGLTF } from "@react-three/drei";
-import { Canvas, useThree } from "@react-three/fiber";
-import { Suspense, useEffect, useMemo } from "react";
+import { Center, GizmoHelper, GizmoViewport, Grid, Helper, Html, OrbitControls, TransformControls, useGLTF } from "@react-three/drei";
+import { Canvas, useThree, type ThreeEvent } from "@react-three/fiber";
+import { Suspense, useEffect, useMemo, useState, type ReactNode } from "react";
 import * as THREE from "three";
 import { turbo } from "@/lib/colormap";
 import { gridPlaneDistance } from "@/lib/grid";
@@ -9,6 +9,10 @@ import type { SurfaceResult } from "@/lib/api";
 import { useTheme } from "@/lib/theme";
 
 export type Shade = "von_mises" | "displacement" | "geometry";
+export type EditMode = "select" | "scale" | "rotate";
+export type PartTransform =
+  | { type: "scale"; factors: [number, number, number] }
+  | { type: "rotate"; matrix: [[number, number, number], [number, number, number], [number, number, number]] };
 export type CameraView = "iso" | "front" | "top" | "right";
 
 export function Viewport({
@@ -30,6 +34,10 @@ export function Viewport({
   zUp = false,
   gridVisible = true,
   gridStepM = 0.01,
+  editMode,
+  partSelected = false,
+  onPartSelectedChange,
+  onPartTransform,
   floorOffset,
 }: {
   previewUrl: string | null;
@@ -54,15 +62,20 @@ export function Viewport({
   gridStepM?: number;
   /** Distance from the part center to its lowest face, in meters. Falls back to the surface bbox. */
   floorOffset?: number;
+  editMode?: EditMode;
+  partSelected?: boolean;
+  onPartSelectedChange?: (selected: boolean) => void;
+  onPartTransform?: (transform: PartTransform) => void;
 }) {
   const dark = useTheme() === "dark";
   return (
-    <Canvas key={orthographic ? "ortho" : "persp"} orthographic={orthographic} camera={{ position: [0.45, -0.35, 0.28], fov: 35, zoom: orthographic ? 400 : 1, up: zUp ? [0, 0, 1] : [0, 1, 0] }}>
+    <Canvas key={orthographic ? "ortho" : "persp"} orthographic={orthographic} camera={{ position: [0.45, -0.35, 0.28], fov: 35, zoom: orthographic ? 400 : 1, up: zUp ? [0, 0, 1] : [0, 1, 0] }} onPointerMissed={() => { if (editMode) onPartSelectedChange?.(false); }}>
       <color attach="background" args={[dark ? "#0f172a" : "#f8fafc"]} />
       <ambientLight intensity={0.85} />
       <directionalLight position={[1, -1, 2]} intensity={1.2} />
       <Center>
         <Suspense fallback={null}>
+          <EditablePart editMode={editMode} selected={partSelected} onSelectedChange={onPartSelectedChange} onTransform={onPartTransform} active={Boolean(surface || previewUrl)}>
           {surface ? (
             <StressMesh
               surface={surface}
@@ -75,6 +88,7 @@ export function Viewport({
           ) : previewUrl ? (
             <Preview key={previewUrl} url={previewUrl} />
           ) : null}
+          </EditablePart>
           {surface && (
             <Markers
               surface={surface}
@@ -103,6 +117,64 @@ export function Viewport({
       </GizmoHelper>
       <axesHelper args={[0.08]} />
     </Canvas>
+  );
+}
+
+function EditablePart({
+  editMode,
+  selected,
+  onSelectedChange,
+  onTransform,
+  active,
+  children,
+}: {
+  editMode?: EditMode;
+  selected: boolean;
+  onSelectedChange?: (selected: boolean) => void;
+  onTransform?: (transform: PartTransform) => void;
+  active: boolean;
+  children: ReactNode;
+}) {
+  const [partNode, setPartNode] = useState<THREE.Group | null>(null);
+  function finishTransform() {
+    const part = partNode;
+    if (!part || !editMode || editMode === "select") return;
+    if (editMode === "scale") {
+      const factors: [number, number, number] = [part.scale.x, part.scale.y, part.scale.z];
+      part.scale.set(1, 1, 1);
+      if (factors.some((factor) => Math.abs(factor - 1) > 0.001)) onTransform?.({ type: "scale", factors });
+      return;
+    }
+    const elements = new THREE.Matrix4().makeRotationFromQuaternion(part.quaternion).elements;
+    const rounded = (value: number) => Math.max(-1, Math.min(1, Math.round(value)));
+    const matrix: [[number, number, number], [number, number, number], [number, number, number]] = [
+      [rounded(elements[0]), rounded(elements[4]), rounded(elements[8])],
+      [rounded(elements[1]), rounded(elements[5]), rounded(elements[9])],
+      [rounded(elements[2]), rounded(elements[6]), rounded(elements[10])],
+    ];
+    part.quaternion.identity();
+    part.rotation.set(0, 0, 0);
+    if (matrix.flat().some((value, index) => value !== [1, 0, 0, 0, 1, 0, 0, 0, 1][index])) {
+      onTransform?.({ type: "rotate", matrix });
+    }
+  }
+  return (
+    <>
+      <group
+        ref={setPartNode}
+        onClick={(event: ThreeEvent<MouseEvent>) => {
+          if (!editMode) return;
+          event.stopPropagation();
+          onSelectedChange?.(true);
+        }}
+      >
+        {children}
+        {selected && editMode && <Helper type={THREE.BoxHelper} args={["#2563eb"]} />}
+      </group>
+      {editMode && editMode !== "select" && selected && active && (
+        <TransformControls object={partNode ?? undefined} mode={editMode} rotationSnap={Math.PI / 2} onMouseUp={finishTransform} />
+      )}
+    </>
   );
 }
 
