@@ -34,6 +34,7 @@ test("an approved bracket runs CalculiX and one real optimization", async ({ pag
   expect(report.ok()).toBeTruthy();
   const reportBody = await report.json();
   expect(JSON.stringify(reportBody).toLowerCase()).toContain("calculix");
+  await page.locator('nav[aria-label="Run steps"]').getByRole("button", { name: /Optimize/ }).click();
   await page.getByLabel("Lower mm").fill("4");
   await page.getByLabel("Iterations").fill("2");
   await page.getByRole("button", { name: "Optimize with FEM" }).click();
