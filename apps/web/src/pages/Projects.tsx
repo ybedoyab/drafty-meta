@@ -5,7 +5,7 @@ import { Link } from "react-router-dom";
 import { SiteHeader } from "@/components/SiteHeader";
 import { deleteScenario, getHealth, listScenarios, renameScenario } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
-import { forgetScenarioId, rememberScenarioId } from "@/lib/scenario";
+import { forgetScenarioId, scenarioPath } from "@/lib/scenario";
 
 export function Projects() {
   const queryClient = useQueryClient();
@@ -119,11 +119,7 @@ export function Projects() {
                 </p>
               </div>
               <div className="flex shrink-0 items-center gap-3">
-                <Link
-                  to="/scenario/new"
-                  className="text-blue-800 hover:underline"
-                  onClick={() => rememberScenarioId(localStorage, item.id)}
-              >
+                <Link to={scenarioPath(item.id)} className="text-blue-800 hover:underline">
                   Open
                 </Link>
                 {confirmId === item.id ? (

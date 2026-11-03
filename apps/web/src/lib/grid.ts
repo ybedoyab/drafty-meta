@@ -21,6 +21,21 @@ export function gridStepMeters(stepMm: number): number {
  * The first finite positive candidate wins: a measured half-height beats an
  * assumed one, so the part rests on the grid instead of floating above it.
  */
+/**
+ * Distance from the part center to the grid plane: the resting floor plus a
+ * small lift, so the grid sits just under the part without z-fighting it.
+ * Shared by every 3D visor so previews cannot drift apart.
+ */
+export function gridPlaneDistance(
+  candidates: ReadonlyArray<number | null | undefined>,
+  fallback: number,
+  stepM: number,
+  fitRadius: number,
+): number {
+  const floor = resolveGridFloor(candidates, fallback);
+  return floor + Math.max(fitRadius * 0.005, stepM * 0.15);
+}
+
 export function resolveGridFloor(
   candidates: ReadonlyArray<number | null | undefined>,
   fallback: number,

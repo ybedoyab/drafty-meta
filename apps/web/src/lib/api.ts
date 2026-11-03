@@ -287,6 +287,7 @@ export async function openArtifact(jobId: string, name: string) {
 }
 
 export interface ScenarioSession {
+  name?: string | null;
   id: string;
   messages: { role: "user" | "assistant"; text: string }[];
   inputs: import("./scenario").ScenarioInputs;

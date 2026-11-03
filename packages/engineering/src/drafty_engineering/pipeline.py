@@ -1,6 +1,7 @@
 """Run one static analysis from a typed design specification."""
 
 import json
+import math
 import os
 from collections.abc import Callable
 from pathlib import Path
@@ -58,6 +59,13 @@ def run_simulation(
 
     _status(on_status, "meshing", "Meshing the STEP solid")
     _raise_if_cancelled(cancel_file)
+    max_nodes = int(os.environ.get("DRAFTY_MAX_NODES", "250000"))
+    estimated = estimated_node_count(spec, envelope(spec).volume_m3)
+    if estimated > max_nodes:
+        raise GeometryError(
+            f"The estimated mesh has about {estimated} nodes, above the limit of {max_nodes}. "
+            "Increase the mesh size before meshing."
+        )
     mesh = mesh_step(workdir / "model.step", workdir / "model.msh", spec)
     points, cells, cell_type = tetra_cells(mesh, spec.element_order)
     quality = assess_mesh(points, cells)
@@ -445,6 +453,16 @@ def _turbo(values: np.ndarray) -> np.ndarray:
         12.64194608 + t * (-60.58204836 + t * (110.36276771 + t * (-89.90310912 + t * 27.34824973)))
     )
     return np.clip(np.stack([red, green, blue], axis=1), 0.0, 1.0)
+
+
+def estimated_node_count(spec: DesignSpec, volume_m3: float) -> int:
+    """Rough pre-mesh node estimate: about twelve nodes per mesh-size cube of solid.
+
+    Deliberately generous so ordinary designs pass; its job is to stop a mesh
+    that would exhaust memory before Gmsh runs, not to predict the exact count.
+    """
+
+    return math.ceil(12.0 * volume_m3 / spec.mesh_size_m**3)
 
 
 def _tet_volume(points: np.ndarray, cells: np.ndarray) -> float:

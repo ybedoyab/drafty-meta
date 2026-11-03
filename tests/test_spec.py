@@ -51,6 +51,54 @@ def test_non_finite_dimensions_are_rejected():
         cantilever_benchmark_spec().model_validate(payload)
 
 
+def test_name_with_solver_card_injection_is_rejected():
+    payload = cantilever_benchmark_spec().model_dump()
+    payload["name"] = "x\n*BOUNDARY\nFAKE, 1, 3, 9.9"
+    with pytest.raises(ValidationError):
+        cantilever_benchmark_spec().model_validate(payload)
+    payload["name"] = "x\r*BOUNDARY"
+    with pytest.raises(ValidationError):
+        cantilever_benchmark_spec().model_validate(payload)
+
+
+def test_oversized_dimension_is_rejected():
+    payload = cantilever_benchmark_spec().model_dump()
+    payload["beam"]["length_m"] = 2.0
+    with pytest.raises(ValidationError):
+        cantilever_benchmark_spec().model_validate(payload)
+
+
+def test_oversized_loads_are_rejected():
+    payload = cantilever_benchmark_spec().model_dump()
+    payload["loads"][0]["magnitude"] = 2_000_000.0
+    with pytest.raises(ValidationError):
+        cantilever_benchmark_spec().model_validate(payload)
+    payload = perforated_plate_spec().model_dump()
+    payload["loads"][0]["magnitude"] = 200_000_000.0
+    with pytest.raises(ValidationError):
+        perforated_plate_spec().model_validate(payload)
+
+
+def test_overweight_design_is_rejected():
+    payload = cantilever_benchmark_spec().model_dump()
+    payload["beam"] = {"length_m": 1.0, "width_m": 1.0, "height_m": 0.5}
+    payload["mesh_size_m"] = 0.05
+    with pytest.raises(ValidationError):
+        cantilever_benchmark_spec().model_validate(payload)
+
+
+def test_revolved_profile_name_with_control_characters_is_rejected():
+    from drafty_engineering.spec import RevolvedProfile
+
+    points = [
+        {"height_m": 0.0, "radius_m": 0.0},
+        {"height_m": 0.01, "radius_m": 0.01},
+        {"height_m": 0.02, "radius_m": 0.0},
+    ]
+    with pytest.raises(ValidationError):
+        RevolvedProfile(name="pawn\n*BOUNDARY", points=points)
+
+
 def test_perforated_holes_must_fit():
     spec = perforated_plate_spec().model_dump()
     spec["holes"]["radius_m"] = 0.05

@@ -3,7 +3,7 @@ import { Canvas, useThree } from "@react-three/fiber";
 import { Suspense, useEffect, useMemo } from "react";
 import * as THREE from "three";
 import { turbo } from "@/lib/colormap";
-import { resolveGridFloor } from "@/lib/grid";
+import { gridPlaneDistance } from "@/lib/grid";
 import { faceCentroid, loadDirection } from "@/lib/markers";
 import type { SurfaceResult } from "@/lib/api";
 import { useTheme } from "@/lib/theme";
@@ -241,7 +241,7 @@ function MeasuredGrid({
   floorOffset: number | undefined;
   zUp: boolean;
 }) {
-  const floor = useMemo(() => {
+  const distance = useMemo(() => {
     const axis = zUp ? 2 : 1;
     let modelHalf: number | null = null;
     if (surface) {
@@ -253,11 +253,9 @@ function MeasuredGrid({
       }
       if (Number.isFinite(min) && Number.isFinite(max) && max > min) modelHalf = (max - min) / 2;
     }
-    return resolveGridFloor([floorOffset, modelHalf], fitRadius * 0.5);
-  }, [surface, floorOffset, fitRadius, zUp]);
+    return gridPlaneDistance([floorOffset, modelHalf], fitRadius * 0.5, stepM, fitRadius);
+  }, [surface, floorOffset, fitRadius, stepM, zUp]);
   const dark = useTheme() === "dark";
-  const lift = Math.max(fitRadius * 0.005, stepM * 0.15);
-  const distance = floor + lift;
   return (
     <Grid
       position={zUp ? [0, 0, -distance] : [0, -distance, 0]}

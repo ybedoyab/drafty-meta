@@ -1,7 +1,8 @@
-import { Box, Check, ChevronLeft, ChevronRight, CircleAlert, GraduationCap, PanelRightClose, PanelRightOpen } from "lucide-react";
-import { OrbitControls } from "@react-three/drei";
+import { Box, Check, ChevronLeft, ChevronRight, CircleAlert, GraduationCap, PanelRightClose, PanelRightOpen, Pencil } from "lucide-react";
+import { Grid, OrbitControls } from "@react-three/drei";
 import { Canvas } from "@react-three/fiber";
-import { Link, useNavigate } from "react-router-dom";
+import { useQueryClient } from "@tanstack/react-query";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { Fragment, Suspense, useEffect, useRef, useState, type ReactNode } from "react";
 import { Logo } from "@/components/Logo";
 import { SiteHeader } from "@/components/SiteHeader";
@@ -25,6 +26,7 @@ import {
   getHealth,
   getModels,
   getScenario,
+  renameScenario,
   loadDemo,
   scenarioEvidenceUrl,
   scenarioGeometryUrl,
@@ -49,7 +51,10 @@ import {
   messageSegments,
   recallModelId,
   rememberModelId,
-  recallScenarioId,
+  scenarioEntry,
+  scenarioPath,
+  shareInFlight,
+  shouldApplySession,
   rememberScenarioId,
   scenarioFields,
   stageStudioSpec,
@@ -57,7 +62,7 @@ import {
   type PartSummary,
   type ScenarioForm,
 } from "@/lib/scenario";
-import { DEFAULT_GRID_STEP_MM, gridStepMeters } from "@/lib/grid";
+import { DEFAULT_GRID_STEP_MM, gridPlaneDistance, gridStepMeters } from "@/lib/grid";
 
 const IBEAM = "simply_supported_ibeam";
 function withArticle(noun: string): string {
@@ -106,6 +111,11 @@ export function Scenario() {
   const [loadFace, setLoadFace] = useState("");
   const [bracket, setBracket] = useState({ legX: "80", legZ: "80", width: "40", thickness: "8", force: "200", limit: "1" });
   const [inspectorOpen, setInspectorOpen] = useState(true);
+  const [editingProjectName, setEditingProjectName] = useState(false);
+  const [projectNameDraft, setProjectNameDraft] = useState("");
+  const [renamingProject, setRenamingProject] = useState(false);
+  const [projectNameError, setProjectNameError] = useState<string | null>(null);
+  const queryClient = useQueryClient();
   const [inspectorStep, setInspectorStep] = useState<InspectorStepId>("inputs");
   const [followGuide, setFollowGuide] = useState(true);
   const evidenceRef = useRef<HTMLInputElement | null>(null);
@@ -114,6 +124,25 @@ export function Scenario() {
   const [geometryError, setGeometryError] = useState<string | null>(null);
   const turnAbort = useRef<AbortController | null>(null);
   const navigate = useNavigate();
+  const { scenarioId } = useParams();
+  const entry = scenarioEntry(scenarioId);
+  const creationSlot = useRef<{ current: Promise<ScenarioSession> | null }>({ current: null });
+  const openIdRef = useRef<string | null>(null);
+
+  /** Make a session the open one: screen, remembered copy, and route all agree. */
+  function adopt(next: ScenarioSession) {
+    openIdRef.current = next.id;
+    rememberScenarioId(localStorage, next.id);
+    setSession(next);
+    setForm(formOf(next));
+  }
+
+  /** Apply a result only if its scenario is still the open one. */
+  function applyIfCurrent(next: ScenarioSession): boolean {
+    if (!shouldApplySession(next.id, openIdRef.current)) return false;
+    setSession(next);
+    return true;
+  }
 
   useEffect(() => {
     let cancel = false;
@@ -129,26 +158,27 @@ export function Scenario() {
     };
   }, []);
 
+  // The route names the open scenario. "/scenario/new" creates exactly one
+  // (shareInFlight absorbs StrictMode's double effect run), then replaces
+  // itself with that scenario's route. A named scenario that cannot be
+  // loaded is an error, never a silent replacement scenario.
   useEffect(() => {
     let cancel = false;
-    const saved = recallScenarioId(localStorage);
-    // load the saved scenario, or create a fresh one below
-    const load = async () => {
-      if (saved) {
-        try {
-          return await getScenario(saved);
-        } catch (reason) {
-          if (!(reason instanceof Error) || !/not found|404/i.test(reason.message)) throw reason;
-        }
-      }
-      return createScenario();
-    };
-    load()
+    turnAbort.current?.abort();
+    openIdRef.current = entry.kind === "open" ? entry.id : null;
+    setSession(null);
+    setForm(emptyForm());
+    setEditingProjectName(false);
+    setProjectNameError(null);
+    setDraft("");
+    setError(null);
+    const load =
+      entry.kind === "open" ? getScenario(entry.id) : shareInFlight(creationSlot.current, createScenario);
+    load
       .then((next) => {
         if (cancel) return;
-        rememberScenarioId(localStorage, next.id);
-        setSession(next);
-        setForm(formOf(next));
+        adopt(next);
+        if (entry.kind === "create") navigate(scenarioPath(next.id), { replace: true });
       })
       .catch((reason) => {
         if (!cancel) setError(reason instanceof Error ? reason.message : "The scenario service is unavailable.");
@@ -156,7 +186,9 @@ export function Scenario() {
     return () => {
       cancel = true;
     };
-  }, []);
+    // entry is derived from scenarioId on every render.
+    // Deps stay on scenarioId only: adopt/navigate read fresh refs and state setters.
+  }, [scenarioId]);
 
   useEffect(() => {
     const ids = session?.jobs ?? [];
@@ -236,6 +268,29 @@ export function Scenario() {
     rememberModelId(localStorage, id);
   }
 
+  async function saveProjectName() {
+    if (!session || renamingProject) return;
+    const name = projectNameDraft.trim();
+    if (!name) {
+      setProjectNameError("The name must not be empty.");
+      return;
+    }
+    setRenamingProject(true);
+    setProjectNameError(null);
+    try {
+      const targetId = session.id;
+      const saved = await renameScenario(targetId, name);
+      if (!shouldApplySession(targetId, openIdRef.current)) return;
+      setSession((current) => (current?.id === targetId ? { ...current, name: saved.name ?? name } : current));
+      setEditingProjectName(false);
+      void queryClient.invalidateQueries({ queryKey: ["scenarios"] });
+    } catch (reason) {
+      setProjectNameError(reason instanceof Error ? reason.message : "The project could not be renamed.");
+    } finally {
+      setRenamingProject(false);
+    }
+  }
+
   async function submit(message: string, patch?: ScenarioForm) {
     if (!session) return;
     const nextForm = { ...form, ...patch };
@@ -249,7 +304,7 @@ export function Scenario() {
       const fields = formFields(session.part_catalog?.form_part);
       const next = await turnScenario(session.id, { message, inputs: inputsFromForm(nextForm, fields), model: selectedModelId }, controller.signal);
       if (controller.signal.aborted) return;
-      setSession(next);
+      if (!applyIfCurrent(next)) return;
       setForm(formOf(next));
       setDraft("");
     } catch (reason) {
@@ -283,10 +338,11 @@ export function Scenario() {
               displacement_limit_m: Number(bracket.limit) / 1000,
             }
           : undefined;
-      const next = await loadDemo(kind, session.id, overrides);
-      rememberScenarioId(localStorage, next.id);
-      setSession(next);
-      setForm(formOf(next));
+      const targetId = session.id;
+      const next = await loadDemo(kind, targetId, overrides);
+      if (!shouldApplySession(targetId, openIdRef.current)) return;
+      adopt(next);
+      if (next.id !== targetId) navigate(scenarioPath(next.id), { replace: true });
       if (next.suggested_faces) {
         setSupportFace(next.suggested_faces.support_face);
         setLoadFace(next.suggested_faces.load_face);
@@ -303,11 +359,10 @@ export function Scenario() {
     setBusy(true);
     setError(null);
     try {
-      const next = await createScenario();
-      rememberScenarioId(localStorage, next.id);
-      setSession(next);
-      setForm(emptyForm());
+      const next = await shareInFlight(creationSlot.current, createScenario);
+      adopt(next);
       setDraft("");
+      navigate(scenarioPath(next.id), { replace: true });
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "A new scenario could not be opened.");
     } finally {
@@ -321,7 +376,7 @@ export function Scenario() {
     for (const file of Array.from(files)) {
       try {
         const next = await uploadScenarioEvidence(session.id, file, role, note);
-        setSession(next);
+        if (!applyIfCurrent(next)) break;
       } catch (reason) {
         setError(reason instanceof Error ? reason.message : "The image was rejected.");
         break;
@@ -332,7 +387,7 @@ export function Scenario() {
   async function removeImage(evidenceId: string) {
     if (!session) return;
     const next = await deleteScenarioEvidence(session.id, evidenceId);
-    setSession(next);
+    applyIfCurrent(next);
   }
 
   async function runBeam(compare: boolean) {
@@ -346,7 +401,7 @@ export function Scenario() {
         compare,
         inputs: inputsFromForm(form, formFields(session.part_catalog?.form_part)),
       });
-      setSession(next);
+      if (!applyIfCurrent(next)) return;
       if (!compare) setForm(formOf(next));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "The beam analysis failed.");
@@ -370,7 +425,7 @@ export function Scenario() {
     setBusy(true);
     setError(null);
     try {
-      setSession(await confirmScenarioFaces(session.id, supportFace, loadFace));
+      applyIfCurrent(await confirmScenarioFaces(session.id, supportFace, loadFace));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "The faces could not be confirmed.");
     } finally {
@@ -397,7 +452,7 @@ export function Scenario() {
     setBusy(true);
     setError(null);
     try {
-      setSession(await rejectScenario(session.id));
+      applyIfCurrent(await rejectScenario(session.id));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "The proposal could not be rejected.");
     } finally {
@@ -410,7 +465,7 @@ export function Scenario() {
     setBusy(true);
     setError(null);
     try {
-      setSession(await segmentScenario(session.id, evidenceId, segmentPrompt));
+      applyIfCurrent(await segmentScenario(session.id, evidenceId, segmentPrompt));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Segmentation did not run.");
     } finally {
@@ -423,7 +478,7 @@ export function Scenario() {
     setBusy(true);
     setError(null);
     try {
-      setSession(await dismissScenario(session.id));
+      applyIfCurrent(await dismissScenario(session.id));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "The suggestion could not be dismissed.");
     } finally {
@@ -454,6 +509,7 @@ export function Scenario() {
   const suggestedStep: InspectorStepId = !session ? "inputs" : unsupported ? "results" : session.missing.length > 0 && formPart ? "inputs" : formPart && filledInputs < inputFields.length ? "inputs" : domain === "mechanical" && session.studio_spec ? "results" : session.analysis ? "results" : hasModelStep ? "model" : formPart ? "inputs" : "evidence";
   const activeStep: InspectorStepId = inspectorSteps.some((step) => step.id === inspectorStep) ? inspectorStep : (inspectorSteps[0]?.id ?? "inputs");
   const activeIndex = Math.max(0, inspectorSteps.findIndex((step) => step.id === activeStep));
+  const projectName = session?.name?.trim() ? session.name.trim() : "Untitled";
   function goToStep(id: InspectorStepId) { setFollowGuide(false); setInspectorStep(id); }
   function goRelative(offset: number) { const next = inspectorSteps[activeIndex + offset]; if (next) goToStep(next.id); }
   useEffect(() => { if (followGuide) setInspectorStep(suggestedStep); }, [followGuide, suggestedStep]);
@@ -469,7 +525,67 @@ export function Scenario() {
       >
         <aside className="space-y-3 overflow-auto rounded-xl border border-slate-200 bg-white p-4">
           <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">Project</p>
-          <p className="text-sm font-medium">{session?.demo ? `Demo ${session.demo.version}` : "Working scenario"}</p>
+          {editingProjectName ? (
+            <form
+              className="space-y-2"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void saveProjectName();
+              }}
+            >
+              <input
+                className="w-full rounded-md border border-slate-300 px-2 py-1 text-sm"
+                aria-label="Project name"
+                placeholder="Untitled"
+                value={projectNameDraft}
+                maxLength={120}
+                autoFocus
+                onChange={(event) => setProjectNameDraft(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Escape") {
+                    setEditingProjectName(false);
+                    setProjectNameError(null);
+                  }
+                }}
+              />
+              <div className="flex items-center gap-3 text-sm">
+                <button type="submit" className="text-blue-800 hover:underline disabled:opacity-50" disabled={renamingProject}>
+                  Save
+                </button>
+                <button
+                  type="button"
+                  className="text-slate-500 hover:underline disabled:opacity-50"
+                  disabled={renamingProject}
+                  onClick={() => {
+                    setEditingProjectName(false);
+                    setProjectNameError(null);
+                  }}
+                >
+                  Cancel
+                </button>
+              </div>
+              {projectNameError && <p className="text-sm text-red-700">{projectNameError}</p>}
+            </form>
+          ) : (
+            <div className="flex items-start justify-between gap-2">
+              <p className="min-w-0 break-words text-sm font-medium">{projectName}</p>
+              <button
+                type="button"
+                aria-label={`Rename ${projectName}`}
+                title="Rename"
+                className="shrink-0 text-slate-500 hover:text-slate-800 disabled:opacity-50"
+                disabled={!session || busy || renamingProject}
+                onClick={() => {
+                  setProjectNameDraft(session?.name ?? "");
+                  setProjectNameError(null);
+                  setEditingProjectName(true);
+                }}
+              >
+                <Pencil className="h-4 w-4" aria-hidden />
+              </button>
+            </div>
+          )}
+          <p className="text-xs text-slate-500">{session?.demo ? `Demo ${session.demo.version}` : "Working scenario"}</p>
           <ol className="space-y-1 text-sm">
             {WORKFLOW.map((stage) => (
               <li key={stage} className={stage === workflow ? "rounded-md bg-slate-900 px-2 py-1 font-medium text-white" : "rounded-md px-2 py-1 text-slate-600"}>
@@ -1188,6 +1304,8 @@ function BeamFigure({
 }
 
 function ProfilePreview({ form, spanM }: { form: ScenarioForm; spanM: number | null }) {
+  const [gridVisible, setGridVisible] = useState(true);
+  const [gridStepMm, setGridStepMm] = useState<number>(DEFAULT_GRID_STEP_MM);
   const depth = Number(form.depth_m ?? "") / 1000;
   const width = Number(form.flange_width_m ?? "") / 1000;
   const flange = Number(form.flange_thickness_m ?? "") / 1000;
@@ -1198,10 +1316,20 @@ function ProfilePreview({ form, spanM }: { form: ScenarioForm; spanM: number | n
   if (!ready) return <p className="mt-3 text-sm text-slate-600">Enter a valid I-section to preview the geometry. That preview is not a solved model.</p>;
   const shown = Math.min(length, Math.max(depth * 4, width * 4));
   const distance = Math.max(shown, width, depth) * 1.45;
+  const stepM = gridStepMeters(gridStepMm);
+  const gridDistance = gridPlaneDistance([depth / 2], distance / 4, stepM, distance / 2);
   return (
     <div className="mt-3">
       <div className="relative h-56 rounded border border-slate-200">
-        <Canvas camera={{ position: [distance, -distance, distance * 0.55], fov: 35 }}>
+        <div className="absolute left-2 top-2 z-10">
+          <GridControl
+            visible={gridVisible}
+            stepMm={gridStepMm}
+            onVisibleChange={setGridVisible}
+            onStepChange={setGridStepMm}
+          />
+        </div>
+        <Canvas camera={{ position: [distance, -distance, distance * 0.55], fov: 35, up: [0, 0, 1] }}>
           <ambientLight intensity={0.85} />
           <directionalLight position={[1, -1, 2]} intensity={1.1} />
           <mesh position={[0, 0, -depth / 2 + flange / 2]}>
@@ -1216,6 +1344,21 @@ function ProfilePreview({ form, spanM }: { form: ScenarioForm; spanM: number | n
             <boxGeometry args={[shown, width, flange]} />
             <meshStandardMaterial color="#94a3b8" />
           </mesh>
+          {gridVisible && (
+            <Grid
+              position={[0, 0, -gridDistance]}
+              rotation={[Math.PI / 2, 0, 0]}
+              cellSize={stepM}
+              cellThickness={0.6}
+              cellColor="#cbd5e1"
+              sectionSize={stepM * 5}
+              sectionThickness={1.2}
+              sectionColor="#94a3b8"
+              fadeDistance={Math.max(distance * 4, stepM * 60)}
+              fadeStrength={2.5}
+              infiniteGrid
+            />
+          )}
           <OrbitControls makeDefault />
         </Canvas>
       </div>

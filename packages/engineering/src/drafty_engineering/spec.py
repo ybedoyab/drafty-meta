@@ -1,9 +1,10 @@
 """Parametric design specification. Geometry is explicit; images do not fill it."""
 
 import math
+import unicodedata
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from drafty_engineering.analytical import (
     BENCHMARK_FORCE_N,
@@ -17,6 +18,21 @@ from drafty_engineering.materials import MATERIALS
 
 SurfaceName = Literal["xmin", "xmax", "ymin", "ymax", "zmin", "zmax"]
 PartKind = Literal["cantilever_beam", "plate", "l_bracket", "perforated_plate"]
+
+# Public-demo resource bounds. Parts are desktop-scale solids; anything larger
+# is rejected at validation instead of exhausting CAD, mesh, or solver workers.
+MAX_DIMENSION_M = 1.0
+MAX_FORCE_N = 1_000_000.0
+MAX_PRESSURE_PA = 100_000_000.0
+MAX_MASS_KG = 1_000.0
+
+
+def _validate_name(value: str) -> str:
+    if any(unicodedata.category(char) == "Cc" for char in value):
+        raise ValueError("Names must not contain control characters, including newlines.")
+    if "/" in value or "\\" in value:
+        raise ValueError("Names must not contain path separators.")
+    return value
 
 
 class Direction(BaseModel):
@@ -96,6 +112,11 @@ class DesignSpec(BaseModel):
     bracket: BracketGeometry | None = None
     holes: HolePattern | None = None
 
+    @field_validator("name")
+    @classmethod
+    def _check_name(cls, value: str) -> str:
+        return _validate_name(value)
+
     @model_validator(mode="after")
     def _validate_design(self) -> "DesignSpec":
         if self.material_id not in MATERIALS:
@@ -108,12 +129,36 @@ class DesignSpec(BaseModel):
         if self.supports[0].surface == self.loads[0].surface:
             raise ValueError("The support and the load must use different surfaces.")
         self._require_geometry()
+        self._require_within_bounds()
         smallest = _smallest_dimension(self)
         if self.mesh_size_m >= smallest:
             raise ValueError("Mesh size must be smaller than the smallest solid dimension.")
         if self.mesh_size_m < smallest / 100.0:
             raise ValueError("Mesh size is finer than 1/100 of the smallest dimension. Coarsen it before solving.")
         return self
+
+    def _require_within_bounds(self) -> None:
+        dimensions: list[float] = []
+        if self.beam:
+            dimensions.extend([self.beam.length_m, self.beam.width_m, self.beam.height_m])
+        if self.plate:
+            dimensions.extend([self.plate.length_m, self.plate.width_m, self.plate.thickness_m])
+        if self.bracket:
+            dimensions.extend(
+                [self.bracket.leg_x_m, self.bracket.leg_z_m, self.bracket.thickness_m, self.bracket.width_m]
+            )
+        if self.holes:
+            dimensions.extend([self.holes.radius_m, self.holes.margin_m])
+        if any(value > MAX_DIMENSION_M for value in dimensions):
+            raise ValueError(f"Each dimension must not exceed {MAX_DIMENSION_M:g} m.")
+        load = self.loads[0]
+        limit = MAX_FORCE_N if load.mode == "force" else MAX_PRESSURE_PA
+        unit = "N" if load.mode == "force" else "Pa"
+        if load.magnitude > limit:
+            raise ValueError(f"Load magnitude must not exceed {limit:g} {unit}.")
+        mass_kg = _design_volume_m3(self) * MATERIALS[self.material_id].density_kg_m3
+        if mass_kg > MAX_MASS_KG:
+            raise ValueError(f"Design mass must not exceed {MAX_MASS_KG:g} kg.")
 
     def _require_finite(self) -> None:
         values = [
@@ -176,6 +221,11 @@ class RevolvedProfile(BaseModel):
     name: str = Field(default="revolved-part", min_length=1, max_length=80)
     points: list[ProfilePoint] = Field(min_length=3, max_length=96)
 
+    @field_validator("name")
+    @classmethod
+    def _check_name(cls, value: str) -> str:
+        return _validate_name(value)
+
     @model_validator(mode="after")
     def _validate_profile(self) -> "RevolvedProfile":
         values = [value for point in self.points for value in (point.height_m, point.radius_m)]
@@ -230,6 +280,21 @@ class RevolvedProfile(BaseModel):
             step = upper.height_m - lower.height_m
             total += math.pi * step / 3.0 * (lower.radius_m**2 + lower.radius_m * upper.radius_m + upper.radius_m**2)
         return total
+
+
+def _design_volume_m3(spec: DesignSpec) -> float:
+    if spec.kind == "cantilever_beam" and spec.beam:
+        return spec.beam.length_m * spec.beam.width_m * spec.beam.height_m
+    if spec.kind in {"plate", "perforated_plate"} and spec.plate:
+        volume = spec.plate.length_m * spec.plate.width_m * spec.plate.thickness_m
+        if spec.kind == "perforated_plate" and spec.holes:
+            count = spec.holes.count_x * spec.holes.count_y
+            volume -= count * math.pi * spec.holes.radius_m**2 * spec.plate.thickness_m
+        return volume
+    if spec.bracket:
+        bracket = spec.bracket
+        return bracket.width_m * bracket.thickness_m * (bracket.leg_x_m + bracket.leg_z_m - bracket.thickness_m)
+    raise InputError("The design has no geometry.")
 
 
 def _outline_area(outline: list[tuple[float, float]]) -> float:
