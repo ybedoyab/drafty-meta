@@ -161,10 +161,7 @@ export function DrawTool({
           <div className="flex items-start justify-between gap-3">
             <div>
               <h2 className="text-base font-semibold text-gray-900">Draw a piece to add</h2>
-              <p className="mt-1 text-sm leading-5 text-gray-600">
-                Draw the piece as an elevation, like the side of a roof. The bottom of your drawing sits on the chosen
-                face, and the shape is extruded through its depth. It auto-closes when you lift the pointer.
-              </p>
+              <p className="mt-1 text-sm text-gray-600">One closed outline, extruded as a solid piece.</p>
             </div>
             <button type="button" onClick={onClose} aria-label="Close the draw tool" className="rounded-md p-1 text-gray-500 hover:bg-slate-100">
               <X className="h-5 w-5" aria-hidden />
@@ -215,42 +212,58 @@ export function DrawTool({
             <p className="text-xs text-gray-500" aria-live="polite">
               {proposal
                 ? cleaned
-                  ? `Cleaned into a ${cleaned.label.toLowerCase()} with ${proposal.profile.length} outline points. Dashed green is the clean shape; blue is your stroke.`
-                  : `${proposal.profile.length} outline points kept after simplifying.`
+                  ? `${cleaned.label} · ${proposal.profile.length} points`
+                  : `${proposal.profile.length} points, as drawn`
                 : cleaned
-                  ? `${cleaned.label} locked on — lift the pointer to use it, or keep drawing to change its mind.`
+                  ? `${cleaned.label} · lift to use it`
                   : beautified && !tidySketch
-                    ? `That reads as a ${beautified.label.toLowerCase()}, but Clean up is off, so your exact stroke will be used.`
-                    : "One stroke, one closed outline."}
+                    ? `Reads as a ${beautified.label.toLowerCase()} · as drawn`
+                    : "Draw one closed outline"}
             </p>
           </div>
           {error && <p className="mt-2 text-sm text-amber-700">{error}</p>}
         </div>
         <div className="border-l border-gray-200 p-4">
-          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Proposal</p>
-          <p className="mt-1 text-sm leading-5 text-gray-600">
-            {proposal
-              ? cleaned
-                ? `Read as a ${cleaned.label.toLowerCase()} (${Math.round(cleaned.confidence * 100)}% fit), sized locally from your outline and the current part. No AI call; fix any number before placing it.`
-                : "Sized locally from your outline and the current part. No AI call; fix any number before placing it."
-              : "Draw first. The intention and size are proposed from the outline itself."}
-          </p>
-          <label className="mt-3 flex items-start gap-2 text-sm text-gray-700">
-            <input
-              type="checkbox"
-              className="mt-0.5"
-              checked={tidySketch}
-              onChange={(event) => {
-                setTidySketch(event.target.checked);
-                // Let the label be re-proposed for the outline now in effect.
-                setLabel("");
-              }}
-            />
-            <span>
-              Clean up my sketch
-              <span className="block text-xs leading-4 text-gray-500">Read a wobbly or part-drawn circle, rectangle, or triangle as the clean shape, and complete it. Turn this off to add exactly what you drew.</span>
-            </span>
-          </label>
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Proposal</p>
+            {cleaned ? (
+              <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-700">
+                {cleaned.label} · {Math.round(cleaned.confidence * 100)}%
+              </span>
+            ) : proposal ? (
+              <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-600">As drawn</span>
+            ) : null}
+          </div>
+          <div className="mt-3 grid grid-cols-2 gap-1 rounded-lg bg-slate-100 p-1" role="group" aria-label="Outline mode">
+            {(
+              [
+                [true, "Clean shape"],
+                [false, "As drawn"],
+              ] as const
+            ).map(([value, text]) => (
+              <button
+                key={text}
+                type="button"
+                aria-pressed={tidySketch === value}
+                title={value ? "Use the cleaned, completed shape" : "Use exactly the outline you drew"}
+                onClick={() => {
+                  setTidySketch(value);
+                  // Let the label be re-proposed for the outline now in effect.
+                  setLabel("");
+                }}
+                className={
+                  tidySketch === value
+                    ? "rounded-md bg-white px-2 py-1.5 text-xs font-medium text-slate-900 shadow-sm"
+                    : "rounded-md px-2 py-1.5 text-xs font-medium text-slate-500 hover:text-slate-700"
+                }
+              >
+                {text}
+              </button>
+            ))}
+          </div>
+          {!tidySketch && beautified && (
+            <p className="mt-1.5 text-xs text-slate-500">Reads as a {beautified.label.toLowerCase()}.</p>
+          )}
           <label className="field mt-3">
             <span>Intention</span>
             <input value={label} onChange={(event) => setLabel(event.target.value)} placeholder="Roof, rib, boss…" />
@@ -265,10 +278,7 @@ export function DrawTool({
                 setSize(null);
               }}
             />
-            <span>
-              Start from this sketch only
-              <span className="block text-xs leading-4 text-gray-500">No base part. The sketch becomes the part, held and loaded on its back and front faces.</span>
-            </span>
+            <span>Sketch only, no base part</span>
           </label>
           {!standalone && (
             <label className="field mt-3">
@@ -301,9 +311,7 @@ export function DrawTool({
           <Button type="button" variant="primary" className="mt-4 w-full" disabled={!proposal} onClick={startDraft}>
             <PenLine className="mr-1 h-4 w-4" aria-hidden /> Place this piece
           </Button>
-          <p className="mt-2 text-xs leading-4 text-gray-500">
-            Next you drag it across its face in the viewport, then add it. Preview and Run include it as real geometry.
-          </p>
+          <p className="mt-2 text-xs text-gray-500">Then drag it into place in the viewport.</p>
         </div>
       </div>
     </div>

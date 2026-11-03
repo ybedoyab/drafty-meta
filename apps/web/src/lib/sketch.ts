@@ -110,7 +110,7 @@ export function classifySketch(profile: SketchPoint[]): string {
   return "Custom piece";
 }
 
-export type SketchShapeKind = "ellipse" | "rectangle" | "triangle";
+export type SketchShapeKind = "ellipse" | "rectangle" | "trapezoid" | "arch" | "polygon" | "triangle" | "straightened";
 
 export interface BeautifiedSketch {
   kind: SketchShapeKind;
@@ -133,7 +133,15 @@ const ELLIPSE_MAX_RMS_ERROR = 0.15;
 export function beautifySketch(raw: RawPoint[]): BeautifiedSketch | null {
   const literal = closeSketch(raw);
   if (!literal) return null;
-  return fitEllipse(raw) ?? fitRectangle(literal) ?? fitTriangle(literal);
+  return (
+    fitRectangle(literal) ??
+    fitTrapezoid(literal) ??
+    fitArch(literal) ??
+    fitRegularPolygon(literal) ??
+    fitEllipse(raw) ??
+    fitTriangle(literal) ??
+    fitStraightened(literal)
+  );
 }
 
 /**
@@ -249,6 +257,171 @@ function fitRectangle(profile: SketchPoint[]): BeautifiedSketch | null {
   );
   if (!onEdge) return null;
   return { kind: "rectangle", label: "Block", profile: boxCorners, confidence: 0.9 };
+}
+
+function cornerPoints(profile: SketchPoint[]): SketchPoint[] {
+  return cornerIndices(profile).map((index) => profile[index]);
+}
+
+function segmentDistance(point: SketchPoint, start: SketchPoint, end: SketchPoint): number {
+  const dx = end.u - start.u;
+  const dy = end.v - start.v;
+  const length = Math.hypot(dx, dy);
+  if (length === 0) return Math.hypot(point.u - start.u, point.v - start.v);
+  return Math.abs(dy * point.u - dx * point.v + end.u * start.v - end.v * start.u) / length;
+}
+
+/** True when every point hugs one of the straight segments between corners. */
+function nearSegments(points: SketchPoint[], corners: SketchPoint[], tolerance: number): boolean {
+  return points.every((point) =>
+    corners.some(
+      (corner, index) => segmentDistance(point, corner, corners[(index + 1) % corners.length]) <= tolerance,
+    ),
+  );
+}
+
+function simplifiedProfile(profile: SketchPoint[], tolerance: number): SketchPoint[] {
+  const scaled = profile.map((point) => ({ x: point.u * 1000, y: (1 - point.v) * 1000 }));
+  return simplify(scaled, tolerance * 1000).map((point) => ({
+    u: round4(point.x / 1000),
+    v: round4(1 - point.y / 1000),
+  }));
+}
+
+function fitTrapezoid(profile: SketchPoint[]): BeautifiedSketch | null {
+  const corners = cornerPoints(profile);
+  if (corners.length !== 4) return null;
+  if (!nearSegments(profile, corners, 0.03)) return null;
+  // Top and bottom edges stay level; their widths must actually differ.
+  const top = corners.filter((point) => point.v > 0.5);
+  const bottom = corners.filter((point) => point.v <= 0.5);
+  if (top.length !== 2 || bottom.length !== 2) return null;
+  const widthAt = (pair: SketchPoint[]) => Math.abs(pair[0].u - pair[1].u);
+  const topWidth = widthAt(top);
+  const bottomWidth = widthAt(bottom);
+  if (bottomWidth === 0 || Math.abs(topWidth - bottomWidth) / bottomWidth < 0.15) return null;
+  const snapped = corners.map((point) => ({
+    u: round4(point.u),
+    v: point.v > 0.5 ? Math.max(...top.map((corner) => corner.v)) : Math.min(...bottom.map((corner) => corner.v)),
+  }));
+  return { kind: "trapezoid", label: "Trapezoid block", profile: snapped, confidence: 0.85 };
+}
+
+function fitArch(profile: SketchPoint[]): BeautifiedSketch | null {
+  // Two sharp corners, both at the base where the legs meet it; the top is a
+  // smooth arc. A circle fails this: its only sharp-ish points sit mid-height.
+  const corners = cornerPoints(profile);
+  if (corners.length !== 2 || corners.some((point) => point.v > 0.1)) return null;
+  const hasBase = profile.some((point) => point.v <= 0.05);
+  const leftLeg = profile.filter((point) => point.u <= 0.07);
+  const rightLeg = profile.filter((point) => point.u >= 0.93);
+  if (!hasBase || !leftLeg.length || !rightLeg.length) return null;
+  // The legs end and the arc begins where the sides stop rising vertically.
+  const springV = Math.max(
+    Math.max(...leftLeg.map((point) => point.v)),
+    Math.max(...rightLeg.map((point) => point.v)),
+  );
+  if (springV <= 0.05 || springV >= 0.95) return null;
+  const arcPoints = profile.filter((point) => point.v > springV);
+  if (arcPoints.length < 3) return null;
+  const arcHeight = 1 - springV;
+  const onArc = arcPoints.filter((point) => {
+    const radial = Math.hypot((point.u - 0.5) / 0.5, (point.v - springV) / arcHeight);
+    return Math.abs(radial - 1) <= 0.18;
+  });
+  if (onArc.length / arcPoints.length < 0.8) return null;
+  const snapped: SketchPoint[] = [
+    { u: 0, v: 0 },
+    { u: 1, v: 0 },
+    { u: 1, v: round4(springV) },
+  ];
+  for (let index = 1; index < 12; index += 1) {
+    const angle = (index / 12) * Math.PI;
+    snapped.push({
+      u: round4(0.5 + 0.5 * Math.cos(angle)),
+      v: round4(springV + arcHeight * Math.sin(angle)),
+    });
+  }
+  snapped.push({ u: 0, v: round4(springV) });
+  return { kind: "arch", label: "Arch", profile: snapped, confidence: 0.85 };
+}
+
+const POLYGON_LABELS: Record<number, string> = {
+  5: "Pentagon block",
+  6: "Hexagon block",
+  7: "Heptagon block",
+  8: "Octagon block",
+};
+
+function fitRegularPolygon(profile: SketchPoint[]): BeautifiedSketch | null {
+  // Corners come from an aggressively simplified copy, so a jittery hand does
+  // not invent extra ones along a straight edge.
+  const simplified = simplifiedProfile(profile, 0.02);
+  const corners = cornerPoints(simplified);
+  if (corners.length < 5 || corners.length > 8) return null;
+  // The drawn stroke itself must run straight between the corners. A circle
+  // bulges away from every chord, which is what keeps it a Disc.
+  if (!nearSegments(profile, corners, 0.03)) return null;
+  const edges = corners.map((point, index) => {
+    const next = corners[(index + 1) % corners.length];
+    return Math.hypot(next.u - point.u, next.v - point.v);
+  });
+  const meanEdge = edges.reduce((sum, edge) => sum + edge, 0) / edges.length;
+  if (meanEdge === 0) return null;
+  if (edges.some((edge) => Math.abs(edge - meanEdge) / meanEdge > 0.22)) return null;
+  const centreU = corners.reduce((sum, point) => sum + point.u, 0) / corners.length;
+  const centreV = corners.reduce((sum, point) => sum + point.v, 0) / corners.length;
+  const radiusU = corners.reduce((sum, point) => sum + Math.abs(point.u - centreU), 0) / corners.length;
+  const radiusV = corners.reduce((sum, point) => sum + Math.abs(point.v - centreV), 0) / corners.length;
+  if (radiusU === 0 || radiusV === 0) return null;
+  const startAngle = Math.atan2(
+    (corners[0].v - centreV) / radiusV,
+    (corners[0].u - centreU) / radiusU,
+  );
+  const snapped: SketchPoint[] = corners.map((_, index) => {
+    const angle = startAngle + (index / corners.length) * 2 * Math.PI;
+    return {
+      u: round4(centreU + radiusU * Math.cos(angle)),
+      v: round4(centreV + radiusV * Math.sin(angle)),
+    };
+  });
+  return {
+    kind: "polygon",
+    label: POLYGON_LABELS[corners.length] ?? `${corners.length}-sided block`,
+    profile: snapped,
+    confidence: 0.85,
+  };
+}
+
+/**
+ * Straighten a polygonal outline that is already nearly straight: snap its
+ * corners to the bounding box and to shared rows and columns, so near-right
+ * angles become true ones. Curved outlines are left exactly as drawn.
+ */
+function fitStraightened(profile: SketchPoint[]): BeautifiedSketch | null {
+  const corners = cornerPoints(profile);
+  if (corners.length < 3) return null;
+  if (!nearSegments(profile, corners, 0.03)) return null;
+  const snapBox = (value: number) => (value <= 0.08 ? 0 : value >= 0.92 ? 1 : round4(value));
+  const snapped = corners.map((point) => ({ u: snapBox(point.u), v: snapBox(point.v) }));
+  // Align corners that share a near-vertical or near-horizontal edge.
+  for (let index = 0; index < snapped.length; index += 1) {
+    const current = snapped[index];
+    const next = snapped[(index + 1) % snapped.length];
+    if (Math.abs(current.u - next.u) <= 0.05) {
+      const shared = round4((current.u + next.u) / 2);
+      current.u = shared;
+      next.u = shared;
+    }
+    if (Math.abs(current.v - next.v) <= 0.05) {
+      const shared = round4((current.v + next.v) / 2);
+      current.v = shared;
+      next.v = shared;
+    }
+  }
+  if (new Set(snapped.map((point) => `${point.u},${point.v}`)).size !== snapped.length) return null;
+  if (JSON.stringify(snapped) === JSON.stringify(corners)) return null;
+  return { kind: "straightened", label: "Custom piece", profile: snapped, confidence: 0.8 };
 }
 
 function fitTriangle(profile: SketchPoint[]): BeautifiedSketch | null {
