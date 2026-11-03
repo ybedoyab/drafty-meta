@@ -10,8 +10,8 @@ body,
 
 body {
   margin: 0;
-  background: #f1f5f9;
-  color: #111827;
+  background: rgb(var(--c-page));
+  color: rgb(var(--c-fg-gray-900));
 }
 
 input,
@@ -21,6 +21,15 @@ button {
   font: inherit;
 }
 
+/* Text fields without their own bg class use the theme surface, not the browser's grey
+   dark-mode default. :where() keeps specificity at zero so utility classes still win. */
+@layer base {
+  :where(input:not([type="checkbox"], [type="radio"], [type="range"], [type="color"], [type="file"]), select, textarea) {
+    background-color: rgb(var(--c-surface));
+    color: inherit;
+  }
+}
+
 .field {
   display: flex;
   flex-direction: column;
@@ -28,7 +37,7 @@ button {
 }
 
 .field span {
-  color: #6b7280;
+  color: rgb(var(--c-fg-gray-500));
   font-size: 0.72rem;
   font-weight: 600;
   letter-spacing: 0.04em;
@@ -39,9 +48,9 @@ button {
 .field select,
 .field textarea {
   width: 100%;
-  border: 1px solid #e5e7eb;
-  background: #fff;
-  color: #111827;
+  border: 1px solid rgb(var(--c-fg-gray-200));
+  background: rgb(var(--c-surface));
+  color: rgb(var(--c-fg-gray-900));
   border-radius: 0.5rem;
   padding: 0.45rem 0.6rem;
 }
@@ -49,6 +58,6 @@ button {
 .field input:focus,
 .field select:focus,
 .field textarea:focus {
-  outline: 2px solid #c7d2fe;
-  border-color: #4f46e5;
+  outline: 2px solid rgb(var(--c-fg-blue-200));
+  border-color: rgb(var(--c-fg-blue-800));
 }

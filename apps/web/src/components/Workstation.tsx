@@ -1,8 +1,9 @@
+import { Check, ChevronLeft, ChevronRight, CircleAlert } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useSearchParams } from "react-router-dom";
-import logo from "@/assets/logo.png";
 import { Suspense, useEffect, useMemo, useState } from "react";
 import { Viewport, type CameraView, type Shade } from "@/components/Viewport";
+import { GridControl } from "@/components/GridControl";
 import { Button } from "@/components/ui/button";
 import {
   artifactUrl,
@@ -24,6 +25,7 @@ import {
   type SimulationResult,
 } from "@/lib/api";
 import { turbo } from "@/lib/colormap";
+import { DEFAULT_GRID_STEP_MM, gridStepMeters } from "@/lib/grid";
 import { loadDirection } from "@/lib/markers";
 import {
   SURFACES,
@@ -39,6 +41,7 @@ import {
   type PartKind,
 } from "@/lib/design";
 import { takeStudioSpec } from "@/lib/scenario";
+import { SiteHeader } from "@/components/SiteHeader";
 
 const STAGES = ["queued", "geometry", "meshing", "solving", "postprocessing", "completed"] as const;
 const MATERIALS = [
@@ -48,6 +51,10 @@ const MATERIALS = [
   ["titanium_ti6al4v", "Ti-6Al-4V"],
   ["abs", "ABS"],
 ] as const;
+
+type DesignStepId = "part" | "loads" | "assistant";
+type RunStepId = "run" | "results" | "view" | "optimize";
+type StudioStep = { id: string; label: string; hint: string; status: "done" | "attention" | "todo"; badge?: string };
 
 export function Workstation() {
   const queryClient = useQueryClient();
@@ -85,6 +92,8 @@ export function Workstation() {
   const [chat, setChat] = useState<{ role: "you" | "drafty"; text: string }[]>([]);
   const [imageId, setImageId] = useState<string | null>(null);
   const [wireframe, setWireframe] = useState(false);
+  const [gridVisible, setGridVisible] = useState(true);
+  const [gridStepMm, setGridStepMm] = useState<number>(DEFAULT_GRID_STEP_MM);
   const [shade, setShade] = useState<Shade>("von_mises");
   const [orthographic, setOrthographic] = useState(false);
   const [cameraView, setCameraView] = useState<CameraView>("iso");
@@ -100,6 +109,9 @@ export function Workstation() {
   const [exampleBusy, setExampleBusy] = useState(false);
   const [logOpen, setLogOpen] = useState(false);
   const [stageFull, setStageFull] = useState(false);
+  const [designStep, setDesignStep] = useState<DesignStepId>("part");
+  const [runStep, setRunStep] = useState<RunStepId>("run");
+  const [followRunGuide, setFollowRunGuide] = useState(true);
 
   const health = useQuery({ queryKey: ["health"], queryFn: getHealth, retry: false, refetchInterval: 15000 });
   useEffect(() => {
@@ -261,50 +273,71 @@ export function Workstation() {
     }
     return Math.hypot(form.lengthMm, form.widthMm, form.heightMm) / 2000 || 0.15;
   }, [result, form.lengthMm, form.widthMm, form.heightMm]);
+  const partHalfHeightM = ((form.kind === "cantilever_beam" ? form.heightMm : form.thicknessMm) / 1000) / 2;
   const loadAxis = loadDirection([form.directionX, form.directionY, form.directionZ]).axisLabel;
   const loadLabel =
     form.loadMode === "pressure" ? `Pressure ${form.magnitude} MPa ${loadAxis}` : `${form.magnitude} N ${loadAxis}`;
+  // Left defines the model, right runs and reads it. Each side paginates independently.
+  const designIssues = formIssues(form);
+  const designSteps: StudioStep[] = [
+    { id: "part", label: "Part", hint: "What the part is: shape, size, and material.", status: designIssues.length ? "attention" : "done" },
+    { id: "loads", label: "Loads", hint: "How it is held and loaded, then preview the solid.", status: form.support === form.loadSurface || !form.magnitude ? "attention" : "done" },
+    { id: "assistant", label: "Assistant", hint: "Reference image and design chat. The image is context, not a measurement.", status: imageId || chat.length ? "done" : "todo", badge: chat.length ? String(chat.length) : undefined },
+  ];
+  const runSteps: StudioStep[] = [
+    { id: "run", label: "Run", hint: "Mesh, backend, and starting the solve.", status: current?.status === "completed" ? "done" : current?.status === "failed" || formError ? "attention" : current ? "attention" : "todo" },
+    { id: "results", label: "Results", hint: "What the solve returned, and the files it produced.", status: result || optimization.data ? "done" : "todo" },
+    { id: "view", label: "View", hint: "How the result is drawn in the viewport. It does not change the solve.", status: result ? "done" : "todo" },
+    { id: "optimize", label: "Optimize", hint: "One thickness variable, real solves only.", status: optimization.data ? "done" : "todo" },
+  ];
+  const suggestedRunStep: RunStepId = !current ? "run" : current.active ? "run" : result ? "results" : "run";
+  const activeDesignStep: DesignStepId = designSteps.some((step) => step.id === designStep) ? designStep : "part";
+  const activeRunStep: RunStepId = runSteps.some((step) => step.id === runStep) ? runStep : "run";
+  const designIndex = Math.max(0, designSteps.findIndex((step) => step.id === activeDesignStep));
+  const runIndex = Math.max(0, runSteps.findIndex((step) => step.id === activeRunStep));
+  function goDesign(id: string) { setDesignStep(id as DesignStepId); }
+  function goRun(id: string) { setFollowRunGuide(false); setRunStep(id as RunStepId); }
+  function goDesignRelative(offset: number) { const next = designSteps[designIndex + offset]; if (next) goDesign(next.id); }
+  function goRunRelative(offset: number) { const next = runSteps[runIndex + offset]; if (next) goRun(next.id); }
+  useEffect(() => { if (followRunGuide) setRunStep(suggestedRunStep); }, [followRunGuide, suggestedRunStep]);
 
   return (
     <div
-      className={`grid h-full grid-cols-[360px_minmax(0,1fr)_320px] bg-slate-100 text-gray-900 ${logOpen ? "grid-rows-[64px_minmax(0,1fr)_220px]" : "grid-rows-[64px_minmax(0,1fr)_132px]"}`}
+      className={`grid h-full grid-cols-[360px_minmax(0,1fr)_320px] bg-slate-100 text-gray-900 ${logOpen ? "grid-rows-[auto_minmax(0,1fr)_220px]" : "grid-rows-[auto_minmax(0,1fr)_132px]"}`}
     >
-      <header className="col-span-3 flex items-center justify-between border-b border-gray-200 bg-white px-5 shadow-sm">
-        <div className="flex items-center gap-6">
-          <Link to="/">
-            <img src={logo} alt="Drafty" className="h-9 w-auto" />
-          </Link>
-          <nav className="flex items-center gap-1 text-sm font-medium">
-            <Link to="/" className="rounded-md px-3 py-1.5 text-gray-600 hover:bg-indigo-50 hover:text-indigo-600">
-              Dashboard
-            </Link>
-            <Link to="/projects" className="rounded-md px-3 py-1.5 text-gray-600 hover:bg-indigo-50 hover:text-indigo-600">
-              Projects
-            </Link>
-            <Link to="/scenario/new" className="rounded-md px-3 py-1.5 text-gray-600 hover:bg-indigo-50 hover:text-indigo-600">
-              {scenarioId ? "Back to scenario" : "New Problem"}
-            </Link>
-            <Link to="/studio" className="rounded-md bg-indigo-50 px-3 py-1.5 text-indigo-700">
-              Studio
-            </Link>
-          </nav>
-        </div>
-        <p className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-gray-600">
-          {health.data
-            ? `solver ${health.data.solver.mode} · ${health.data.meta ? "Meta on" : "AI not connected"}`
-            : "solver unreachable · AI not connected"}
-        </p>
-      </header>
+      <SiteHeader
+        className="col-span-3"
+        trailing={
+          <>
+            {scenarioId && (
+              <Link to="/scenario/new" className="rounded-md px-3 py-1.5 text-sm font-medium text-gray-600 hover:bg-blue-50 hover:text-blue-800">
+                Back to scenario
+              </Link>
+            )}
+            <p className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-gray-600">
+              {health.data
+                ? `solver ${health.data.solver.mode} · ${health.data.meta ? "Meta on" : "AI not connected"}`
+                : "solver unreachable · AI not connected"}
+            </p>
+          </>
+        }
+      />
 
-      <aside className="overflow-auto border-r border-gray-200 bg-white p-4">
-        <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-indigo-600">1. Start here</p>
+      <aside className="flex min-h-0 flex-col gap-4 overflow-auto border-r border-gray-200 bg-white p-4">
+        <StepNav steps={designSteps} active={activeDesignStep} label="Design" onSelect={goDesign} />
+        {activeDesignStep === "part" && (
+        <div>
+        <h2 className="text-sm font-semibold">Part</h2>
+        <p className="mt-1 text-sm text-gray-600">{designSteps[0].hint}</p>
+        <div className="mt-3">
+        <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-blue-800">Start here</p>
         <button
           type="button"
           onClick={() => void loadExample()}
           disabled={exampleBusy}
-          className="mb-4 w-full rounded-2xl border border-indigo-100 bg-gradient-to-br from-white to-indigo-50 p-4 text-left shadow-sm transition hover:border-indigo-300 hover:shadow-md disabled:opacity-60"
+          className="mb-4 w-full rounded-2xl border border-blue-100 bg-gradient-to-br from-white to-blue-50 p-4 text-left shadow-sm transition hover:border-blue-300 hover:shadow-md disabled:opacity-60"
         >
-          <p className="text-xs font-semibold uppercase tracking-wide text-indigo-600">Example</p>
+          <p className="text-xs font-semibold uppercase tracking-wide text-blue-800">Example</p>
           <p className="mt-1 text-sm font-semibold text-gray-900">
             {exampleBusy ? "Building the example solid…" : "Load cantilever example"}
           </p>
@@ -312,7 +345,7 @@ export function Workstation() {
             300 × 20 × 12 mm steel beam, fixed at one end, 100 N downward at the free end. No AI key required.
           </p>
         </button>
-        <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-indigo-600">2. Part</p>
+        <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-blue-800">Part details</p>
         <div className="grid grid-cols-2 gap-2">
           <label className="field col-span-2">
             <span>Name</span>
@@ -389,8 +422,17 @@ export function Workstation() {
               ? `${selectedMaterial.name}: E ${formatEngineering(selectedMaterial.youngs_modulus_pa / 1e9, 3)} GPa, nu ${selectedMaterial.poisson_ratio}, density ${selectedMaterial.density_kg_m3} kg/m3, yield ${formatEngineering(selectedMaterial.yield_strength_pa / 1e6, 3)} MPa. ${selectedMaterial.caveat}`
               : "Typical values near 20 °C. Not a certified material certificate."}
           </p>
-          <p className="col-span-2 mt-4 text-xs font-semibold uppercase tracking-wide text-indigo-600">
-            3. Hold and load
+        </div>
+        </div>
+        </div>
+        )}
+        {activeDesignStep === "loads" && (
+        <div>
+        <h2 className="text-sm font-semibold">Loads</h2>
+        <p className="mt-1 text-sm text-gray-600">{designSteps[1].hint}</p>
+        <div className="mt-3 grid grid-cols-2 gap-2">
+          <p className="col-span-2 text-xs font-semibold uppercase tracking-wide text-blue-800">
+            Hold and load
           </p>
           <label className="field">
             <span>Support</span>
@@ -445,7 +487,13 @@ export function Workstation() {
         <p className="mt-3 text-xs leading-5 text-gray-500">
           Enter exact dimensions. A reference image is stored as context and is not measured.
         </p>
-        <label className="field mt-2">
+        </div>
+        )}
+        {activeDesignStep === "assistant" && (
+        <div>
+        <h2 className="text-sm font-semibold">Assistant</h2>
+        <p className="mt-1 text-sm text-gray-600">{designSteps[2].hint}</p>
+        <label className="field mt-3">
           <span>Reference image</span>
           <input
             type="file"
@@ -479,12 +527,15 @@ export function Workstation() {
           <div className="mt-2 max-h-36 space-y-2 overflow-auto text-xs leading-5">
             {chat.map((entry, index) => (
               <p key={`${entry.role}-${index}`}>
-                <span className="font-medium text-indigo-600">{entry.role === "you" ? "You" : "Drafty"}: </span>
+                <span className="font-medium text-blue-800">{entry.role === "you" ? "You" : "Drafty"}: </span>
                 {entry.text}
               </p>
             ))}
           </div>
         </div>
+        </div>
+        )}
+        <StepFooter steps={designSteps} activeIndex={designIndex} label="Design" onRelative={goDesignRelative} onSelect={goDesign} />
       </aside>
 
       <main className={stageFull ? "fixed inset-0 z-30 min-h-0 bg-slate-100" : "relative min-h-0 bg-slate-100"}>
@@ -505,6 +556,9 @@ export function Workstation() {
             direction={[form.directionX, form.directionY, form.directionZ]}
             loadLabel={loadLabel}
             fitRadius={fitRadius}
+            gridVisible={gridVisible}
+            gridStepM={gridStepMeters(gridStepMm)}
+            floorOffset={partHalfHeightM}
           />
         </Suspense>
         <div className="pointer-events-none absolute left-3 top-3 rounded-lg border border-gray-200 bg-white/90 px-3 py-1 text-xs text-gray-500 shadow-sm">
@@ -513,6 +567,12 @@ export function Workstation() {
             : "CAD preview · meters"}
         </div>
         <div className="absolute left-3 top-12 flex flex-wrap gap-1">
+          <GridControl
+            visible={gridVisible}
+            stepMm={gridStepMm}
+            onVisibleChange={setGridVisible}
+            onStepChange={setGridStepMm}
+          />
           {(["iso", "front", "top", "right"] as const).map((view) => (
             <button
               key={view}
@@ -543,7 +603,7 @@ export function Workstation() {
         </div>
         {!previewUrl && !result && !activeId && (
           <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-            <div className="rounded-2xl border border-indigo-100 bg-white px-8 py-6 text-center shadow-lg">
+            <div className="rounded-2xl border border-blue-100 bg-white px-8 py-6 text-center shadow-lg">
               <p className="text-lg font-semibold text-gray-900">Ready to generate?</p>
               <p className="mt-1 text-sm text-gray-500">Load the example or enter dimensions, then preview the solid.</p>
             </div>
@@ -571,8 +631,12 @@ export function Workstation() {
         )}
       </main>
 
-      <aside className="overflow-auto border-l border-gray-200 bg-white p-4 text-sm">
-        <h2 className="text-xs font-semibold uppercase tracking-wider text-indigo-600">4. Run and read</h2>
+      <aside className="flex min-h-0 flex-col gap-4 overflow-auto border-l border-gray-200 bg-white p-4 text-sm">
+        <StepNav steps={runSteps} active={activeRunStep} label="Run" suggested={suggestedRunStep} following={followRunGuide} onSelect={goRun} onResumeGuide={() => { setFollowRunGuide(true); setRunStep(suggestedRunStep); }} />
+        {activeRunStep === "run" && (
+        <div>
+        <h2 className="text-sm font-semibold">Run</h2>
+        <p className="mt-1 text-sm text-gray-600">{runSteps[0].hint}</p>
         <div className="mt-2 grid grid-cols-2 gap-2">
           <NumberField label="Mesh mm" value={form.meshMm} onChange={(meshMm) => setForm({ ...form, meshMm })} />
           <label className="field">
@@ -643,6 +707,13 @@ export function Workstation() {
         </ol>
         {current?.status === "failed" && <p className="mt-2 text-xs leading-5 text-red-600">{current.error}</p>}
         {current?.status === "cancelled" && <p className="mt-2 text-xs text-gray-500">Cancelled.</p>}
+        </div>
+        )}
+        {activeRunStep === "results" && (
+        <div>
+        <h2 className="text-sm font-semibold">Results</h2>
+        <p className="mt-1 text-sm text-gray-600">{runSteps[1].hint}</p>
+        {!result && !optimization.data && <p className="mt-3 text-xs leading-5 text-gray-500">No result yet. Run an analysis first, then come back here.</p>}
         {result && <ResultReadout result={result} />}
         {optimization.data && (
           <div className="mt-3 space-y-1 text-xs">
@@ -661,6 +732,12 @@ export function Workstation() {
             {optimization.data.message && <p className="text-amber-700">{optimization.data.message}</p>}
           </div>
         )}
+        </div>
+        )}
+        {activeRunStep === "view" && (
+        <div>
+        <h2 className="text-sm font-semibold">View</h2>
+        <p className="mt-1 text-sm text-gray-600">{runSteps[2].hint}</p>
         <label className="mt-3 flex items-center gap-2 text-xs text-gray-500">
           <input type="checkbox" checked={wireframe} onChange={(event) => setWireframe(event.target.checked)} />
           Wireframe
@@ -684,7 +761,7 @@ export function Workstation() {
           </label>
         </div>
         <p className="mt-1 text-[11px] leading-4 text-gray-500">
-          The blue marker is the fixed support on the selected bounding-box face. The red arrow starts at the load-face
+          The orange marker is the fixed support on the selected bounding-box face. The red arrow starts at the load-face
           centroid and points in the applied-force direction. It is not the displacement. These six faces are presets,
           not picked B-rep faces.
         </p>
@@ -712,7 +789,13 @@ export function Workstation() {
             Amplify view
           </Button>
         </div>
-        <div className="mt-4 border-t border-gray-200 pt-3">
+        </div>
+        )}
+        {activeRunStep === "optimize" && (
+        <div>
+        <h2 className="text-sm font-semibold">Optimize</h2>
+        <p className="mt-1 text-sm text-gray-600">{runSteps[3].hint}</p>
+        <div className="mt-3 border-t border-gray-200 pt-3">
           <h2 className="text-xs font-semibold uppercase tracking-wider text-gray-500">Thickness study</h2>
           <div className="mt-2 grid grid-cols-2 gap-2">
             <NumberField label="Lower mm" value={lowerMm} onChange={setLowerMm} />
@@ -727,13 +810,15 @@ export function Workstation() {
             Optimize with FEM
           </Button>
         </div>
-        {activeId && current?.status === "completed" && (
+        </div>
+        )}
+        {activeRunStep === "results" && activeId && current?.status === "completed" && (
           <div className="mt-3 flex flex-col gap-1 text-xs">
             {["model.step", "preview.glb", "results.glb", "model.inp", "model.dat", "model.frd", "model.vtu", "results.json", "report.json", "report.pdf"].map(
               (name) => (
                 <a
                   key={name}
-                  className="text-indigo-600 hover:underline"
+                  className="text-blue-800 hover:underline"
                   href={artifactUrl(activeId, name)}
                   onClick={(event) => {
                     event.preventDefault();
@@ -746,13 +831,14 @@ export function Workstation() {
             )}
           </div>
         )}
+        <StepFooter steps={runSteps} activeIndex={runIndex} label="Run" onRelative={goRunRelative} onSelect={goRun} />
       </aside>
 
       <section className={`col-span-3 border-t border-gray-200 bg-white ${logOpen ? "grid grid-cols-[minmax(0,1fr)_360px]" : ""}`}>
         <div className="overflow-auto">
           <div className="flex items-center justify-between px-3 py-1">
             <p className="text-xs font-medium text-gray-500">Jobs</p>
-            <button type="button" className="text-xs text-indigo-700" onClick={() => setLogOpen((value) => !value)}>
+            <button type="button" className="text-xs text-blue-800" onClick={() => setLogOpen((value) => !value)}>
               {logOpen ? "Hide solver log" : "Solver log"}
             </button>
           </div>
@@ -771,7 +857,7 @@ export function Workstation() {
               {(jobs.data ?? []).map((item) => (
                 <tr
                   key={item.id}
-                  className={item.id === activeId ? "bg-indigo-50" : "hover:bg-slate-50"}
+                  className={item.id === activeId ? "bg-blue-50" : "hover:bg-slate-50"}
                   onClick={() => setActiveId(item.id)}
                 >
                   <td className="cursor-pointer px-3 py-1">{item.id.slice(0, 8)}</td>
@@ -799,6 +885,41 @@ export function Workstation() {
   );
 }
 
+function StepNav({ steps, active, label, suggested, following, onSelect, onResumeGuide }: { steps: StudioStep[]; active: string; label: string; suggested?: string; following?: boolean; onSelect: (id: string) => void; onResumeGuide?: () => void }) {
+  const suggestedLabel = steps.find((step) => step.id === suggested)?.label ?? suggested;
+  return (
+    <section className="sticky top-0 z-10 rounded-lg border border-gray-200 bg-white py-1" aria-label={label}>
+      <nav className={steps.length > 3 ? "grid grid-cols-2 gap-1.5" : "flex gap-1.5"} aria-label={`${label} steps`}>
+        {steps.map((step, index) => {
+          const isActive = step.id === active;
+          return (
+            <button key={step.id} type="button" onClick={() => onSelect(step.id)} aria-current={isActive ? "step" : undefined} className={isActive ? "inline-flex min-w-0 flex-1 items-center justify-center gap-1 rounded-full bg-slate-900 px-1.5 py-1.5 text-xs font-medium text-white" : "inline-flex min-w-0 flex-1 items-center justify-center gap-1 rounded-full border border-slate-200 bg-white px-1.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"}>
+              {step.status === "done" ? <Check className="h-3.5 w-3.5 shrink-0" aria-hidden /> : step.status === "attention" ? <CircleAlert className="h-3.5 w-3.5 shrink-0" aria-hidden /> : <span className="shrink-0 text-[10px] text-slate-400" aria-hidden>{index + 1}</span>}
+              <span className="truncate">{step.label}</span>
+              {step.badge && <span className={isActive ? "shrink-0 rounded-full bg-white/20 px-1.5 text-[10px]" : "shrink-0 rounded-full bg-slate-100 px-1.5 text-[10px] text-slate-600"}>{step.badge}</span>}
+              {suggested && step.id === suggested && !isActive && <span className="text-[10px] font-normal text-slate-400">suggested</span>}
+            </button>
+          );
+        })}
+      </nav>
+      {onResumeGuide && !following && suggested !== active && (
+        <button type="button" onClick={onResumeGuide} className="mt-3 text-xs font-medium text-slate-800 underline">Go to suggested step: {suggestedLabel}</button>
+      )}
+    </section>
+  );
+}
+function StepFooter({ steps, activeIndex, label, onRelative, onSelect }: { steps: StudioStep[]; activeIndex: number; label: string; onRelative: (offset: number) => void; onSelect: (id: string) => void }) {
+  const next = steps[activeIndex + 1];
+  const prev = steps[activeIndex - 1];
+  if (!prev && !next) return null;
+  return (
+    <nav className="sticky bottom-0 z-10 mt-auto flex items-center gap-2 rounded-lg border border-slate-200 bg-white p-2" aria-label={`${label} pagination`}>
+      <Button type="button" className="min-w-0 flex-1 px-2 text-xs" disabled={!prev} onClick={() => onRelative(-1)}><ChevronLeft className="mr-1 h-4 w-4 shrink-0" aria-hidden /><span className="truncate">{prev ? prev.label : "Back"}</span></Button>
+      <span className="shrink-0 text-xs text-slate-500">{activeIndex + 1} / {steps.length}</span>
+      {next ? <Button type="button" variant="primary" className="min-w-0 flex-1 px-2 text-xs" onClick={() => onSelect(next.id)}><span className="truncate">Next: {next.label}</span><ChevronRight className="ml-1 h-4 w-4 shrink-0" aria-hidden /></Button> : <Button type="button" disabled className="min-w-0 flex-1 px-2 text-xs"><span className="truncate">Last step</span></Button>}
+    </nav>
+  );
+}
 function ResultReadout({ result }: { result: SimulationResult }) {
   const benchmark = result.benchmark;
   return (
@@ -888,7 +1009,7 @@ function stageClass(stage: string, job: Job | undefined) {
     "completed",
   ];
   if (!job) return "text-gray-400";
-  if (job.status === stage) return "font-medium text-indigo-600";
+  if (job.status === stage) return "font-medium text-blue-800";
   const current = order.indexOf(job.status);
   const index = order.indexOf(stage);
   if (current >= 0 && index < current) return "text-gray-900";

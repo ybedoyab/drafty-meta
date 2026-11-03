@@ -144,6 +144,19 @@ async function errorMessage(response: Response) {
 
 export const getHealth = () => api<Health>("/api/v1/health");
 
+export interface MetaModelsResponse {
+  models: import("./scenario").MetaModel[];
+  default_model: string;
+  configured: boolean;
+}
+
+export const getModels = () => api<MetaModelsResponse>("/api/v1/models");
+
+export const getParts = async () => {
+  const body = await api<{ parts: import("./scenario").PartSummary[] }>("/api/v1/parts");
+  return body.parts;
+};
+
 export interface ScenarioSummary {
   id: string;
   name: string;
@@ -305,6 +318,7 @@ export interface ScenarioSession {
   workflow?: string;
   engineering?: {
     domain: string;
+    requested_part?: string;
     physical_system: string;
     missing: string[];
     suitable_methods: string[];
@@ -316,6 +330,15 @@ export interface ScenarioSession {
   tool_trace?: { tool: string; status: string; detail: string; authorization?: string; output?: Record<string, unknown> }[];
   jobs?: { id: string; kind: string }[];
   studio_spec?: Record<string, unknown> | null;
+  part_catalog?: import("./scenario").PartCatalogView;
+  geometry_spec?: {
+    kind: string;
+    preset: string;
+    volume_m3: number;
+    exports: string[];
+    profile: { name: string; points: { height_m: number; radius_m: number }[] };
+  } | null;
+  rejected_claims?: { name: string; statement: string; reason: string; numbers?: string[] }[];
   studio_approval?: string;
   session_usage?: { input_tokens: number; output_tokens: number; requests: number };
   segmentation?: {
@@ -366,6 +389,12 @@ export interface BeamAnalysis {
 }
 
 export const createScenario = () => api<ScenarioSession>("/api/v1/scenarios", { method: "POST" });
+
+export const renameScenario = (id: string, name: string) =>
+  api<ScenarioSession>(`/api/v1/scenarios/${id}/rename`, { method: "POST", body: JSON.stringify({ name }) });
+
+export const deleteScenario = (id: string) =>
+  api<{ id: string; deleted: boolean; name: string }>(`/api/v1/scenarios/${id}`, { method: "DELETE" });
 
 export const loadDemo = (
   kind: "classroom" | "bracket",
@@ -419,6 +448,21 @@ export async function downloadScenarioReport(id: string) {
   const anchor = document.createElement("a");
   anchor.href = url;
   anchor.download = `drafty-beam-${id}.json`;
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
+
+/** A blob URL for one server-built geometry file: preview.glb, model.step, or model.stl. */
+export async function scenarioGeometryUrl(id: string, name: string) {
+  const response = await request(`/api/v1/scenarios/${id}/geometry/${name}`, undefined, false);
+  return URL.createObjectURL(await response.blob());
+}
+
+export async function downloadScenarioGeometry(id: string, name: string, filename: string) {
+  const url = await scenarioGeometryUrl(id, name);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
   anchor.click();
   URL.revokeObjectURL(url);
 }

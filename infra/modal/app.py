@@ -243,3 +243,19 @@ def generate_preview(spec: dict) -> bytes:
     if not data or len(digest) != 64:
         raise ValueError("The preview was empty.")
     return data
+
+
+@app.function(image=image, cpu=2.0, memory=4096, timeout=180, max_containers=1)
+def generate_revolved(profile: dict) -> dict[str, bytes]:
+    import tempfile
+
+    from drafty_engineering.cad import export_revolved
+    from drafty_engineering.spec import RevolvedProfile
+
+    parsed = RevolvedProfile.model_validate(profile)
+    with tempfile.TemporaryDirectory() as temporary:
+        paths = export_revolved(parsed, Path(temporary))
+        files = {name: path.read_bytes() for name, path in paths.items()}
+    if any(not data for data in files.values()):
+        raise ValueError("A geometry file was empty.")
+    return files

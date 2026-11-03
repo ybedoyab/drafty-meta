@@ -201,6 +201,47 @@ def test_prose_around_json_does_not_drop_the_reply():
     assert result["phase"] == "asking"
 
 
+def test_switching_models_starts_a_new_meta_conversation():
+    from drafty_ai.scenario_agent import advance_scenario, blank_inputs
+
+    seen: list[dict] = []
+
+    def responder(**kwargs):
+        seen.append(kwargs)
+        model = "muse-wonder-1.0" if len(seen) > 1 else "muse-spark-1.3"
+        return {
+            "id": f"resp_{len(seen)}",
+            "model": model,
+            "text": '{"message": "Need the span.", "questions": ["What is the span?"], "observations": []}',
+            "citations": [],
+            "usage": {"output_tokens": 5},
+        }
+
+    state = {"inputs": blank_inputs(), "messages": [], "evidence": []}
+    first = advance_scenario(state, "classroom floor", responder=responder, model="muse-spark-1.3")
+    assert first["model"] == "muse-spark-1.3"
+    switched = advance_scenario(first, "Use the stronger model.", responder=responder, model="muse-wonder-1.0")
+    # The Wonder turn must not chain onto Spark's response id.
+    assert seen[1]["previous_response_id"] is None
+    assert switched["model"] == "muse-wonder-1.0"
+    assert switched["previous_response_id"] == "resp_2"
+    assert "Switched to muse-wonder-1.0" in switched["messages"][-1]["text"]
+    # Staying on Wonder keeps chaining normally.
+    follow = advance_scenario(switched, "What did you find?", responder=responder, model="muse-wonder-1.0")
+    assert seen[2]["previous_response_id"] == "resp_2"
+    assert follow["model"] == "muse-wonder-1.0"
+
+
+def test_model_catalog_lists_spark_then_wonder():
+    from drafty_ai.client import ALLOWED_MODELS, model_catalog
+
+    catalog = model_catalog()
+    assert [entry["id"] for entry in catalog] == ["muse-spark-1.3", "muse-wonder-1.0"]
+    assert catalog[0]["default"] is True
+    assert {entry["id"] for entry in catalog} == ALLOWED_MODELS
+    assert all("key" not in entry for entry in catalog)
+
+
 def test_a_research_budget_blocks_another_model_call():
     from drafty_ai.scenario_agent import advance_scenario, blank_inputs
 

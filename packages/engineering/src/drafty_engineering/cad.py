@@ -8,7 +8,9 @@ import trimesh
 
 from drafty_engineering.errors import GeometryError
 from drafty_engineering.geometry_math import envelope
-from drafty_engineering.spec import DesignSpec, hole_centers
+from drafty_engineering.spec import DesignSpec, RevolvedProfile, hole_centers
+
+REVOLVED_EXPORTS = ("model.step", "model.stl", "preview.glb")
 
 
 def build_solid(spec: DesignSpec) -> cq.Workplane:
@@ -54,9 +56,60 @@ def solid_volume(solid: cq.Workplane) -> float:
     return float(solid.val().Volume())
 
 
-def export_step(solid: cq.Workplane, path: Path) -> None:
+def build_revolved(profile: RevolvedProfile) -> cq.Workplane:
+    """Spin the closed (radius, height) outline a full turn around Z."""
+
+    # On the XZ workplane local x is global X (radius) and local y is global Z (height).
+    return cq.Workplane("XZ").polyline(profile.outline()).close().revolve(360.0, (0.0, 0.0, 0.0), (0.0, 1.0, 0.0))
+
+
+def export_step(solid: cq.Workplane, path: Path, *, mm: bool = False) -> None:
+    """Write STEP. The solver path keeps raw metre values; mm=True writes a file CAD tools size correctly."""
+
     path.parent.mkdir(parents=True, exist_ok=True)
+    if mm:
+        cq.exporters.export(solid, str(path), exportType="STEP", unit="M", outputUnit="MM")
+        return
     cq.exporters.export(solid, str(path))
+
+
+def export_stl(solid: cq.Workplane, path: Path, tolerance_m: float) -> None:
+    """Write a watertight binary STL in millimetres, the unit slicers assume."""
+
+    # OCC leaves a degenerate sliver where a revolved profile meets the axis; merging and
+    # dropping zero-area faces closes it.
+    vertices, faces = solid.val().tessellate(max(tolerance_m, 1e-6), 0.2)
+    points = np.array([[vertex.x, vertex.y, vertex.z] for vertex in vertices], dtype=float) * 1000.0
+    mesh = trimesh.Trimesh(vertices=points, faces=np.array(faces, dtype=np.int64), process=True)
+    mesh.merge_vertices(digits_vertex=6)
+    mesh.update_faces(mesh.nondegenerate_faces())
+    mesh.remove_unreferenced_vertices()
+    trimesh.repair.fix_normals(mesh)
+    if not mesh.is_watertight:
+        raise GeometryError("The STL mesh is not watertight. No STL was written.")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    mesh.export(path, file_type="stl")
+
+
+def export_revolved(profile: RevolvedProfile, directory: Path) -> dict[str, Path]:
+    """Build the revolved solid, check its volume, and write STEP, STL, and the GLB preview."""
+
+    solid = build_revolved(profile)
+    revolved_matches_profile(profile, solid_volume(solid))
+    tolerance = max(profile.height_m / 500.0, 1e-5)
+    paths = {name: directory / name for name in REVOLVED_EXPORTS}
+    export_step(solid, paths["model.step"], mm=True)
+    export_stl(solid, paths["model.stl"], tolerance)
+    export_preview_glb(solid, paths["preview.glb"], tolerance)
+    return paths
+
+
+def revolved_matches_profile(profile: RevolvedProfile, volume_m3: float) -> None:
+    expected = profile.volume_m3()
+    if expected <= 0 or abs(volume_m3 - expected) / expected > 1e-3:
+        raise GeometryError(
+            f"Revolved volume {volume_m3:.6e} m^3 does not match the profile volume {expected:.6e} m^3."
+        )
 
 
 def export_preview_glb(solid: cq.Workplane, path: Path, tolerance_m: float) -> None:

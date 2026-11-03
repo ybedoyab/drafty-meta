@@ -2,20 +2,25 @@
 
 import hashlib
 import json
+import math
+import shutil
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, RedirectResponse
-from pydantic import BaseModel, Field
+from fastapi.responses import FileResponse, RedirectResponse, Response
+from pydantic import BaseModel, Field, ValidationError
 
-from drafty_ai.client import configured
+from drafty_ai.client import ALLOWED_MODELS, DEFAULT_MODEL, configured, model_catalog
 from drafty_ai.scenario_agent import advance_scenario, blank_inputs
 from drafty_api.auth import current_access_token, current_owner
 from drafty_api.images import inspect_image
 from drafty_api.settings import settings
 from drafty_api.storage import (
+    delete_private_object,
+    delete_remote_scenario,
     download_private_object,
     fetch_scenario,
     list_remote_scenarios,
@@ -23,10 +28,13 @@ from drafty_api.storage import (
     signed_object_url,
     upload_private_object,
 )
+from drafty_engineering.artifacts import MAX_ARTIFACT_BYTES
 from drafty_engineering.beam_fem import analyze_simply_supported_udl
+from drafty_engineering.catalog import PARTS, catalog_view, get_part, scenario_parts
 from drafty_engineering.demos import bracket_record, classroom_record
 from drafty_engineering.plan import build_scenario, evaluate_bracket, proposed_bracket_spec, workflow_stage
 from drafty_engineering.scenario import classroom_kwargs, evaluate_classroom
+from drafty_engineering.spec import RevolvedProfile
 
 router = APIRouter()
 MAX_IMAGES = 8
@@ -34,34 +42,48 @@ MAX_IMAGE_BYTES = 8 * 1024 * 1024
 MAX_VISION_BYTES = 4 * 1024 * 1024
 ROLES = {"context", "drawing", "photo", "screenshot"}
 EXTENSIONS = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp"}
-
-
-class ScenarioInputs(BaseModel):
-    jurisdiction: str = ""
-    span_m: float | None = None
-    tributary_width_m: float | None = None
-    dead_n_per_m2: float | None = None
-    live_n_per_m2: float | None = None
-    beam_self_weight_n_per_m: float | None = None
-    depth_m: float | None = None
-    flange_width_m: float | None = None
-    flange_thickness_m: float | None = None
-    web_thickness_m: float | None = None
-    student_count: int | None = None
-    supports: str = ""
+GEOMETRY_FILES = {"preview.glb": "model/gltf-binary", "model.step": "model/step", "model.stl": "model/stl"}
 
 
 class TurnBody(BaseModel):
     message: str = ""
-    inputs: ScenarioInputs = Field(default_factory=ScenarioInputs)
+    inputs: dict[str, Any] = Field(default_factory=dict)
     model: str | None = None
+
+
+class RenameBody(BaseModel):
+    name: str = ""
 
 
 class AnalyzeBody(BaseModel):
     method: str = "euler-bernoulli"
     elements: int = Field(default=16, ge=2, le=64)
     compare: bool = False
-    inputs: ScenarioInputs = Field(default_factory=ScenarioInputs)
+    inputs: dict[str, Any] = Field(default_factory=dict)
+
+
+def clean_inputs(raw: dict[str, Any]) -> dict:
+    """Keep only inputs the registry lists, typed as the registry says. Faces use their own route."""
+
+    fields = {item.name: item for part in scenario_parts() for item in part.inputs}
+    cleaned: dict = {}
+    for key, value in raw.items():
+        field = fields.get(key)
+        if field is None or field.kind == "face":
+            continue
+        if field.kind == "number":
+            if value is None:
+                cleaned[key] = None
+                continue
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+                raise HTTPException(status_code=422, detail=f"{field.label} must be a finite number in {field.unit}.")
+            cleaned[key] = float(value)
+            continue
+        text = "" if value is None else str(value).strip()[:200]
+        if field.kind == "choice" and text and text not in field.choices:
+            raise HTTPException(status_code=422, detail=f"{field.label} must be one of {', '.join(field.choices)}.")
+        cleaned[key] = text
+    return cleaned
 
 
 def scenario_dir(scenario_id: str) -> Path:
@@ -126,7 +148,23 @@ def _write(session: dict, snapshot: bool = False, mirror: bool = True) -> None:
 def _public(session: dict) -> dict:
     shown = dict(session)
     shown.pop("owner_id", None)
+    inputs = shown.get("inputs") or {}
+    shown["part_catalog"] = catalog_view(inputs.get("physical_system"), inputs.get("requested_part"))
     return shown
+
+
+@router.get("/api/v1/models")
+def list_models() -> dict:
+    """Meta chat models the scenario assistant can switch between. No secret is returned."""
+
+    return {"models": model_catalog(), "default_model": DEFAULT_MODEL, "configured": configured()}
+
+
+@router.get("/api/v1/parts")
+def list_parts() -> dict:
+    """The registry of parts Drafty can build, with the inputs each one needs."""
+
+    return {"parts": [part.public() for part in PARTS.values()]}
 
 
 @router.get("/api/v1/scenarios")
@@ -309,10 +347,66 @@ def get_scenario(scenario_id: str, request: Request) -> dict:
     return _public(read_scenario(scenario_id, current_owner(request)))
 
 
+@router.delete("/api/v1/scenarios/{scenario_id}")
+def delete_scenario(scenario_id: str, request: Request) -> dict:
+    """Delete a scenario the caller owns, with explicit cleanup of linked resources.
+
+    Deletion policy (idempotent and retryable):
+    - Delete: mirrored scenario row; private evidence objects under evidence/{scenario_id}/;
+      owned remote jobs for this scenario (results + artifact metadata cascade); private FEM
+      storage under {job_id}/; local job directories; local scenario directory.
+    - Cancel: active Modal function calls for those owned jobs.
+    - Retain: shared content-addressed geometry under geometry/{digest}/ (never removed here).
+
+    Owned job/evidence cleanup runs before the scenario row is removed so a partial failure
+    can be retried while the scenario still exists. Missing objects and already-deleted jobs
+    count as success.
+    """
+
+    owner = current_owner(request)
+    session = read_scenario(scenario_id, owner)
+    cleanup = _cleanup_scenario_resources(session, owner)
+    if cleanup.get("errors"):
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "message": "Scenario cleanup was incomplete. Retry the delete.",
+                "cleanup": cleanup,
+            },
+        )
+    removed_remote = delete_remote_scenario(scenario_id, current_access_token())
+    if settings.production and removed_remote is not True:
+        raise HTTPException(status_code=503, detail="The scenario was not deleted.")
+    shutil.rmtree(scenario_dir(scenario_id), ignore_errors=True)
+    return {
+        "id": scenario_id,
+        "deleted": True,
+        "name": session.get("name") or "Untitled",
+        "cleanup": cleanup,
+    }
+
+
+@router.post("/api/v1/scenarios/{scenario_id}/rename")
+def rename_scenario(scenario_id: str, body: RenameBody, request: Request) -> dict:
+    """Rename a scenario the caller owns. The name is a label only."""
+
+    session = read_scenario(scenario_id, current_owner(request))
+    name = body.name.strip()[:120]
+    if not name:
+        raise HTTPException(status_code=422, detail="The name must not be empty.")
+    session["name"] = name
+    session["updated_at"] = datetime.now(UTC).isoformat()
+    _write(session)
+    return _public(session)
+
+
 @router.post("/api/v1/scenarios/{scenario_id}/turn")
 def scenario_turn(scenario_id: str, body: TurnBody, request: Request) -> dict:
+    if body.model is not None and body.model not in ALLOWED_MODELS:
+        allowed = ", ".join(sorted(ALLOWED_MODELS))
+        raise HTTPException(status_code=422, detail=f"Model '{body.model}' is not available. Choose one of: {allowed}.")
     session = read_scenario(scenario_id, current_owner(request))
-    merged = _merge_inputs(session, body.inputs.model_dump())
+    merged = _merge_inputs(session, clean_inputs(body.inputs))
     urls, withheld = _vision_urls(session) if configured() else ([], False)
     updated = advance_scenario(
         {**session, "inputs": merged},
@@ -452,6 +546,115 @@ def attach_job(scenario_id: str, owner_id: str, job_id: str, kind: str) -> None:
     _write(session)
 
 
+def assert_scenario_allows_solver(session: dict) -> None:
+    """Geometry-only and unresolved parts must not start CalculiX or other solvers."""
+
+    inputs = session.get("inputs") or {}
+    system = str(inputs.get("physical_system") or "")
+    part = get_part(system)
+    if part is not None and (part.domain == "geometry" or part.analysis == ("none",)):
+        raise HTTPException(
+            status_code=422,
+            detail="This scenario is geometry only. No structural solver can be started for it.",
+        )
+
+
+def _cleanup_scenario_resources(session: dict, owner_id: str) -> dict:
+    """Cancel Modal, purge owned remote jobs/FEM files, drop local dirs, delete evidence.
+
+    Shared geometry/ cache entries are explicitly retained. Partial failures are listed in
+    ``errors`` so the caller can retry without treating missing objects as failure.
+    """
+
+    from drafty_api.jobs import job_dir, request_cancel
+    from drafty_api.remote import list_remote_jobs_for_scenario, purge_remote_job
+
+    errors: list[str] = []
+    evidence_removed = 0
+    for item in session.get("evidence") or []:
+        media = item.get("media_type")
+        ext = EXTENSIONS.get(str(media or ""))
+        if not ext:
+            continue
+        path = f"evidence/{session['id']}/{item['id']}{ext}"
+        if delete_private_object(path):
+            evidence_removed += 1
+        elif settings.supabase_configured:
+            errors.append(f"evidence:{path}")
+
+    job_ids: list[str] = []
+    seen: set[str] = set()
+    for entry in session.get("jobs") or []:
+        job_id = str(entry.get("id") or "")
+        if job_id and job_id not in seen:
+            seen.add(job_id)
+            job_ids.append(job_id)
+    try:
+        for remote_job in list_remote_jobs_for_scenario(str(session["id"]), owner_id):
+            job_id = str(remote_job.get("id") or "")
+            if job_id and job_id not in seen:
+                seen.add(job_id)
+                job_ids.append(job_id)
+    except Exception as exc:
+        errors.append(f"list_jobs:{type(exc).__name__}")
+
+    jobs_cancelled = 0
+    jobs_removed = 0
+    remote_jobs_purged = 0
+    storage_removed = 0
+    for job_id in job_ids:
+        try:
+            request_cancel(job_id, owner_id)
+            jobs_cancelled += 1
+        except HTTPException:
+            pass
+        except Exception as exc:
+            errors.append(f"cancel:{job_id}:{type(exc).__name__}")
+        try:
+            report = purge_remote_job(job_id, owner_id)
+            if report.get("cancelled"):
+                jobs_cancelled += 1
+            storage_removed += int(report.get("storage_removed") or 0)
+            if report.get("row_deleted"):
+                remote_jobs_purged += 1
+            if report.get("retryable") and not report.get("row_deleted"):
+                errors.append(f"purge:{job_id}:retryable")
+            for item in report.get("errors") or []:
+                # Geometry refusals must never block scenario deletion; they are policy.
+                if str(item).startswith("refused:"):
+                    continue
+                errors.append(f"purge:{job_id}:{item}")
+        except Exception as exc:
+            errors.append(f"purge:{job_id}:{type(exc).__name__}")
+        try:
+            shutil.rmtree(job_dir(job_id), ignore_errors=True)
+            jobs_removed += 1
+        except Exception as exc:
+            errors.append(f"local_job:{job_id}:{type(exc).__name__}")
+
+    return {
+        "evidence_objects": evidence_removed,
+        "jobs_cancelled": jobs_cancelled,
+        "jobs_removed": jobs_removed,
+        "remote_jobs_purged": remote_jobs_purged,
+        "fem_storage_removed": storage_removed,
+        "geometry_cache": "retained",
+        "policy": {
+            "deleted": [
+                "evidence_objects",
+                "owned_jobs",
+                "results",
+                "artifact_metadata",
+                "private_fem_files",
+                "local_job_dirs",
+            ],
+            "cancelled": ["active_modal_calls"],
+            "retained": ["shared_geometry_cache"],
+        },
+        "errors": errors,
+    }
+
+
 @router.post("/api/v1/scenarios/{scenario_id}/reject")
 def reject_model(scenario_id: str, request: Request) -> dict:
     session = read_scenario(scenario_id, current_owner(request))
@@ -530,7 +733,22 @@ def analyze_scenario(scenario_id: str, body: AnalyzeBody, request: Request) -> d
         )
     if body.compare and not session.get("analysis"):
         raise HTTPException(status_code=422, detail="Run the confirmed beam before comparing an edit.")
-    merged = _merge_inputs(session, body.inputs.model_dump())
+    merged = _merge_inputs(session, clean_inputs(body.inputs))
+    system = str(merged.get("physical_system") or session.get("inputs", {}).get("physical_system") or "")
+    part = get_part(system)
+    if part is not None and (part.domain == "geometry" or part.analysis == ("none",)):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "This part is geometry only. No structural solver runs for it, "
+                "and beam-element analysis is not available."
+            ),
+        )
+    if system and system != "simply_supported_ibeam":
+        raise HTTPException(
+            status_code=422,
+            detail="Euler-Bernoulli beam elements are only available for the classroom I-beam.",
+        )
     try:
         solved = _beam_record(merged, body.elements)
     except ValueError as exc:
@@ -548,6 +766,58 @@ def analyze_scenario(scenario_id: str, body: AnalyzeBody, request: Request) -> d
     session["updated_at"] = datetime.now(UTC).isoformat()
     _write(session)
     return _public(session)
+
+
+@router.get("/api/v1/scenarios/{scenario_id}/geometry/{name}", response_model=None)
+def scenario_geometry(scenario_id: str, name: str, request: Request) -> FileResponse | Response:
+    """Serve STEP, STL, or GLB from a content-hash cache. No solver runs.
+
+    Authorization is scenario ownership. Identical valid profiles reuse the same immutable
+    digest locally and in private storage; Modal runs only on a cache miss in production.
+    """
+
+    from drafty_api.geometry_cache import load_or_build_geometry, profile_digest, read_local_cache
+
+    owner = current_owner(request)
+    session = read_scenario(scenario_id, owner)
+    media = GEOMETRY_FILES.get(name)
+    if media is None:
+        raise HTTPException(status_code=404, detail="Geometry file not found.")
+    spec = session.get("geometry_spec") or {}
+    if spec.get("kind") != "revolved_profile":
+        raise HTTPException(status_code=404, detail="This scenario has no geometry to export.")
+    try:
+        profile = RevolvedProfile.model_validate(spec.get("profile"))
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail="The stored profile is not valid.") from exc
+    filename = f"{profile.name}{Path(name).suffix}"
+    files, hit = load_or_build_geometry(profile, owner)
+    data = files[name]
+    if len(data) > MAX_ARTIFACT_BYTES:
+        raise HTTPException(status_code=502, detail="Geometry file exceeds the size limit.")
+    digest = profile_digest(profile)
+    headers = {
+        "X-Drafty-Geometry-Digest": digest,
+        "X-Drafty-Geometry-Cache": "hit" if hit else "miss",
+    }
+    if not settings.production and read_local_cache(digest) is not None:
+        from drafty_api.geometry_cache import geometry_dir
+
+        return FileResponse(
+            geometry_dir(digest) / name,
+            media_type=media,
+            filename=filename,
+            headers=headers,
+        )
+    return Response(
+        content=data,
+        media_type=media,
+        headers={
+            **headers,
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Content-Length": str(len(data)),
+        },
+    )
 
 
 @router.get("/api/v1/scenarios/{scenario_id}/report")
@@ -623,13 +893,16 @@ async def add_evidence(
 def remove_evidence(scenario_id: str, evidence_id: str, request: Request) -> dict:
     session = read_scenario(scenario_id, current_owner(request))
     _evidence_id(evidence_id)
-    kept = [item for item in session["evidence"] if item["id"] != evidence_id]
-    if len(kept) == len(session["evidence"]):
+    item = next((entry for entry in session["evidence"] if entry["id"] == evidence_id), None)
+    if item is None:
         raise HTTPException(status_code=404, detail="Image not found.")
     directory = scenario_dir(scenario_id) / "evidence"
     for path in directory.glob(f"{evidence_id}.*"):
         path.unlink(missing_ok=True)
-    session["evidence"] = kept
+    ext = EXTENSIONS.get(str(item.get("media_type") or ""))
+    if ext:
+        delete_private_object(f"evidence/{scenario_id}/{evidence_id}{ext}")
+    session["evidence"] = [entry for entry in session["evidence"] if entry["id"] != evidence_id]
     session["updated_at"] = datetime.now(UTC).isoformat()
     _write(session)
     return _public(session)

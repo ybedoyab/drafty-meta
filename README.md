@@ -96,6 +96,10 @@ The cantilever check compares free-end deflection with Euler-Bernoulli bending p
 
 Internal units are meters, newtons, and pascals. The interface shows millimeters, newtons, and megapascals.
 
+## Studio 3D view
+
+The viewport draws a measured reference grid under the part so heights and extents read against a known scale. The grid button at the top-left of the view toggles it and opens a popup where one square equals 1 mm, 5 mm, 1 cm, 5 cm, or 10 cm. The scenario geometry preview has the same grid.
+
 ## Optimization
 
 After a solve, a thickness study can run up to six more real analyses. Each iteration is kept. The lightest design that meets the factor of safety and optional displacement limit is marked accepted. If `MODEL_API_KEY` is set, Muse Spark may propose the next thickness inside the bounds. The solver result decides whether that thickness is feasible. Without the key, the loop uses bisection.

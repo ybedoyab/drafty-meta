@@ -10,20 +10,45 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 from drafty_ai.client import MetaNotConfigured, MetaRequestError, configured
 from drafty_ai.responses import create_response
 from drafty_ai.tools import execute_tool
+from drafty_engineering.catalog import (
+    AMBIGUOUS,
+    UNKNOWN,
+    UNSUPPORTED,
+    ambiguous_sentence,
+    catalog_view,
+    get_part,
+    scenario_domains,
+    scenario_parts,
+    supported_parts_sentence,
+    unsupported_sentence,
+)
 from drafty_engineering.plan import (
+    ambiguous_study,
     build_scenario,
-    classify_problem,
+    classify_request,
     evaluate_bracket,
     neutral_study,
     proposed_bracket_spec,
+    unsupported_study,
     workflow_stage,
 )
+from drafty_engineering.revolved import evaluate_revolved, proposed_geometry_spec
 from drafty_engineering.scenario import classroom_kwargs, evaluate_classroom
 
-INSTRUCTIONS = """You are Drafty's scenario assistant.
+
+def _or_list(items: list[str]) -> str:
+    return ", ".join(items[:-1]) + f", or {items[-1]}"
+
+
+INSTRUCTIONS = f"""You are Drafty's scenario assistant.
 Return only the JSON object in the schema.
 message is at most 80 words. Ask for missing physical inputs. Name visible objects without measuring them.
-domain is structural, mechanical, or unknown. physical_system is simply_supported_ibeam, l_bracket, or unknown.
+{supported_parts_sentence()}
+If the request is not one of these parts, say Drafty cannot model it yet, list what it can do, \
+and never say you will generate geometry or a file. Ask no dimension questions for such a part.
+If several registered parts match, ask which one to build. Do not pick one silently.
+domain is {_or_list([*scenario_domains(), UNSUPPORTED, AMBIGUOUS, UNKNOWN])}. \
+physical_system is {_or_list([*(part.id for part in scenario_parts()), UNSUPPORTED, AMBIGUOUS, UNKNOWN])}.
 tool is one allowlisted name. The server may reject it. claims has at most two items and no invented numbers.
 questions has at most four short questions. observations has at most three items and no measurements.
 Use web_search once, only for a published load, code, or material reference.
@@ -64,7 +89,40 @@ _THICK = re.compile(r"\b(?:thickness|espesor)\s+(\d+(?:\.\d+)?)\s*mm\b", re.I)
 _BWIDTH = re.compile(r"\b(?:bracket width|ancho)\s+(\d+(?:\.\d+)?)\s*mm\b", re.I)
 _SUPPORT_FACE = re.compile(r"\b(?:fixed|support)\s+face\s+(xmin|xmax|ymin|ymax|zmin|zmax)\b", re.I)
 _LOAD_FACE = re.compile(r"\bload\s+face\s+(xmin|xmax|ymin|ymax|zmin|zmax)\b", re.I)
+_LENGTH = r"(\d+(?:\.\d+)?)\s*(mm|cm)\b"
+_CONNECTOR_WORD = (
+    r"(?:of|de|is|are|was|were|be|been|being|could|should|would|can|may|might|must|shall|will|at|most|up|to|about|"
+    r"approximately|approx\.?|roughly|around|only|just|still|now|equals?|equal)\b"
+)
+_CONNECTOR = rf"(?:\s+{_CONNECTOR_WORD}|\s*[:=]\s*)*\s*"
+_HEIGHT = re.compile(
+    rf"{_LENGTH}\s*(?:tall|high|in height|de alto|de altura)\b"
+    rf"|\b(?:height|tall|alto|altura){_CONNECTOR}{_LENGTH}",
+    re.I,
+)
+_BASE = re.compile(
+    rf"{_LENGTH}\s*(?:base|de base)\b"
+    rf"|\bbase(?:\s+diameter)?{_CONNECTOR}{_LENGTH}",
+    re.I,
+)
 _NUMBER = re.compile(r"\d+(?:\.\d+)?")
+_SENTENCE = re.compile(r"(?<=[.!?])\s+")
+_NEGATED = re.compile(r"\b(?:no|not|never|cannot|can't|can ?not|won't|nothing|unable|isn't|aren't)\b|n't\b", re.I)
+_PROMISE = re.compile(
+    r"\b(?:i|we)(?:'ll|'ve|'m going to|\s+will|\s+shall|\s+can|\s+have|\s+am going to|\s+are going to)\s+"
+    r"(?:now\s+|then\s+|also\s+|go ahead and\s+|start to\s+)?"
+    r"(?:generate|generated|create|created|export|exported|build|built|produce|produced|render|rendered|make|made|"
+    r"model|modeled|modelled|deliver|send|prepare|output|draw|design|provide)\b"
+    r"|\b(?:will|has|have|is|are|was|were)\s+(?:be\s+|been\s+|being\s+)?"
+    r"(?:generated|created|exported|built|produced|rendered|modell?ed|ready)\b"
+    r"|\bhere(?:'s|\s+is|\s+are)\b[^.]*\b(?:file|model|step|stl|glb|geometry|mesh|cad)\b"
+    r"|^\s*(?:now\s+)?(?:generating|creating|exporting|rendering|building|modell?ing)\b",
+    re.I,
+)
+_ACKNOWLEDGEMENT = re.compile(
+    r"^\s*(?:confirmed|got it|sure|okay|ok|great|perfect|done|understood|noted)[.!]?\s*$",
+    re.I,
+)
 _MEASURED = re.compile(r"\d.*\b(mm|cm|mpa|kn|n|metre|meter|dimension)\b|\b(mm|cm|mpa)\b.*\d", re.I)
 
 
@@ -88,33 +146,30 @@ class ModelReply(BaseModel):
     claims: list[Claim] = []
 
 
+# Session metadata not declared on Part.inputs. Catalog fields are layered on top.
+_SESSION_FIELDS = {
+    "student_count": None,
+    "domain": "",
+    "physical_system": "",
+    "objective": "",
+    "requested_part": "",
+}
+
+
 def blank_inputs() -> dict:
-    return {
-        "jurisdiction": "",
-        "span_m": None,
-        "tributary_width_m": None,
-        "dead_n_per_m2": None,
-        "live_n_per_m2": None,
-        "beam_self_weight_n_per_m": None,
-        "depth_m": None,
-        "flange_width_m": None,
-        "flange_thickness_m": None,
-        "web_thickness_m": None,
-        "student_count": None,
-        "supports": "",
-        "domain": "",
-        "physical_system": "",
-        "objective": "",
-        "force_n": None,
-        "displacement_limit_m": None,
-        "material_id": "",
-        "leg_x_m": None,
-        "leg_z_m": None,
-        "bracket_thickness_m": None,
-        "bracket_width_m": None,
-        "support_face": "",
-        "load_face": "",
-    }
+    """Initial inputs from the part registry plus session metadata.
+
+    Saved scenarios keep their existing keys via merge; this only seeds new sessions
+    and demos. Adding a PartInput automatically appears here.
+    """
+
+    fields = dict(_SESSION_FIELDS)
+    for part in scenario_parts():
+        for item in part.inputs:
+            if item.name in fields:
+                continue
+            fields[item.name] = None if item.kind == "number" else ""
+    return fields
 
 
 def absorb_message(inputs: dict, message: str) -> dict:
@@ -126,9 +181,15 @@ def absorb_message(inputs: dict, message: str) -> dict:
         prior = "structural"
     if not prior and found.get("force_n") is not None:
         prior = "mechanical"
-    domain, system = classify_problem(message, prior)
-    found["domain"] = domain
-    found["physical_system"] = system
+    request = classify_request(
+        message,
+        prior,
+        str(found.get("physical_system") or ""),
+        str(found.get("requested_part") or ""),
+    )
+    found["domain"] = request.domain
+    found["physical_system"] = request.system
+    found["requested_part"] = request.requested
     students = _STUDENTS.search(message)
     if students and found.get("student_count") is None:
         found["student_count"] = int(students.group(1))
@@ -148,7 +209,24 @@ def absorb_message(inputs: dict, message: str) -> dict:
             found["dead_n_per_m2"] = float(dead.group(1)) * 1000.0
     if found.get("domain") == "mechanical":
         _absorb_bracket(found, message)
+    if found.get("domain") == "geometry":
+        _absorb_revolved(found, message)
     return found
+
+
+def _absorb_revolved(found: dict, message: str) -> None:
+    """Absorb pawn dimensions; a lone measurement fills the single missing field."""
+    for key, pattern in (("overall_height_m", _HEIGHT), ("base_diameter_m", _BASE)):
+        match = pattern.search(message)
+        if match and found.get(key) is None:
+            value, unit = (match.group(1), match.group(2)) if match.group(1) else (match.group(3), match.group(4))
+            found[key] = float(value) / (1000.0 if unit.lower() == "mm" else 100.0)
+    missing = [key for key in ("overall_height_m", "base_diameter_m") if found.get(key) is None]
+    if len(missing) == 1 and _HEIGHT.search(message) is None and _BASE.search(message) is None:
+        lone = re.findall(_LENGTH, message, flags=re.I)
+        if len(lone) == 1:
+            value, unit = lone[0]
+            found[missing[0]] = float(value) / (1000.0 if unit.lower() == "mm" else 100.0)
 
 
 def _absorb_bracket(found: dict, message: str) -> None:
@@ -191,10 +269,18 @@ def advance_scenario(
 ) -> dict:
     inputs = absorb_message(state.get("inputs") or blank_inputs(), message)
     domain = str(inputs.get("domain") or "unknown")
+    system = str(inputs.get("physical_system") or "unknown")
+    requested_part = str(inputs.get("requested_part") or "")
     if domain == "mechanical":
         study = evaluate_bracket(inputs)
     elif domain == "structural":
         study = evaluate_classroom(**classroom_kwargs(inputs))
+    elif domain == "geometry":
+        study = evaluate_revolved(inputs)
+    elif domain == UNSUPPORTED:
+        study = unsupported_study(requested_part)
+    elif domain == AMBIGUOUS:
+        study = ambiguous_study(requested_part)
     else:
         study = neutral_study()
     analysis = _fresh_analysis(state.get("analysis"), inputs)
@@ -210,6 +296,11 @@ def advance_scenario(
     meta_turns = int(state.get("meta_turns") or 0)
     output_tokens = int(state.get("output_tokens") or 0)
     context_reset = False
+    # Switching models starts a fresh Meta conversation: a previous_response_id
+    # belongs to the model that created it. Saved inputs and messages are kept.
+    switched_model = bool(model and model_name and model != model_name)
+    if switched_model:
+        response_id = None
     withheld = ""
     accepted = ""
     questions: list[str] = []
@@ -234,7 +325,7 @@ def advance_scenario(
         try:
             result = caller(
                 instructions=INSTRUCTIONS,
-                user_text=_model_prompt(message, inputs, image_count, study["missing"]),
+                user_text=_model_prompt(message, inputs, image_count, study["missing"], system, requested_part),
                 image_data_urls=(image_data_urls or [])[:8],
                 previous_response_id=response_id,
                 max_output_tokens=2000,
@@ -282,32 +373,51 @@ def advance_scenario(
                 requested_tool = parsed.tool
                 parsed_claims = parsed.claims[:2]
             search_sources = _search_sources(result.get("citations") or [])
+            if switched_model:
+                withheld = (
+                    f"Switched to {model_name or model}. This turn started a new Meta conversation. "
+                    "Saved inputs were kept. " + withheld
+                ).strip()
             if context_reset:
                 withheld = (
                     "The previous Meta conversation could not be resumed, so this turn started a new one. "
                     "Saved inputs were kept. " + withheld
                 ).strip()
-    phase = _phase(
-        study,
-        images_sent=images_sent,
-        searched=bool(search_sources),
-        analysis_current=bool(analysis) and not analysis.get("stale"),
+    phase = (
+        "unsupported"
+        if domain in {UNSUPPORTED, AMBIGUOUS}
+        else _phase(
+            study,
+            images_sent=images_sent,
+            searched=bool(search_sources),
+            analysis_current=bool(analysis) and not analysis.get("stale"),
+        )
     )
     sources = _merge_sources(study["sources"], state.get("sources") or [], search_sources)
     studio_spec = proposed_bracket_spec(inputs) if domain == "mechanical" else None
     if studio_spec:
         studio_spec = {**studio_spec, "approval": "pending"}
-    known = _known_numbers(inputs, study)
-    rejected_claims = _rejected_claims(accepted, parsed_claims, known)
-    if rejected_claims:
-        accepted = (f"{accepted} A number in that explanation was not stored as an engineering result.").strip()
+    geometry_spec = proposed_geometry_spec(inputs) if domain == "geometry" else None
+    rejected_claims: list[dict] = []
+    if domain in {UNSUPPORTED, AMBIGUOUS}:
+        accepted, promises = _strip_promises(accepted)
+        rejected_claims.extend(promises)
+        if domain == AMBIGUOUS and not questions:
+            questions = ["Which registered part should Drafty build?"]
+        elif domain == UNSUPPORTED:
+            questions = []
+    known = _known_numbers(inputs, study) | _user_numbers(state.get("messages") or [], message)
+    number_claims, stray = _rejected_claims(accepted, parsed_claims, known)
+    rejected_claims.extend(number_claims)
+    note = _number_note(stray, [item for item in number_claims if item["name"] != "message"])
+    accepted = f"{accepted} {note}".strip() if note else accepted
     tool = execute_tool(
         requested_tool or None,
         domain=domain,
-        system=str(inputs.get("physical_system") or "unknown"),
+        system=system,
         missing=list(study.get("missing") or []),
         has_analysis=bool(analysis) and not analysis.get("stale"),
-        has_spec=studio_spec is not None,
+        has_spec=studio_spec is not None or geometry_spec is not None,
         searched=bool(search_sources),
         inputs=inputs,
         study=study,
@@ -315,6 +425,7 @@ def advance_scenario(
         analysis=analysis if analysis and not analysis.get("stale") else None,
         comparison=comparison,
         studio_spec=studio_spec,
+        geometry_spec=geometry_spec,
     )
     engineering = build_scenario(
         description=message,
@@ -329,14 +440,11 @@ def advance_scenario(
         domain=domain,
         missing=list(study.get("missing") or []),
         searched=bool(search_sources),
-        has_model=domain != "unknown",
+        has_model=get_part(system) is not None,
         has_analysis=bool(analysis) and not analysis.get("stale"),
         has_comparison=comparison is not None,
     )
-    families = {
-        "simply_supported_ibeam": "simply supported classroom I-beam, preliminary",
-        "l_bracket": "parametric L-bracket, pending approval",
-    }
+    part = get_part(system)
     session_usage = dict(state.get("session_usage") or {"input_tokens": 0, "output_tokens": 0, "requests": 0})
     if fresh_usage:
         session_usage["input_tokens"] = int(session_usage.get("input_tokens") or 0) + int(
@@ -362,7 +470,7 @@ def advance_scenario(
         "section": study["section"],
         "beam": study["beam"],
         "model_proposal": {
-            "family": families.get(str(inputs.get("physical_system")), "unset"),
+            "family": (part.proposal or part.name) if part else "unset",
             "ready_for_3d_simulation": False,
             "ready_for_beam_elements": study["ready_for_beam_elements"],
             "reason": study["reason"],
@@ -374,6 +482,8 @@ def advance_scenario(
         "tool_trace": [tool],
         "workflow": workflow,
         "studio_spec": studio_spec,
+        "geometry_spec": geometry_spec,
+        "part_catalog": catalog_view(system, requested_part),
         "studio_approval": state.get("studio_approval") or "pending",
         "rejected_claims": rejected_claims,
         "session_usage": session_usage,
@@ -434,9 +544,32 @@ def _search_sources(citations: list) -> list[dict]:
     return kept
 
 
-def _model_prompt(message: str, inputs: dict, image_count: int, missing: list[str]) -> str:
+def _model_prompt(
+    message: str,
+    inputs: dict,
+    image_count: int,
+    missing: list[str],
+    system: str = "unknown",
+    requested_part: str = "",
+) -> str:
+    part = get_part(system)
+    if part is not None:
+        selected = f"The server selected {part.phrase}."
+    elif system == UNSUPPORTED:
+        selected = (
+            f"The user asked for {requested_part or 'a part'}. Drafty has no model for it. "
+            "Say so, and do not promise geometry or a file."
+        )
+    elif system == AMBIGUOUS:
+        selected = (
+            f"Several registered parts match ({requested_part or 'more than one'}). "
+            "Ask which one to build. Do not pick one and do not promise geometry."
+        )
+    else:
+        selected = "The server has not selected a part yet."
     return (
         f"User message: {message or 'Review the current inputs.'}\n"
+        f"{selected}\n"
         f"Known inputs, which you must not replace: {json.dumps(inputs)}\n"
         f"Missing fields: {', '.join(missing) if missing else 'none'}.\n"
         f"Stored images: {image_count}. Describe only what is visible. Do not measure them."
@@ -517,9 +650,16 @@ def _known_numbers(inputs: dict, study: dict) -> set[str]:
         "leg_z_m",
         "bracket_thickness_m",
         "bracket_width_m",
+        "overall_height_m",
+        "base_diameter_m",
     ):
         if inputs.get(key) is not None:
             values.append(float(inputs[key]))
+            if key.endswith("_m") and key not in {"span_m", "tributary_width_m"}:
+                values.append(float(inputs[key]) * 1000.0)
+    geometry = study.get("geometry") or {}
+    if geometry.get("volume_m3") is not None:
+        values.append(round(float(geometry["volume_m3"]) * 1e6, 2))
     line = study.get("line") or {}
     beam = study.get("beam") or {}
     if line.get("q_line_n_per_m") is not None:
@@ -537,16 +677,84 @@ def _known_numbers(inputs: dict, study: dict) -> set[str]:
     return known
 
 
-def _rejected_claims(message: str, claims: list[Claim], known: set[str]) -> list[dict]:
+def _user_numbers(messages: list[dict], message: str) -> set[str]:
+    """Numbers the user typed. The model may repeat them without them being flagged."""
+
+    texts = [str(item.get("text") or "") for item in messages if item.get("role") == "user"]
+    texts.append(message)
+    return {_canon(token) for text in texts for token in _NUMBER.findall(text)}
+
+
+def _canon(token: str) -> str:
+    return f"{float(token):.6g}"
+
+
+def _is_known(token: str, known: set[str]) -> bool:
+    return token in known or _canon(token) in {_canon(item) for item in known}
+
+
+def _rejected_claims(message: str, claims: list[Claim], known: set[str]) -> tuple[list[dict], list[str]]:
+    """Claims and visible numbers that are neither stored results nor typed by the user."""
+
     rejected = []
     for claim in claims:
-        numbers = set(_NUMBER.findall(claim.statement))
-        if numbers and not numbers <= known:
-            rejected.append({"name": claim.name, "statement": claim.statement, "reason": "unsupported number"})
-    stray = [item for item in _NUMBER.findall(message) if item not in known]
-    if stray and not rejected:
-        rejected.append({"name": "message", "statement": message[:240], "reason": "unsupported number"})
-    return rejected
+        numbers = [item for item in _NUMBER.findall(claim.statement) if not _is_known(item, known)]
+        if numbers:
+            rejected.append(
+                {
+                    "name": claim.name,
+                    "statement": claim.statement,
+                    "reason": "unsupported number",
+                    "numbers": list(dict.fromkeys(numbers)),
+                }
+            )
+    stray = list(dict.fromkeys(item for item in _NUMBER.findall(message) if not _is_known(item, known)))
+    if stray:
+        rejected.append(
+            {"name": "message", "statement": message[:240], "reason": "unsupported number", "numbers": stray}
+        )
+    return rejected, stray
+
+
+def _number_note(stray: list[str], claims: list[dict]) -> str:
+    """Name each flagged number, so the note never points at something the user cannot see."""
+
+    parts = []
+    if stray:
+        listed = _and_list(stray)
+        verb = "is not a stored engineering result" if len(stray) == 1 else "are not stored engineering results"
+        parts.append(f"The {'number' if len(stray) == 1 else 'numbers'} {listed} in that reply {verb}.")
+    hidden = [number for item in claims for number in item.get("numbers", []) if number not in stray]
+    if hidden:
+        names = _and_list([str(item["name"] or "claim") for item in claims])
+        parts.append(
+            f"A model claim about {names} used {_and_list(list(dict.fromkeys(hidden)))}, "
+            "which is not a stored result. It was set aside."
+        )
+    return " ".join(parts)
+
+
+def _and_list(items: list[str]) -> str:
+    if len(items) <= 2:
+        return " and ".join(items)
+    return ", ".join(items[:-1]) + f", and {items[-1]}"
+
+
+def _strip_promises(message: str) -> tuple[str, list[dict]]:
+    """Drop sentences that promise geometry or a file for a part Drafty cannot build."""
+
+    kept: list[str] = []
+    removed: list[dict] = []
+    for sentence in _SENTENCE.split(message):
+        if _PROMISE.search(sentence) and not _NEGATED.search(sentence):
+            removed.append(
+                {"name": "message", "statement": sentence[:240], "reason": "promise for an unsupported part"}
+            )
+        elif sentence.strip():
+            kept.append(sentence.strip())
+    if removed:
+        kept = [sentence for sentence in kept if not _ACKNOWLEDGEMENT.match(sentence)]
+    return " ".join(kept), removed
 
 
 def _summary(domain: str, study: dict, inputs: dict, image_count: int, images_sent: bool) -> str:
@@ -559,6 +767,12 @@ def _summary(domain: str, study: dict, inputs: dict, image_count: int, images_se
             parts.append("Still needed: " + ", ".join(study["missing"]) + ".")
         parts.append(study["reason"])
         return " ".join(parts)
+    if domain == UNSUPPORTED:
+        return unsupported_sentence(str(inputs.get("requested_part") or ""))
+    if domain == AMBIGUOUS:
+        return ambiguous_sentence(str(inputs.get("requested_part") or ""))
+    if domain == "geometry":
+        return _geometry_summary(study)
     if domain != "structural":
         return "Describe the structure or the part. No calculation was started."
     parts: list[str] = []
@@ -591,10 +805,26 @@ def _summary(domain: str, study: dict, inputs: dict, image_count: int, images_se
     return " ".join(parts)
 
 
+def _geometry_summary(study: dict) -> str:
+    parts = ["This is a Staunton chess pawn, built as a revolved profile."]
+    if study["missing"]:
+        parts.append("Still needed: " + ", ".join(study["missing"]) + ".")
+    parts.extend(study["errors"])
+    geometry = study.get("geometry")
+    if geometry:
+        parts.append(
+            f"The profile has {geometry['points']} points and a calculated volume of "
+            f"{geometry['volume_m3'] * 1e6:.2f} cm³, from the profile, not from a print. "
+            "STEP, STL, and a GLB preview are built from it in the Geometry panel."
+        )
+    parts.append("Geometry only: no structural check was run, and no material or load is used.")
+    return " ".join(parts)
+
+
 def _phase(study: dict, *, images_sent: bool, searched: bool, analysis_current: bool) -> str:
     if analysis_current:
         return "verifying"
-    if study.get("beam") or study.get("ready_for_beam_elements"):
+    if study.get("beam") or study.get("ready_for_beam_elements") or study.get("geometry"):
         return "building-model"
     if searched:
         return "searching"

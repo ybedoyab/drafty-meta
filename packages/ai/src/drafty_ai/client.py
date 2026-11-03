@@ -10,6 +10,33 @@ load_dotenv(override=False)
 PRIMARY_MODEL = "muse-spark-1.3"
 REASONING_MODEL = "muse-wonder-1.0"
 ALLOWED_MODELS = {PRIMARY_MODEL, REASONING_MODEL}
+DEFAULT_MODEL = PRIMARY_MODEL
+
+# The only Meta chat models the scenario assistant may use, in picker order.
+# Spark is the fast default; Wonder trades speed for deeper reasoning.
+MODEL_CATALOG: tuple[dict, ...] = (
+    {
+        "id": PRIMARY_MODEL,
+        "name": "Muse Spark 1.3",
+        "short_name": "Spark 1.3",
+        "description": "Most efficient for simpler tasks",
+        "detail": "Fast everyday model for collecting inputs and routine turns.",
+        "default": True,
+    },
+    {
+        "id": REASONING_MODEL,
+        "name": "Muse Wonder 1.0",
+        "short_name": "Wonder 1.0",
+        "description": "For your toughest challenges",
+        "detail": "Deeper reasoning for complex work and harder questions.",
+        "default": False,
+    },
+)
+
+
+def model_catalog() -> list[dict]:
+    """Picker-ready model list. No key or secret is included."""
+    return [dict(entry) for entry in MODEL_CATALOG]
 
 
 class MetaNotConfigured(Exception):

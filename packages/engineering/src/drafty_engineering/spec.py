@@ -154,6 +154,89 @@ class DesignSpec(BaseModel):
         _validate_holes(self.plate, self.holes)
 
 
+REVOLVED_MAX_HEIGHT_M = 0.5
+REVOLVED_MAX_RADIUS_M = 0.25
+REVOLVED_MIN_HEIGHT_M = 0.002
+REVOLVED_MIN_RADIUS_M = 1e-6
+REVOLVED_MIN_STEP_M = 1e-5
+
+
+class ProfilePoint(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    height_m: float
+    radius_m: float = Field(ge=0)
+
+
+class RevolvedProfile(BaseModel):
+    """A solid spun around Z. Points run bottom to top; the axis closes the outline."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(default="revolved-part", min_length=1, max_length=80)
+    points: list[ProfilePoint] = Field(min_length=3, max_length=96)
+
+    @model_validator(mode="after")
+    def _validate_profile(self) -> "RevolvedProfile":
+        values = [value for point in self.points for value in (point.height_m, point.radius_m)]
+        if any(not math.isfinite(value) for value in values):
+            raise ValueError("Profile heights and radii must be finite numbers.")
+        heights = [point.height_m for point in self.points]
+        radii = [point.radius_m for point in self.points]
+        if heights[0] < 0:
+            raise ValueError("The profile must start at or above z = 0.")
+        for lower, upper in zip(heights, heights[1:]):
+            if upper - lower < REVOLVED_MIN_STEP_M:
+                raise ValueError("Profile heights must increase from one point to the next.")
+        if any(radius < REVOLVED_MIN_RADIUS_M for radius in radii[1:-1]):
+            raise ValueError("Only the first and last points may sit on the axis. Other radii must be positive.")
+        for end in (radii[0], radii[-1]):
+            if 0 < end < REVOLVED_MIN_RADIUS_M:
+                raise ValueError("An end point must sit on the axis or have a positive radius.")
+        if _outline_area(self.outline()) <= 0:
+            raise ValueError("The profile does not close into an area with the axis.")
+        if not REVOLVED_MIN_HEIGHT_M <= self.height_m <= REVOLVED_MAX_HEIGHT_M:
+            raise ValueError(
+                f"Profile height must be between {REVOLVED_MIN_HEIGHT_M * 1000:g} mm "
+                f"and {REVOLVED_MAX_HEIGHT_M * 1000:g} mm."
+            )
+        if self.max_radius_m > REVOLVED_MAX_RADIUS_M:
+            raise ValueError(f"Profile radius must not exceed {REVOLVED_MAX_RADIUS_M * 1000:g} mm.")
+        return self
+
+    @property
+    def height_m(self) -> float:
+        return self.points[-1].height_m - self.points[0].height_m
+
+    @property
+    def max_radius_m(self) -> float:
+        return max(point.radius_m for point in self.points)
+
+    def outline(self) -> list[tuple[float, float]]:
+        """Closed (radius, height) outline. Axis points close it; the first point is not repeated."""
+
+        first, last = self.points[0], self.points[-1]
+        outline = [] if first.radius_m == 0 else [(0.0, first.height_m)]
+        outline.extend((point.radius_m, point.height_m) for point in self.points)
+        if last.radius_m > 0:
+            outline.append((0.0, last.height_m))
+        return outline
+
+    def volume_m3(self) -> float:
+        """Exact volume of the revolved polyline: a sum of conical frustums."""
+
+        total = 0.0
+        for lower, upper in zip(self.points, self.points[1:]):
+            step = upper.height_m - lower.height_m
+            total += math.pi * step / 3.0 * (lower.radius_m**2 + lower.radius_m * upper.radius_m + upper.radius_m**2)
+        return total
+
+
+def _outline_area(outline: list[tuple[float, float]]) -> float:
+    twice = sum(x1 * y2 - x2 * y1 for (x1, y1), (x2, y2) in zip(outline, outline[1:] + outline[:1]))
+    return abs(twice) / 2.0
+
+
 def _validate_holes(plate: PlateGeometry, holes: HolePattern) -> None:
     if holes.margin_m <= holes.radius_m:
         raise ValueError("Hole margin must be larger than the hole radius.")

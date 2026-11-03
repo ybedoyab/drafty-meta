@@ -1,10 +1,12 @@
-import { Center, GizmoHelper, GizmoViewport, Html, OrbitControls, useGLTF } from "@react-three/drei";
+import { Center, GizmoHelper, GizmoViewport, Grid, Html, OrbitControls, useGLTF } from "@react-three/drei";
 import { Canvas, useThree } from "@react-three/fiber";
 import { Suspense, useEffect, useMemo } from "react";
 import * as THREE from "three";
 import { turbo } from "@/lib/colormap";
+import { resolveGridFloor } from "@/lib/grid";
 import { faceCentroid, loadDirection } from "@/lib/markers";
 import type { SurfaceResult } from "@/lib/api";
+import { useTheme } from "@/lib/theme";
 
 export type Shade = "von_mises" | "displacement" | "geometry";
 export type CameraView = "iso" | "front" | "top" | "right";
@@ -25,6 +27,10 @@ export function Viewport({
   direction,
   loadLabel,
   fitRadius,
+  zUp = false,
+  gridVisible = true,
+  gridStepM = 0.01,
+  floorOffset,
 }: {
   previewUrl: string | null;
   surface: SurfaceResult | null;
@@ -41,10 +47,18 @@ export function Viewport({
   direction: [number, number, number];
   loadLabel: string;
   fitRadius: number;
+  /** Orbit with Z up, so a part modelled along Z stands upright. Studio keeps the default. */
+  zUp?: boolean;
+  /** Measured reference grid under the part. One cell equals gridStepM meters. */
+  gridVisible?: boolean;
+  gridStepM?: number;
+  /** Distance from the part center to its lowest face, in meters. Falls back to the surface bbox. */
+  floorOffset?: number;
 }) {
+  const dark = useTheme() === "dark";
   return (
-    <Canvas key={orthographic ? "ortho" : "persp"} orthographic={orthographic} camera={{ position: [0.45, -0.35, 0.28], fov: 35, zoom: orthographic ? 400 : 1 }}>
-      <color attach="background" args={["#f8fafc"]} />
+    <Canvas key={orthographic ? "ortho" : "persp"} orthographic={orthographic} camera={{ position: [0.45, -0.35, 0.28], fov: 35, zoom: orthographic ? 400 : 1, up: zUp ? [0, 0, 1] : [0, 1, 0] }}>
+      <color attach="background" args={[dark ? "#0f172a" : "#f8fafc"]} />
       <ambientLight intensity={0.85} />
       <directionalLight position={[1, -1, 2]} intensity={1.2} />
       <Center>
@@ -73,10 +87,19 @@ export function Viewport({
           )}
         </Suspense>
       </Center>
+      {gridVisible && (
+        <MeasuredGrid
+          surface={surface}
+          stepM={gridStepM}
+          fitRadius={fitRadius}
+          floorOffset={floorOffset}
+          zUp={zUp}
+        />
+      )}
       <CameraRig view={cameraView} nonce={cameraNonce} radius={fitRadius} />
       <OrbitControls makeDefault />
       <GizmoHelper alignment="bottom-right" margin={[72, 72]}>
-        <GizmoViewport axisColors={["#ef4444", "#22c55e", "#3b82f6"]} labelColor="#334155" />
+        <GizmoViewport axisColors={["#ef4444", "#22c55e", "#3b82f6"]} labelColor={dark ? "#e2e8f0" : "#334155"} />
       </GizmoHelper>
       <axesHelper args={[0.08]} />
     </Canvas>
@@ -147,6 +170,7 @@ function Markers({
   loadLabel: string;
   fitRadius: number;
 }) {
+  const dark = useTheme() === "dark";
   const marker = useMemo(() => {
     const origin = faceCentroid(surface.vertices_m, loadSurface);
     const { unit } = loadDirection(direction);
@@ -159,10 +183,10 @@ function Markers({
     <group>
       <mesh position={held}>
         <boxGeometry args={[mark, mark, mark]} />
-        <meshBasicMaterial color="#2563eb" />
+        <meshBasicMaterial color={dark ? "#60a5fa" : "#1e40af"} />
       </mesh>
       <Html position={held} center sprite zIndexRange={[20, 0]}>
-        <div className="pointer-events-none whitespace-nowrap rounded bg-white px-1.5 py-0.5 text-[11px] font-medium text-blue-700 shadow">
+        <div className="pointer-events-none whitespace-nowrap rounded bg-white px-1.5 py-0.5 text-[11px] font-medium text-blue-800 shadow">
           Fixed support
         </div>
       </Html>
@@ -202,6 +226,55 @@ function CameraRig({ view, nonce, radius }: { view: CameraView; nonce: number; r
     camera.updateProjectionMatrix();
   }, [camera, view, nonce, radius, size.width, size.height]);
   return null;
+}
+
+function MeasuredGrid({
+  surface,
+  stepM,
+  fitRadius,
+  floorOffset,
+  zUp,
+}: {
+  surface: SurfaceResult | null;
+  stepM: number;
+  fitRadius: number;
+  floorOffset: number | undefined;
+  zUp: boolean;
+}) {
+  const floor = useMemo(() => {
+    const axis = zUp ? 2 : 1;
+    let modelHalf: number | null = null;
+    if (surface) {
+      let min = Infinity;
+      let max = -Infinity;
+      for (const vertex of surface.vertices_m) {
+        min = Math.min(min, vertex[axis]);
+        max = Math.max(max, vertex[axis]);
+      }
+      if (Number.isFinite(min) && Number.isFinite(max) && max > min) modelHalf = (max - min) / 2;
+    }
+    return resolveGridFloor([floorOffset, modelHalf], fitRadius * 0.5);
+  }, [surface, floorOffset, fitRadius, zUp]);
+  const dark = useTheme() === "dark";
+  const lift = Math.max(fitRadius * 0.005, stepM * 0.15);
+  const distance = floor + lift;
+  return (
+    <Grid
+      position={zUp ? [0, 0, -distance] : [0, -distance, 0]}
+      rotation={zUp ? [Math.PI / 2, 0, 0] : undefined}
+      cellSize={stepM}
+      cellThickness={0.6}
+      cellColor={dark ? "#334155" : "#cbd5e1"}
+      sectionSize={stepM * 5}
+      sectionThickness={1.2}
+      sectionColor={dark ? "#64748b" : "#94a3b8"}
+      fadeDistance={Math.max(fitRadius * 8, stepM * 60)}
+      fadeStrength={2.5}
+      followCamera={false}
+      side={THREE.DoubleSide}
+      infiniteGrid
+    />
+  );
 }
 
 function buildGeometry(

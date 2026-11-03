@@ -111,6 +111,22 @@ def list_remote_jobs(owner_id: str) -> list[dict]:
     )
 
 
+def list_remote_jobs_for_scenario(scenario_id: str, owner_id: str) -> list[dict]:
+    """Owned jobs linked to a scenario. Empty when Supabase is not configured."""
+
+    _uuid(scenario_id)
+    return _select(
+        "jobs",
+        {
+            "scenario_id": f"eq.{scenario_id}",
+            "owner_id": f"eq.{owner_id}",
+            "select": "id,owner_id,status,kind,scenario_id,compute",
+            "order": "created_at.desc",
+            "limit": "100",
+        },
+    )
+
+
 def cancel_remote_job(job_id: str, owner_id: str) -> dict:
     job = read_remote_job(job_id, owner_id)
     if job.get("status") in TERMINAL_REMOTE:
@@ -126,6 +142,85 @@ def cancel_remote_job(job_id: str, owner_id: str) -> dict:
         except Exception:
             pass
     return read_remote_job(job_id, owner_id)
+
+
+def purge_remote_job(job_id: str, owner_id: str) -> dict:
+    """Cancel Modal if active, delete private FEM storage, then delete the job row.
+
+    Idempotent and retryable: missing jobs/objects are success. Shared geometry/ objects
+    are never touched. The job row (and cascaded artifact metadata) is kept when any
+    private artifact delete fails so a later retry can finish cleanup without orphans.
+    """
+
+    from drafty_api.storage import delete_private_objects
+
+    _uuid(job_id)
+    report = {
+        "job_id": job_id,
+        "cancelled": False,
+        "storage_removed": 0,
+        "row_deleted": False,
+        "retryable": False,
+        "errors": [],
+    }
+    rows = _select("jobs", {"id": f"eq.{job_id}", "owner_id": f"eq.{owner_id}", "select": "*"})
+    if rows:
+        job = rows[0]
+        if job.get("status") not in TERMINAL_REMOTE:
+            try:
+                cancel_remote_job(job_id, owner_id)
+                report["cancelled"] = True
+            except HTTPException as exc:
+                report["errors"].append(f"cancel:{exc.detail}")
+            except Exception as exc:
+                report["errors"].append(f"cancel:{type(exc).__name__}")
+    artifact_rows = _select("artifacts", {"job_id": f"eq.{job_id}", "select": "name,storage_path"})
+    paths: list[str] = []
+    for item in artifact_rows:
+        storage_path = str(item.get("storage_path") or "").lstrip("/")
+        if storage_path and not storage_path.startswith("geometry/"):
+            paths.append(storage_path)
+        name = str(item.get("name") or "")
+        if name and "/" not in name and "\\" not in name:
+            paths.append(f"{job_id}/{name}")
+    for name in ARTIFACT_NAMES:
+        paths.append(f"{job_id}/{name}")
+    # Deduplicate while preserving order.
+    seen: set[str] = set()
+    unique_paths = []
+    for path in paths:
+        if path in seen:
+            continue
+        seen.add(path)
+        unique_paths.append(path)
+    removed, storage_errors = delete_private_objects(unique_paths)
+    report["storage_removed"] = removed
+    # Policy refusals (geometry/) are not cleanup failures.
+    blocking_storage = [item for item in storage_errors if not str(item).startswith("refused:")]
+    report["errors"].extend(blocking_storage)
+    if blocking_storage:
+        report["retryable"] = True
+        # Keep the job row and artifact metadata so a later purge can finish storage deletes.
+        return report
+    if settings.supabase_configured:
+        try:
+            response = httpx.delete(
+                f"{settings.supabase_url.rstrip('/')}/rest/v1/jobs",
+                headers=_service_headers(),
+                params={"id": f"eq.{job_id}", "owner_id": f"eq.{owner_id}"},
+                timeout=30,
+            )
+            if response.status_code < 400:
+                report["row_deleted"] = True
+            else:
+                report["errors"].append(f"job_row:{response.status_code}")
+                report["retryable"] = True
+        except httpx.HTTPError as exc:
+            report["errors"].append(f"job_row:{type(exc).__name__}")
+            report["retryable"] = True
+    else:
+        report["row_deleted"] = True
+    return report
 
 
 def complete_remote_job(job_id: str, token: str, payload: dict) -> dict:
@@ -207,6 +302,26 @@ def remote_preview(spec: dict) -> bytes:
     return bytes(payload)
 
 
+def remote_geometry(profile: dict) -> dict[str, bytes]:
+    """STEP, STL, and the GLB preview for a revolved profile, built on Modal."""
+
+    import modal
+
+    call = modal.Function.from_name("drafty-engineering", "generate_revolved").spawn(profile)
+    try:
+        payload = call.get(timeout=50)
+    except TimeoutError as exc:
+        _cancel_call(call)
+        raise HTTPException(
+            status_code=504,
+            detail="The geometry is still building on Modal. Try again in a moment.",
+        ) from exc
+    names = ("model.step", "model.stl", "preview.glb")
+    if not isinstance(payload, dict) or any(not isinstance(payload.get(name), (bytes, bytearray)) for name in names):
+        raise HTTPException(status_code=502, detail="Modal did not return the geometry files.")
+    return {name: bytes(payload[name]) for name in names}
+
+
 _PROVIDER_CACHE: dict = {"at": 0.0, "value": None}
 
 
@@ -217,15 +332,21 @@ def provider_status() -> dict:
     cached = _PROVIDER_CACHE["value"]
     if cached is not None and now - float(_PROVIDER_CACHE["at"]) < 30:
         return cached
-    modal_configured = settings.modal_available
+    # Only probe Modal when tokens are set. A local CLI profile alone must not block /health.
+    modal_tokens = settings.modal_configured
+    modal_available = settings.modal_available
     supabase_configured = settings.supabase_configured
     meta_configured = settings.meta_configured
     supabase_reachable = _supabase_reachable() if supabase_configured else False
-    modal_reachable = _modal_reachable() if modal_configured else False
+    modal_reachable = _modal_reachable() if modal_tokens else False
     modal_tested = _modal_tested() if supabase_reachable else False
     value = {
         "meta": {"configured": meta_configured, "reachable": False, "tested": False},
-        "modal": {"configured": modal_configured, "reachable": modal_reachable, "tested": modal_tested},
+        "modal": {
+            "configured": modal_available,
+            "reachable": modal_reachable,
+            "tested": modal_tested,
+        },
         "supabase": {"configured": supabase_configured, "reachable": supabase_reachable, "tested": supabase_reachable},
     }
     _PROVIDER_CACHE["at"] = now
@@ -494,12 +615,26 @@ def _supabase_reachable() -> bool:
 
 
 def _modal_reachable() -> bool:
-    try:
+    """Resolve the Modal function name with a hard timeout so /health cannot hang."""
+
+    from concurrent.futures import ThreadPoolExecutor
+    from concurrent.futures import TimeoutError as FuturesTimeout
+
+    def _lookup() -> None:
         import modal
 
         modal.Function.from_name("drafty-engineering", "run_simulation")
+
+    pool = ThreadPoolExecutor(max_workers=1)
+    try:
+        pool.submit(_lookup).result(timeout=3)
+    except FuturesTimeout:
+        return False
     except Exception:
         return False
+    finally:
+        # Do not wait for a stuck Modal client thread; that would block /health again.
+        pool.shutdown(wait=False, cancel_futures=True)
     return True
 
 

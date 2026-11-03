@@ -134,6 +134,24 @@ def mirror_scenario(session: dict, access_token: str | None, snapshot: bool = Fa
     return "mirrored"
 
 
+def delete_remote_scenario(scenario_id: str, access_token: str | None) -> bool | None:
+    """Delete a mirrored scenario row with the caller's token so RLS applies. None when unconfigured."""
+
+    if not access_token or not settings.supabase_auth_configured:
+        return None
+    base = settings.supabase_url.rstrip("/")
+    response = httpx.delete(
+        f"{base}/rest/v1/scenarios",
+        headers={
+            "apikey": settings.supabase_publishable_key,
+            "Authorization": f"Bearer {access_token}",
+        },
+        params={"id": f"eq.{scenario_id}"},
+        timeout=30,
+    )
+    return response.status_code < 400
+
+
 def fetch_scenario(scenario_id: str, access_token: str | None) -> dict | None:
     if not access_token or not settings.supabase_auth_configured:
         return None
@@ -195,6 +213,43 @@ def upload_private_object(object_path: str, data: bytes, content_type: str) -> b
     return response.status_code < 400
 
 
+def upload_private_object_if_absent(object_path: str, data: bytes, content_type: str) -> bool:
+    """Store once. Existing objects stay immutable (no upsert)."""
+
+    if not settings.supabase_configured:
+        return False
+    base = settings.supabase_url.rstrip("/")
+    key = settings.supabase_secret
+    response = httpx.post(
+        f"{base}/storage/v1/object/artifacts/{object_path}",
+        headers={
+            "apikey": key,
+            "Authorization": f"Bearer {key}",
+            "Content-Type": content_type,
+            "x-upsert": "false",
+        },
+        content=data,
+        timeout=60,
+    )
+    # 409 = already present; treat as success for content-addressed digests.
+    return response.status_code < 400 or response.status_code == 409
+
+
+def delete_private_object(object_path: str) -> bool:
+    """Best-effort delete of one private storage object. Missing objects are success."""
+
+    if not settings.supabase_configured:
+        return True
+    base = settings.supabase_url.rstrip("/")
+    key = settings.supabase_secret
+    response = httpx.delete(
+        f"{base}/storage/v1/object/artifacts/{object_path}",
+        headers={"apikey": key, "Authorization": f"Bearer {key}"},
+        timeout=30,
+    )
+    return response.status_code < 400 or response.status_code == 404
+
+
 def download_private_object(object_path: str) -> bytes | None:
     if not settings.supabase_configured:
         return None
@@ -210,6 +265,112 @@ def download_private_object(object_path: str) -> bytes | None:
     if response.status_code >= 400:
         return None
     return response.content
+
+
+def private_object_exists(object_path: str) -> bool | None:
+    """True/False when storage answers; None when Supabase is not configured."""
+
+    if not settings.supabase_configured:
+        return None
+    base = settings.supabase_url.rstrip("/")
+    key = settings.supabase_secret
+    response = httpx.head(
+        f"{base}/storage/v1/object/artifacts/{object_path}",
+        headers={"apikey": key, "Authorization": f"Bearer {key}"},
+        timeout=30,
+    )
+    if response.status_code == 404:
+        return False
+    if response.status_code >= 400:
+        # Some Storage deployments reject HEAD; fall back to a ranged GET.
+        probe = httpx.get(
+            f"{base}/storage/v1/object/artifacts/{object_path}",
+            headers={"apikey": key, "Authorization": f"Bearer {key}", "Range": "bytes=0-0"},
+            timeout=30,
+        )
+        if probe.status_code == 404:
+            return False
+        if probe.status_code >= 400:
+            return False
+        return True
+    return True
+
+
+def delete_private_objects(object_paths: list[str]) -> tuple[int, list[str]]:
+    """Idempotent multi-delete. Missing objects count as success. Returns (removed, errors)."""
+
+    removed = 0
+    errors: list[str] = []
+    for path in object_paths:
+        if not path or path.startswith("geometry/"):
+            # Shared content-addressed geometry must never be deleted from this helper.
+            if path.startswith("geometry/"):
+                errors.append(f"refused:{path}")
+            continue
+        if delete_private_object(path):
+            removed += 1
+        else:
+            errors.append(path)
+    return removed, errors
+
+
+def call_service_rpc(function_name: str, payload: dict) -> object | None:
+    """Invoke a Postgres RPC with the service role. None means the backend did not answer."""
+
+    if not settings.supabase_configured:
+        return None
+    try:
+        response = httpx.post(
+            f"{settings.supabase_url.rstrip('/')}/rest/v1/rpc/{function_name}",
+            headers={
+                "apikey": settings.supabase_secret,
+                "Authorization": f"Bearer {settings.supabase_secret}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            timeout=30,
+        )
+    except httpx.HTTPError:
+        return None
+    if response.status_code >= 400:
+        return None
+    if response.content in (b"", b"null"):
+        return None
+    try:
+        return response.json()
+    except json.JSONDecodeError:
+        return None
+
+
+def charge_preview_quota_remote(owner_id: str, limit: int) -> bool | None:
+    """Atomic hourly preview charge. True/False from RPC; None when unavailable."""
+
+    result = call_service_rpc(
+        "charge_preview_quota",
+        {"p_owner_id": owner_id, "p_limit": int(limit)},
+    )
+    if result is None:
+        return None
+    return bool(result)
+
+
+def claim_geometry_build_lock_remote(digest: str, owner_id: str, ttl_seconds: int = 120) -> bool | None:
+    """Try to claim a short-lived per-digest build lock. None when the backend is unavailable."""
+
+    result = call_service_rpc(
+        "claim_geometry_build_lock",
+        {"p_digest": digest, "p_owner_id": owner_id, "p_ttl_seconds": int(ttl_seconds)},
+    )
+    if result is None:
+        return None
+    return bool(result)
+
+
+def release_geometry_build_lock_remote(digest: str, owner_id: str) -> None:
+    call_service_rpc(
+        "release_geometry_build_lock",
+        {"p_digest": digest, "p_owner_id": owner_id},
+    )
 
 
 def _upload(client: httpx.Client, base: str, key: str, job_id: str, name: str, path: Path) -> None:

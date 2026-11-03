@@ -41,7 +41,7 @@ export function BeamResults({
       <div className="flex flex-wrap gap-2">
         <button
           type="button"
-          className="rounded-md bg-indigo-600 px-3 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-50"
+          className="rounded-md bg-blue-800 px-3 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-50"
           disabled={!canRun}
           onClick={onRun}
         >
@@ -74,7 +74,7 @@ export function BeamResults({
             Elastic range: {analysis.elastic_range}. Mesh {analysis.mesh.nodes} nodes, {analysis.mesh.elements}{" "}
             {analysis.mesh.element_type} elements. Solver {analysis.solver.name}.
           </p>
-          <div className="grid gap-3 lg:grid-cols-3">
+          <div className="grid gap-3">
             <Chart stations={analysis.stations} field="shear_n" title="Shear force" unit="N" />
             <Chart stations={analysis.stations} field="moment_n_m" title="Bending moment" unit="N·m" />
             <Chart stations={analysis.stations} field="deflection_m" title="Deflection" unit="mm" scale={1000} />
@@ -152,34 +152,54 @@ function Chart({
   unit: string;
   scale?: number;
 }) {
+  // Text stays outside the SVG so it does not shrink with the panel width.
   const width = 320;
-  const height = 140;
+  const height = 96;
+  const pad = 6;
   const values = stations.map((station) => station[field] * scale);
   const min = Math.min(0, ...values);
   const max = Math.max(0, ...values);
   const span = max - min || 1;
-  const points = stations
-    .map((station, index) => {
-      const x = 28 + (index / Math.max(stations.length - 1, 1)) * (width - 40);
-      const y = 16 + ((max - station[field] * scale) / span) * (height - 36);
-      return `${x.toFixed(1)},${y.toFixed(1)}`;
-    })
-    .join(" ");
-  const zero = 16 + ((max - 0) / span) * (height - 36);
+  const x = (index: number) => (index / Math.max(stations.length - 1, 1)) * width;
+  const y = (value: number) => pad + ((max - value) / span) * (height - 2 * pad);
+  const zero = y(0);
+  const curve = values.map((value, index) => `${x(index).toFixed(1)},${y(value).toFixed(1)}`);
+  const area = [`0,${zero.toFixed(1)}`, ...curve, `${width},${zero.toFixed(1)}`].join(" ");
+  const first = stations[0]?.x_m ?? 0;
+  const last = stations[stations.length - 1]?.x_m ?? 0;
   return (
-    <svg
-      viewBox={`0 0 ${width} ${height}`}
-      className="h-36 w-full rounded border border-slate-200 bg-slate-50"
-      role="img"
-      aria-label={`${title}, from ${min.toFixed(2)} to ${max.toFixed(2)} ${unit}`}
-    >
-      <text x="8" y="14" fontSize="12" fill="#334155">
-        {title} ({unit})
-      </text>
-      <line x1="28" y1={zero} x2={width - 12} y2={zero} stroke="#cbd5e1" />
-      <polyline fill="none" stroke="#1e293b" strokeWidth="2" points={points} />
-    </svg>
+    <figure className="rounded border border-slate-200 bg-slate-50 p-3">
+      <figcaption className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+        <span className="text-sm font-medium text-slate-900">
+          {title} ({unit})
+        </span>
+        <span className="font-mono text-xs text-slate-600">
+          max {chartNumber(max, span)} · min {chartNumber(min, span)}
+        </span>
+      </figcaption>
+      <svg
+        viewBox={`0 0 ${width} ${height}`}
+        preserveAspectRatio="none"
+        className="mt-2 h-24 w-full"
+        role="img"
+        aria-label={`${title}, from ${chartNumber(min, span)} to ${chartNumber(max, span)} ${unit} along the span`}
+      >
+        <polygon className="fill-slate-200" points={area} />
+        <line className="stroke-slate-400" x1="0" y1={zero} x2={width} y2={zero} strokeDasharray="4 3" vectorEffect="non-scaling-stroke" />
+        <polyline className="stroke-slate-800" fill="none" strokeWidth="2" points={curve.join(" ")} vectorEffect="non-scaling-stroke" />
+      </svg>
+      <div className="mt-1 flex justify-between font-mono text-xs text-slate-500">
+        <span>{chartNumber(first, 1)} m</span>
+        <span>{chartNumber(last, 1)} m</span>
+      </div>
+    </figure>
   );
+}
+
+/** Four significant figures with grouping. Values that are round-off next to the range read as 0. */
+function chartNumber(value: number, range: number) {
+  const shown = Math.abs(value) < Math.abs(range) * 1e-9 ? 0 : value;
+  return shown.toLocaleString("en-US", { maximumSignificantDigits: 4 });
 }
 
 function millimetres(meters: number) {

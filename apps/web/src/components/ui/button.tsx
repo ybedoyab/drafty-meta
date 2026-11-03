@@ -11,8 +11,8 @@ export function Button({
       className={cn(
         "inline-flex items-center justify-center rounded-md px-3 py-2 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-50",
         variant === "primary"
-          ? "bg-indigo-600 text-white shadow-sm hover:bg-indigo-700"
-          : "border border-gray-200 bg-white text-gray-700 hover:border-indigo-300 hover:bg-indigo-50",
+          ? "bg-blue-800 text-white shadow-sm hover:bg-blue-700"
+          : "border border-gray-200 bg-white text-gray-700 hover:border-blue-300 hover:bg-blue-50",
         className,
       )}
       {...props}

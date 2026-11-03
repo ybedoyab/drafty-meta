@@ -21,6 +21,7 @@ def execute_tool(
     analysis: dict | None,
     comparison: dict | None,
     studio_spec: dict | None,
+    geometry_spec: dict | None = None,
 ) -> dict:
     """Run one tool. A selected name is not reported as executed."""
 
@@ -56,6 +57,7 @@ def execute_tool(
             analysis=analysis,
             comparison=comparison,
             studio_spec=studio_spec,
+            geometry_spec=geometry_spec,
             searched=searched,
             domain=domain,
             system=system,
@@ -74,6 +76,7 @@ def _run(
     analysis: dict | None,
     comparison: dict | None,
     studio_spec: dict | None,
+    geometry_spec: dict | None,
     searched: bool,
     domain: str,
     system: str,
@@ -151,6 +154,15 @@ def _run(
             "Section properties come from the deterministic I-section formulas.",
             "none",
             {**section, "formula": "i_section_properties"},
+        )
+    if name == "create_supported_cad" and geometry_spec:
+        return _trace(
+            name,
+            "executed",
+            "The revolved profile was built and validated in Python from the stored dimensions. "
+            "CAD files are generated when the preview or a download is opened. No solver runs for this part.",
+            "none",
+            {"kind": geometry_spec.get("kind"), "preset": geometry_spec.get("preset"), "started": False},
         )
     if name == "create_supported_cad":
         if not studio_spec:

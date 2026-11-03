@@ -5,9 +5,11 @@ import re
 
 import httpx
 
+from drafty_ai.client import ALLOWED_MODELS as ALLOWED_RESPONSE_MODELS
 from drafty_ai.client import MetaNotConfigured, MetaRequestError, configured
+from drafty_engineering.catalog import AMBIGUOUS, UNKNOWN, UNSUPPORTED, scenario_domains, scenario_parts
 
-ALLOWED_RESPONSE_MODELS = {"muse-spark-1.3", "muse-wonder-1.0"}
+__all__ = ["ALLOWED_RESPONSE_MODELS"]
 REPLY_FORMAT = {
     "type": "json_schema",
     "name": "scenario_reply",
@@ -19,10 +21,10 @@ REPLY_FORMAT = {
             "message": {"type": "string"},
             "questions": {"type": "array", "items": {"type": "string"}},
             "observations": {"type": "array", "items": {"type": "string"}},
-            "domain": {"type": "string", "enum": ["structural", "mechanical", "unknown"]},
+            "domain": {"type": "string", "enum": [*scenario_domains(), UNSUPPORTED, AMBIGUOUS, UNKNOWN]},
             "physical_system": {
                 "type": "string",
-                "enum": ["simply_supported_ibeam", "l_bracket", "unknown"],
+                "enum": [*(part.id for part in scenario_parts()), UNSUPPORTED, AMBIGUOUS, UNKNOWN],
             },
             "tool": {
                 "type": "string",
@@ -82,7 +84,9 @@ def create_response(
         raise MetaRequestError("A scenario turn may use 1 to 4 built-in tool calls.")
     selected = model or os.environ.get("MODEL_PRIMARY", "muse-spark-1.3")
     if selected not in ALLOWED_RESPONSE_MODELS:
-        raise MetaRequestError("Scenario research uses muse-spark-1.3 or muse-wonder-1.0.")
+        raise MetaRequestError(
+            "Scenario research uses one of: " + ", ".join(sorted(ALLOWED_RESPONSE_MODELS)) + "."
+        )
     if len(urls) > 8:
         raise MetaRequestError("At most eight images are sent in one scenario turn.")
     content: list[dict] = [{"type": "input_text", "text": user_text}]

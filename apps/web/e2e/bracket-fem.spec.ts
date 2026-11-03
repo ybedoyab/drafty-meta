@@ -1,5 +1,9 @@
 import { expect, test } from "@playwright/test";
 
+async function showInspectorStep(page: import("@playwright/test").Page, label: string) {
+  await page.locator('nav[aria-label="Inspector steps"]').getByRole("button", { name: new RegExp(label) }).click();
+}
+
 test("an approved bracket runs CalculiX and one real optimization", async ({ page, request }) => {
   test.setTimeout(360_000);
   const health = await request.get("http://127.0.0.1:8000/api/v1/health");
@@ -13,6 +17,7 @@ test("an approved bracket runs CalculiX and one real optimization", async ({ pag
     "Design an aluminum bracket. Force 200 N. Legs 80 mm by 80 mm. Thickness 8 mm. Bracket width 40 mm. Displacement limit 1 mm.",
   );
   await page.getByRole("button", { name: "Send" }).click();
+  await showInspectorStep(page, "Results");
   await page.getByLabel("Fixed face").selectOption("xmin");
   await page.getByLabel("Load face").selectOption("zmax");
   await page.getByRole("button", { name: "Confirm faces" }).click();
@@ -29,17 +34,18 @@ test("an approved bracket runs CalculiX and one real optimization", async ({ pag
   expect(report.ok()).toBeTruthy();
   const reportBody = await report.json();
   expect(JSON.stringify(reportBody).toLowerCase()).toContain("calculix");
+  await page.locator('nav[aria-label="Run steps"]').getByRole("button", { name: /Optimize/ }).click();
   await page.getByLabel("Lower mm").fill("4");
   await page.getByLabel("Iterations").fill("2");
   await page.getByRole("button", { name: "Optimize with FEM" }).click();
-  const optimality = page.getByText("Not a proof of a global optimum");
+  const optimality = page.getByText(/Not a (proof of a )?global optimum/i);
   try {
     await expect(optimality).toBeVisible({ timeout: 180_000 });
   } catch (error) {
     const visible = await page.locator("body").innerText();
     throw new Error(`${error instanceof Error ? error.message : String(error)}\n\n${visible.slice(0, 4000)}`);
   }
-  await expect(page.getByText("Not a certified safety factor").first()).toBeVisible();
+  await expect(page.getByText(/Not a certified safety factor|factor stays exploratory/i).first()).toBeVisible();
   await page.screenshot({ path: "../../docs/screenshots/bracket-optimization-1440x900.png" });
   expect(pageErrors).toEqual([]);
 });

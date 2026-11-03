@@ -1,4 +1,11 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
+
+async function showDesignStep(page: Page, label: string) {
+  await page.locator('nav[aria-label="Design steps"]').getByRole("button", { name: new RegExp(label) }).click();
+}
+async function showRunStep(page: Page, label: string) {
+  await page.locator('nav[aria-label="Run steps"]').getByRole("button", { name: new RegExp(label) }).click();
+}
 
 test("the landing page opens the studio example", async ({ page }) => {
   await page.goto("/");
@@ -73,4 +80,44 @@ test("a mocked job can be submitted, reopened, and cancelled", async ({ page }) 
   await page.getByRole("cell", { name: jobId.slice(0, 8) }).click();
   await page.reload();
   await expect(page.getByText("0.5652").first()).toBeVisible();
+});
+
+test("the studio panels show one step at a time and paginate through them", async ({ page }) => {
+  await page.goto("/studio");
+  await expect(page.getByRole("heading", { name: "Part", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Loads" })).toHaveCount(0);
+  await expect(page.getByText("What the part is: shape, size, and material.")).toBeVisible();
+  await expect(page.getByRole("link", { name: "Capabilities" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Dashboard" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Projects" })).toBeVisible();
+  await expect(page.locator('nav[aria-label="Primary"] a[href="/capabilities"] svg')).toBeVisible();
+  await showDesignStep(page, "Loads");
+  await expect(page.getByRole("heading", { name: "Loads" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Part", exact: true })).toHaveCount(0);
+  await expect(page.getByLabel("Support")).toBeVisible();
+  await page.locator('nav[aria-label="Design pagination"]').getByRole("button", { name: /Next/ }).click();
+  await expect(page.getByRole("heading", { name: "Assistant" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Loads" })).toHaveCount(0);
+  await page.locator('nav[aria-label="Design pagination"]').getByRole("button", { name: /Loads/ }).click();
+  await expect(page.getByRole("heading", { name: "Loads" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Run", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Run analysis" })).toBeVisible();
+  await showRunStep(page, "Results");
+  await expect(page.getByRole("heading", { name: "Results" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Run", exact: true })).toHaveCount(0);
+  await expect(page.getByText("No result yet. Run an analysis first, then come back here.")).toBeVisible();
+  await page.locator('nav[aria-label="Run pagination"]').getByRole("button", { name: /Next/ }).click();
+  await expect(page.getByRole("heading", { name: "View" })).toBeVisible();
+  await showRunStep(page, "Optimize");
+  await expect(page.getByRole("heading", { name: "Optimize" })).toBeVisible();
+  await expect(page.getByText("Last step")).toBeVisible();
+  const runStepWidths = await page.locator('nav[aria-label="Run steps"] button').evaluateAll((buttons) =>
+    buttons.map((button) => Math.round(button.getBoundingClientRect().width)),
+  );
+  expect(Math.max(...runStepWidths) - Math.min(...runStepWidths)).toBeLessThanOrEqual(1);
+  const footerWidths = await page.locator('nav[aria-label="Run pagination"] button').evaluateAll((buttons) =>
+    buttons.map((button) => Math.round(button.getBoundingClientRect().width)),
+  );
+  expect(footerWidths).toHaveLength(2);
+  expect(Math.abs(footerWidths[0] - footerWidths[1])).toBeLessThanOrEqual(1);
 });

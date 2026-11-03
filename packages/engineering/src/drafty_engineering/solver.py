@@ -409,7 +409,18 @@ def nodal_fields(
     return displacement, accumulator / visits
 
 
+_SOLVER_AVAILABILITY_CACHE: dict = {"at": 0.0, "value": None}
+
+
 def solver_availability() -> dict:
+    """Report CalculiX availability. Cached briefly so /health cannot stall on Docker."""
+
+    import time
+
+    now = time.time()
+    cached = _SOLVER_AVAILABILITY_CACHE["value"]
+    if cached is not None and now - float(_SOLVER_AVAILABILITY_CACHE["at"]) < 30:
+        return cached
     binary = os.environ.get("CCX_BIN", "ccx")
     image = os.environ.get("CCX_DOCKER_IMAGE", "drafty-ccx")
     preference = os.environ.get("DRAFTY_USE_DOCKER_CCX", "auto")
@@ -418,17 +429,21 @@ def solver_availability() -> dict:
     if preference != "never":
         docker_ready = _docker_image_exists(image)
     if local and preference != "always":
-        return {"available": True, "mode": "local", "detail": local}
-    if docker_ready and preference != "never":
-        return {"available": True, "mode": "docker", "detail": image}
-    return {
-        "available": False,
-        "mode": "missing",
-        "detail": (
-            "CalculiX is not available. Install ccx on PATH or build the solver image with "
-            "`docker build -t drafty-ccx -f infra/docker/Dockerfile.ccx infra/docker`."
-        ),
-    }
+        value = {"available": True, "mode": "local", "detail": local}
+    elif docker_ready and preference != "never":
+        value = {"available": True, "mode": "docker", "detail": image}
+    else:
+        value = {
+            "available": False,
+            "mode": "missing",
+            "detail": (
+                "CalculiX is not available. Install ccx on PATH or build the solver image with "
+                "`docker build -t drafty-ccx -f infra/docker/Dockerfile.ccx infra/docker`."
+            ),
+        }
+    _SOLVER_AVAILABILITY_CACHE["at"] = now
+    _SOLVER_AVAILABILITY_CACHE["value"] = value
+    return value
 
 
 def _wait_for_solver(
@@ -464,7 +479,7 @@ def _docker_image_exists(image: str) -> bool:
         completed = subprocess.run(
             ["docker", "image", "inspect", image],
             capture_output=True,
-            timeout=30,
+            timeout=2,
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired):

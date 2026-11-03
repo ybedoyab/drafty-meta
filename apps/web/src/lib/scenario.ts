@@ -20,38 +20,150 @@ export interface ScenarioInputs {
   material_id?: string;
   support_face?: string;
   load_face?: string;
+  domain?: string;
+  physical_system?: string;
+  requested_part?: string;
 }
 
-export interface ScenarioForm {
-  jurisdiction: string;
-  spanM: string;
-  tributaryM: string;
-  deadKn: string;
-  liveKn: string;
-  selfWeight: string;
-  depthMm: string;
-  flangeWidthMm: string;
-  flangeThicknessMm: string;
-  webThicknessMm: string;
-  supports: string;
+/** One registry input. Stored in SI; shown as stored value * display_scale. */
+export interface PartInput {
+  name: string;
+  label: string;
+  unit: string;
+  display_unit: string;
+  display_scale: number;
+  kind: "number" | "text" | "choice" | "face";
+  group: string;
+  required: boolean;
+  choices: string[];
 }
 
-export const emptyForm = (): ScenarioForm => ({
-  jurisdiction: "",
-  spanM: "",
-  tributaryM: "",
-  deadKn: "",
-  liveKn: "",
-  selfWeight: "",
-  depthMm: "",
-  flangeWidthMm: "",
-  flangeThicknessMm: "",
-  webThicknessMm: "",
-  supports: "",
-});
+export interface PartSummary {
+  id: string;
+  name: string;
+  description: string;
+  domain: string;
+  analysis: string[];
+  exports: string[];
+  where: "scenario" | "studio";
+  methods: string[];
+  limits: string[];
+  inputs: PartInput[];
+}
+
+export const ANALYSIS_LABEL: Record<string, string> = {
+  none: "geometry only",
+  analytical: "closed-form checks",
+  "beam-element": "beam elements",
+  calculix: "CalculiX solid FEM",
+};
+
+/** Must match CAPABILITIES_PATH in drafty_engineering.catalog. */
+export const CAPABILITIES_PATH = "/capabilities";
+
+/** Splits a reply around "(/capabilities)" so the chat can render that path as a link. */
+export function messageSegments(text: string): { text: string; link: boolean }[] {
+  return text
+    .split(/\((\/capabilities)\)/)
+    .map((part, index) => ({ text: part, link: index % 2 === 1 }))
+    .filter((part) => part.text);
+}
+
+export interface PartCatalogView {
+  status: "supported" | "unsupported" | "unclassified";
+  requested_part: string | null;
+  active_part: PartSummary | null;
+  form_part: PartSummary | null;
+  parts: PartSummary[];
+  message: string;
+}
+
+/** Form text keyed by registry input name, in display units. */
+export type ScenarioForm = Record<string, string>;
+
+export const emptyForm = (): ScenarioForm => ({});
+
+export function fieldLabel(field: PartInput): string {
+  return field.display_unit ? `${field.label} ${field.display_unit}` : field.label;
+}
+
+/** Inputs the Inputs panel edits. Faces are confirmed in the simulation gate instead. */
+export function formFields(part: PartSummary | null | undefined): PartInput[] {
+  return (part?.inputs ?? []).filter((field) => field.kind !== "face");
+}
+
+/** Every editable input of every chat part, so switching parts keeps what was typed. */
+export function scenarioFields(catalog: PartCatalogView | null | undefined): PartInput[] {
+  const seen = new Map<string, PartInput>();
+  for (const part of catalog?.parts ?? []) {
+    if (part.where !== "scenario") continue;
+    for (const field of formFields(part)) if (!seen.has(field.name)) seen.set(field.name, field);
+  }
+  return [...seen.values()];
+}
+
+export function groupFields(fields: PartInput[]): [string, PartInput[]][] {
+  const groups = new Map<string, PartInput[]>();
+  for (const field of fields) groups.set(field.group, [...(groups.get(field.group) ?? []), field]);
+  return [...groups.entries()];
+}
 
 export const CLASSROOM_PROMPT =
   "I need a steel I-beam supporting a classroom floor for approximately 30 students. Research the applicable loads, ask me for the missing dimensions, propose a preliminary structural model, and explain the checks required.";
+
+export interface MetaModel {
+  id: string;
+  name: string;
+  short_name: string;
+  description: string;
+  detail: string;
+  default: boolean;
+}
+
+/** Fallback matching the server catalog, so the picker works before /api/v1/models answers. */
+export const META_MODELS: MetaModel[] = [
+  {
+    id: "muse-spark-1.3",
+    name: "Muse Spark 1.3",
+    short_name: "Spark 1.3",
+    description: "Most efficient for simpler tasks",
+    detail: "Fast everyday model for collecting inputs and routine turns.",
+    default: true,
+  },
+  {
+    id: "muse-wonder-1.0",
+    name: "Muse Wonder 1.0",
+    short_name: "Wonder 1.0",
+    description: "For your toughest challenges",
+    detail: "Deeper reasoning for complex work and harder questions.",
+    default: false,
+  },
+];
+
+export const DEFAULT_MODEL_ID = META_MODELS.find((model) => model.default)?.id ?? META_MODELS[0].id;
+
+export function isMetaModelId(models: MetaModel[], id: string | null | undefined): id is string {
+  return Boolean(id) && models.some((model) => model.id === id);
+}
+
+export function metaModel(models: MetaModel[], id: string | null | undefined): MetaModel {
+  return models.find((model) => model.id === id) ?? models.find((model) => model.default) ?? models[0] ?? META_MODELS[0];
+}
+
+const MODEL_KEY = "drafty.scenario.model.v1";
+
+export function rememberModelId(storage: Storage, id: string) {
+  if (isMetaModelId(META_MODELS, id)) storage.setItem(MODEL_KEY, id);
+}
+
+export function recallModelId(storage: Storage): string {
+  try {
+    const saved = storage.getItem(MODEL_KEY);
+    return isMetaModelId(META_MODELS, saved) ? saved : DEFAULT_MODEL_ID;
+  } catch {
+    return DEFAULT_MODEL_ID;
+  }
+}
 
 const KEY = "drafty.scenario.v2";
 const STUDIO_KEY = "drafty.studio.pending";
@@ -75,6 +187,11 @@ export function rememberScenarioId(storage: Storage, id: string) {
   storage.setItem(KEY, JSON.stringify({ version: 2, id }));
 }
 
+export function forgetScenarioId(storage: Storage, id?: string) {
+  if (id !== undefined && recallScenarioId(storage) !== id) return;
+  storage.removeItem(KEY);
+}
+
 export function recallScenarioId(storage: Storage): string | null {
   try {
     const parsed = JSON.parse(storage.getItem(KEY) || "") as { version?: number; id?: string };
@@ -84,45 +201,33 @@ export function recallScenarioId(storage: Storage): string | null {
   }
 }
 
-function scaled(value: string, factor: number): number | null {
+function parsed(value: string, scale: number): number | null {
   if (value.trim() === "") return null;
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed * factor : null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number / scale : null;
 }
 
-function shown(value: number | null, factor: number): string {
-  return value == null ? "" : String(value * factor);
+function shown(value: unknown, scale: number): string {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "";
+  return String(Number((value * scale).toPrecision(12)));
 }
 
-export function inputsFromForm(form: ScenarioForm): ScenarioInputs {
-  return {
-    jurisdiction: form.jurisdiction.trim(),
-    span_m: scaled(form.spanM, 1),
-    tributary_width_m: scaled(form.tributaryM, 1),
-    dead_n_per_m2: scaled(form.deadKn, 1000),
-    live_n_per_m2: scaled(form.liveKn, 1000),
-    beam_self_weight_n_per_m: scaled(form.selfWeight, 1),
-    depth_m: scaled(form.depthMm, 0.001),
-    flange_width_m: scaled(form.flangeWidthMm, 0.001),
-    flange_thickness_m: scaled(form.flangeThicknessMm, 0.001),
-    web_thickness_m: scaled(form.webThicknessMm, 0.001),
-    student_count: null,
-    supports: form.supports.trim(),
-  };
+/** SI inputs for the listed fields only. Other stored inputs stay as the server has them. */
+export function inputsFromForm(form: ScenarioForm, fields: PartInput[]): Record<string, number | string | null> {
+  const inputs: Record<string, number | string | null> = {};
+  for (const field of fields) {
+    const value = form[field.name] ?? "";
+    inputs[field.name] = field.kind === "number" ? parsed(value, field.display_scale || 1) : value.trim();
+  }
+  return inputs;
 }
 
-export function formFromInputs(inputs: ScenarioInputs): ScenarioForm {
-  return {
-    jurisdiction: inputs.jurisdiction || "",
-    spanM: shown(inputs.span_m, 1),
-    tributaryM: shown(inputs.tributary_width_m, 1),
-    deadKn: shown(inputs.dead_n_per_m2, 0.001),
-    liveKn: shown(inputs.live_n_per_m2, 0.001),
-    selfWeight: shown(inputs.beam_self_weight_n_per_m, 1),
-    depthMm: shown(inputs.depth_m, 1000),
-    flangeWidthMm: shown(inputs.flange_width_m, 1000),
-    flangeThicknessMm: shown(inputs.flange_thickness_m, 1000),
-    webThicknessMm: shown(inputs.web_thickness_m, 1000),
-    supports: inputs.supports || "",
-  };
+export function formFromInputs(inputs: ScenarioInputs, fields: PartInput[]): ScenarioForm {
+  const stored = inputs as unknown as Record<string, unknown>;
+  const form: ScenarioForm = {};
+  for (const field of fields) {
+    const value = stored[field.name];
+    form[field.name] = field.kind === "number" ? shown(value, field.display_scale || 1) : String(value ?? "");
+  }
+  return form;
 }
