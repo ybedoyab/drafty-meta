@@ -23,6 +23,7 @@ test("an approved bracket runs CalculiX and one real optimization", async ({ pag
   await page.getByRole("button", { name: "Confirm faces" }).click();
   await page.getByRole("button", { name: "Approve and open Studio" }).click();
   await expect(page.getByLabel("Part")).toHaveValue("l_bracket");
+  await expect(page.getByRole("button", { name: "Load cantilever example" })).toHaveCount(0);
   await expect(page.getByLabel("Order")).toHaveValue("2");
   await page.getByRole("button", { name: "Run analysis" }).click();
   await expect(page.getByText("Governing von Mises", { exact: true })).toBeVisible({ timeout: 180_000 });

@@ -6,6 +6,8 @@ Two entries stay on the homepage. **Start with AI** opens `/scenario/new`. **Ope
 
 One orchestration handles understanding, research, assumptions, modeling, verification, and criticism. Physics is `evaluate_classroom` and, after the user runs it, `analyze_simply_supported_udl`. The model cannot replace those numbers.
 
+Mechanical parts (L-bracket, cantilever beam, plate, perforated plate) are proposed in this chat as a parametric CAD spec. Nothing is meshed or solved here. After the user confirms the fixed and load faces and approves the proposal, the spec opens prefilled in Studio, where Preview and Run analysis (CalculiX) happen.
+
 ## Offline, no Meta key
 
 The page says **AI not connected**. A classroom note of 30 students does not become a load. NSR-10 Title B Table B.4.2.1-1, 2.0 kN/m², is applied only after the jurisdiction is Colombia, and it is marked assumed. The line load is `(q_dead + q_live) * tributary width + self-weight`. A simple-span elastic moment, reaction, and deflection are shown when the I-section is valid.

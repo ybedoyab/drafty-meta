@@ -17,11 +17,28 @@ from drafty_engineering.catalog import (
     unsupported_sentence,
 )
 from drafty_engineering.materials import MATERIALS
-from drafty_engineering.spec import BracketGeometry, DesignSpec, Direction, Load, Support
+from drafty_engineering.spec import (
+    BeamGeometry,
+    BracketGeometry,
+    DesignSpec,
+    Direction,
+    HolePattern,
+    Load,
+    PlateGeometry,
+    Support,
+)
 
 Domain = Literal["structural", "mechanical", "geometry", "unsupported", "ambiguous", "unknown"]
 System = Literal[
-    "simply_supported_ibeam", "l_bracket", "revolved_profile", "unsupported", "ambiguous", "unknown"
+    "simply_supported_ibeam",
+    "l_bracket",
+    "revolved_profile",
+    "cantilever_beam",
+    "plate",
+    "perforated_plate",
+    "unsupported",
+    "ambiguous",
+    "unknown"
 ]
 QuantityStatus = Literal["confirmed", "assumed", "researched", "calculated", "unknown"]
 ToolName = Literal[
@@ -144,6 +161,19 @@ def classify_request(
         if len(narrowed) == 1:
             hits = narrowed
     if len(hits) > 1:
+        # Only a keyword that contains another hit's keyword is more specific ("perforated plate" over "plate").
+        matched = {
+            p.id: [w for w in p.keywords if re.search(rf"\b{re.escape(w)}\b", message, re.I)] for p in hits
+        }
+        specific = [
+            p
+            for p in hits
+            if any(
+                other != p.id and any(o in w for w in matched[p.id] for o in matched[other]) for other in matched
+            )
+        ]
+        if len(specific) == 1:
+            return Request(specific[0].domain, specific[0].id)
         return Request(AMBIGUOUS, AMBIGUOUS, _candidate_labels(hits))
     if len(hits) == 1:
         return Request(hits[0].domain, hits[0].id)
@@ -398,6 +428,148 @@ def proposed_bracket_spec(inputs: dict) -> dict | None:
     return spec.model_dump()
 
 
+_STUDIO_GEOMETRY = {
+    "cantilever_beam": (("beam.length_m", "length"), ("beam.width_m", "width"), ("beam.height_m", "height")),
+    "plate": (("plate.length_m", "length"), ("plate.width_m", "width"), ("plate.thickness_m", "thickness")),
+    "perforated_plate": (
+        ("plate.length_m", "length"),
+        ("plate.width_m", "width"),
+        ("plate.thickness_m", "thickness"),
+        ("holes.radius_m", "hole radius"),
+        ("holes.count_x", "holes along length"),
+        ("holes.count_y", "holes along width"),
+        ("holes.margin_m", "hole margin"),
+    ),
+}
+
+
+def evaluate_mechanical(inputs: dict) -> dict:
+    """Record what a mechanical part still needs. The L-bracket keeps its own study."""
+
+    system = str(inputs.get("physical_system") or "")
+    if system == "l_bracket":
+        return evaluate_bracket(inputs)
+    part = get_part(system)
+    fields = _STUDIO_GEOMETRY.get(system, ())
+    missing: list[str] = []
+    assumptions: list[dict] = []
+    for key, label in fields:
+        if inputs.get(key) is None:
+            missing.append(label)
+    material_id = str(inputs.get("material_id") or "")
+    if material_id not in MATERIALS:
+        missing.append("material")
+    else:
+        material = MATERIALS[material_id]
+        assumptions.append(
+            _assumption(
+                "material",
+                f"{material.name} comes from the stored library ({material.source}). It is not a lot certificate.",
+                "assumed",
+                "stored material library",
+            )
+        )
+    if inputs.get("load_magnitude") is None:
+        missing.append("force or pressure")
+    if not str(inputs.get("support_face") or "").strip() or not str(inputs.get("load_face") or "").strip():
+        missing.append("fixed face and load face")
+        assumptions.append(
+            _assumption("faces", "The fixed and load faces are not confirmed yet.", "assumed", "candidate CAD schema")
+        )
+    ready = not missing
+    name = part.phrase if part is not None else "this part"
+    return {
+        "missing": missing,
+        "errors": [],
+        "assumptions": assumptions,
+        "sources": [],
+        "line": None,
+        "section": None,
+        "beam": None,
+        "ready_for_3d_simulation": False,
+        "ready_for_beam_elements": False,
+        "ready_for_cad": ready,
+        "reason": (
+            f"This is {name} for the existing solid schema. CalculiX starts only after the model is approved "
+            "in Studio. It is not the classroom beam and it is not a certified design."
+            if ready
+            else f"The {name} is incomplete. No solid mesh and no CalculiX job are created."
+        ),
+        "verification": [
+            "No solid solve has been started from this scenario.",
+            "A photograph or a mask is not a dimension.",
+        ],
+    }
+
+
+def proposed_studio_spec(inputs: dict) -> dict | None:
+    """Build a DesignSpec for any mechanical part, only from stored numbers."""
+
+    system = str(inputs.get("physical_system") or "")
+    if system == "l_bracket":
+        return proposed_bracket_spec(inputs)
+    fields = _STUDIO_GEOMETRY.get(system)
+    if fields is None:
+        return None
+    if any(inputs.get(key) is None for key, _label in fields):
+        return None
+    if inputs.get("load_magnitude") is None:
+        return None
+    material_id = str(inputs.get("material_id") or "")
+    if material_id not in MATERIALS:
+        return None
+    support = str(inputs.get("support_face") or "").strip()
+    load_face = str(inputs.get("load_face") or "").strip()
+    if support not in _FACES or load_face not in _FACES or support == load_face:
+        return None
+    mode = str(inputs.get("load_mode") or "force")
+    if mode not in {"force", "pressure"}:
+        mode = "force"
+    dims = [float(inputs[key]) for key, _label in fields if not key.startswith("holes.count")]
+    mesh = min(dims) * 0.3
+    try:
+        geometry: dict = {}
+        if system == "cantilever_beam":
+            geometry["beam"] = BeamGeometry(
+                length_m=float(inputs["beam.length_m"]),
+                width_m=float(inputs["beam.width_m"]),
+                height_m=float(inputs["beam.height_m"]),
+            )
+        else:
+            geometry["plate"] = PlateGeometry(
+                length_m=float(inputs["plate.length_m"]),
+                width_m=float(inputs["plate.width_m"]),
+                thickness_m=float(inputs["plate.thickness_m"]),
+            )
+        if system == "perforated_plate":
+            geometry["holes"] = HolePattern(
+                radius_m=float(inputs["holes.radius_m"]),
+                count_x=int(float(inputs["holes.count_x"])),
+                count_y=int(float(inputs["holes.count_y"])),
+                margin_m=float(inputs["holes.margin_m"]),
+            )
+        spec = DesignSpec(
+            name=f"ai-{system.replace('_', '-')}",
+            kind=system,  # type: ignore[arg-type]
+            material_id=material_id,
+            mesh_size_m=mesh,
+            element_order=2,
+            supports=[Support(surface=support)],  # type: ignore[arg-type]
+            loads=[
+                Load(
+                    surface=load_face,  # type: ignore[arg-type]
+                    mode=mode,  # type: ignore[arg-type]
+                    magnitude=float(inputs["load_magnitude"]),
+                    direction=Direction(x=0, y=0, z=-1),
+                )
+            ],
+            **geometry,
+        )
+    except (ValueError, TypeError):
+        return None
+    return spec.model_dump()
+
+
 def build_scenario(
     *,
     description: str,
@@ -451,7 +623,7 @@ def build_scenario(
         actions.append("Ask for the missing quantities before any solve.")
     elif system == "simply_supported_ibeam" and analysis is None:
         actions.append("Run Euler-Bernoulli beam elements after the supports are confirmed.")
-    elif system == "l_bracket" and study.get("ready_for_cad"):
+    elif part is not None and part.studio_kind and study.get("ready_for_cad"):
         actions.append("Approve the CAD model and open Studio before CalculiX.")
     elif part is not None and part.analysis == ("none",) and study.get("ready_for_cad"):
         actions.append("Download STEP or STL. No structural check exists for this part.")
@@ -573,6 +745,18 @@ def _quantities(inputs: dict, study: dict, domain: str) -> list[EngineeringQuant
         geometry = study.get("geometry") or {}
         if geometry.get("volume_m3") is not None:
             rows.append(_quantity("volume", geometry["volume_m3"], "m3", "calculated", "revolved profile frustums"))
+    elif domain == "mechanical" and str(inputs.get("physical_system") or "") != "l_bracket":
+        for key, label in _STUDIO_GEOMETRY.get(str(inputs.get("physical_system") or ""), ()):
+            unit = "count" if key.startswith("holes.count") else "m"
+            rows.append(_quantity(label, inputs.get(key), unit, "confirmed"))
+        rows.append(_quantity("force or pressure", inputs.get("load_magnitude"), "N or Pa", "confirmed"))
+        material = str(inputs.get("material_id") or "")
+        if material in MATERIALS:
+            rows.append(
+                EngineeringQuantity(
+                    name="material", value_si=None, unit=material, status="assumed", source="stored material library"
+                )
+            )
     elif domain == "mechanical":
         material = str(inputs.get("material_id") or "")
         rows.extend(

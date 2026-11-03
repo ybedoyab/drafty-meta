@@ -214,7 +214,7 @@ function PartCard({ part }: { part: PartSummary }) {
             part.where === "scenario" ? "bg-indigo-50 text-indigo-700" : "bg-slate-100 text-slate-700"
           }`}
         >
-          {part.where === "scenario" ? "Chat" : "Studio"}
+          {part.studio_kind ? "Chat → Studio" : part.where === "scenario" ? "Chat" : "Studio"}
         </span>
       </div>
       <p className="mt-2 text-sm leading-6 text-slate-600">{part.description}</p>

@@ -176,7 +176,7 @@ def _run(
         return _trace(
             name,
             "proposed",
-            "A parametric L-bracket is ready for approval. CalculiX has not started.",
+            f"A parametric {studio_spec.get('kind', 'part')} is ready for approval. CalculiX has not started.",
             "user_confirmation",
             {
                 "kind": studio_spec.get("kind"),

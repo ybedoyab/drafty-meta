@@ -61,6 +61,7 @@ export function Workstation() {
   const [params] = useSearchParams();
   const scenarioId = params.get("scenario");
   const [form, setForm] = useState<DesignForm>(benchmarkForm);
+  const [specApplied, setSpecApplied] = useState(false);
   const [compute, setCompute] = useState<"local" | "modal">("local");
   const [displacementLimitM, setDisplacementLimitM] = useState<number | null>(null);
 
@@ -68,7 +69,18 @@ export function Workstation() {
     if (!scenarioId) {
       const pending = takeStudioSpec(localStorage);
       if (pending && typeof pending === "object") {
+        setSpecApplied(true);
         setForm((current) => specToForm(pending as DesignSpec, current));
+        void previewSpec(formToSpec(specToForm(pending as DesignSpec, benchmarkForm)))
+          .then((url) => {
+            setPreviewUrl((current) => {
+              if (current) URL.revokeObjectURL(current);
+              return url;
+            });
+          })
+          .catch((error: unknown) =>
+            setFormError(error instanceof Error ? error.message : "The preview could not be built."),
+          );
       }
       return;
     }
@@ -76,7 +88,22 @@ export function Workstation() {
     getScenario(scenarioId)
       .then((scenario) => {
         if (cancel || scenario.studio_approval !== "confirmed" || !scenario.studio_spec) return;
+        setSpecApplied(true);
         setForm((current) => specToForm(scenario.studio_spec as unknown as DesignSpec, current));
+        void previewSpec(formToSpec(specToForm(scenario.studio_spec as unknown as DesignSpec, benchmarkForm)))
+          .then((url) => {
+            if (cancel) {
+              URL.revokeObjectURL(url);
+              return;
+            }
+            setPreviewUrl((current) => {
+              if (current) URL.revokeObjectURL(current);
+              return url;
+            });
+          })
+          .catch((error: unknown) => {
+            if (!cancel) setFormError(error instanceof Error ? error.message : "The preview could not be built.");
+          });
         const limit = scenario.inputs.displacement_limit_m;
         if (typeof limit === "number") setDisplacementLimitM(limit);
       })
@@ -277,6 +304,7 @@ export function Workstation() {
   const loadAxis = loadDirection([form.directionX, form.directionY, form.directionZ]).axisLabel;
   const loadLabel =
     form.loadMode === "pressure" ? `Pressure ${form.magnitude} MPa ${loadAxis}` : `${form.magnitude} N ${loadAxis}`;
+  const fromScenario = Boolean(scenarioId) || specApplied;
   // Left defines the model, right runs and reads it. Each side paginates independently.
   const designIssues = formIssues(form);
   const designSteps: StudioStep[] = [
@@ -330,6 +358,8 @@ export function Workstation() {
         <h2 className="text-sm font-semibold">Part</h2>
         <p className="mt-1 text-sm text-gray-600">{designSteps[0].hint}</p>
         <div className="mt-3">
+        {!fromScenario && (
+        <>
         <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-blue-800">Start here</p>
         <button
           type="button"
@@ -345,6 +375,8 @@ export function Workstation() {
             300 × 20 × 12 mm steel beam, fixed at one end, 100 N downward at the free end. No AI key required.
           </p>
         </button>
+        </>
+        )}
         <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-blue-800">Part details</p>
         <div className="grid grid-cols-2 gap-2">
           <label className="field col-span-2">

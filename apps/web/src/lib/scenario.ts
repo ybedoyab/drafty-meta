@@ -46,6 +46,7 @@ export interface PartSummary {
   analysis: string[];
   exports: string[];
   where: "scenario" | "studio";
+  studio_kind?: string | null;
   methods: string[];
   limits: string[];
   inputs: PartInput[];

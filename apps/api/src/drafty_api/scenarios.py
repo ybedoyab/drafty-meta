@@ -32,7 +32,7 @@ from drafty_engineering.artifacts import MAX_ARTIFACT_BYTES
 from drafty_engineering.beam_fem import analyze_simply_supported_udl
 from drafty_engineering.catalog import PARTS, catalog_view, get_part, scenario_parts
 from drafty_engineering.demos import bracket_record, classroom_record
-from drafty_engineering.plan import build_scenario, evaluate_bracket, proposed_bracket_spec, workflow_stage
+from drafty_engineering.plan import build_scenario, evaluate_mechanical, proposed_studio_spec, workflow_stage
 from drafty_engineering.scenario import classroom_kwargs, evaluate_classroom
 from drafty_engineering.spec import RevolvedProfile
 
@@ -452,7 +452,7 @@ def approve_model(scenario_id: str, request: Request) -> dict:
         {
             "role": "assistant",
             "text": (
-                "The L-bracket was handed to Studio. CalculiX has not started. "
+                "The part was handed to Studio. CalculiX has not started. "
                 "Run the solid solve there if the faces and the force are the ones you want."
             ),
         }
@@ -472,17 +472,17 @@ def confirm_faces(scenario_id: str, body: FaceBody, request: Request) -> dict:
     if support not in _FACES or load_face not in _FACES or support == load_face:
         raise HTTPException(status_code=422, detail="Choose two different bounding-box faces.")
     if session.get("inputs", {}).get("domain") != "mechanical":
-        raise HTTPException(status_code=422, detail="Faces apply to a mechanical bracket, not the classroom beam.")
+        raise HTTPException(status_code=422, detail="Faces apply to a mechanical part, not the classroom beam.")
     inputs = dict(session["inputs"])
     inputs["support_face"] = support
     inputs["load_face"] = load_face
-    spec = proposed_bracket_spec(inputs)
+    spec = proposed_studio_spec(inputs)
     if spec is None:
         raise HTTPException(
             status_code=422,
-            detail="The bracket still lacks a dimension, a force, or a library material.",
+            detail="The part still lacks a dimension, a load, or a library material.",
         )
-    study = evaluate_bracket(inputs)
+    study = evaluate_mechanical(inputs)
     session["inputs"] = inputs
     session["studio_spec"] = {**spec, "approval": "pending"}
     session["studio_approval"] = "pending"
@@ -490,13 +490,13 @@ def confirm_faces(scenario_id: str, body: FaceBody, request: Request) -> dict:
     session["assumptions"] = study["assumptions"]
     session["verification"] = study["verification"]
     session["model_proposal"] = {
-        "family": "parametric L-bracket, pending approval",
+        "family": f"parametric {spec['kind']}, pending approval",
         "ready_for_3d_simulation": False,
         "ready_for_beam_elements": False,
         "reason": study["reason"],
     }
     engineering = build_scenario(
-        description="Confirmed bracket faces",
+        description="Confirmed part faces",
         inputs=inputs,
         study=study,
         sources=list(session.get("sources") or []),
