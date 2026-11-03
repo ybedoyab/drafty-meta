@@ -8,7 +8,10 @@
     "build": "tsc -p tsconfig.json --noEmit && vite build",
     "preview": "vite preview",
     "test": "vitest run",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "test:qa-production": "playwright test --project=qa-production --workers=1 --retries=0",
+    "test:qa-local": "playwright test --project=qa-local --workers=1 --retries=0",
+    "test:e2e:ci": "playwright test --project=regression e2e/scenario.spec.ts e2e/bracket-fem.spec.ts --reporter=line"
   },
   "dependencies": {
     "@react-three/drei": "^10.0.0",

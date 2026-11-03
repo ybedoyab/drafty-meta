@@ -7,15 +7,24 @@ import { expect, test } from "@playwright/test";
 import {
   hasPrimaryCredentials,
   hasSecondaryCredentials,
+  productionPaidQaAuthorized,
   qaEnv,
   redact,
   targetFromProject,
 } from "./qa/env";
-import { recordJobId, remaining, tryConsume, budgetSnapshot, recordedJobIds } from "./qa/budget";
+import {
+  budgetRunId,
+  budgetSnapshot,
+  recordJobId,
+  recordedJobIds,
+  remaining,
+  tryConsume,
+} from "./qa/budget";
 import {
   accessTokenFromPage,
   apiJson,
   assertNonEmptyBinary,
+  cleanupQaOwnedLeftovers,
   cleanupTracked,
   collectPageErrors,
   createNamedScenario,
@@ -65,6 +74,29 @@ test.describe("Drafty live QA", () => {
     }
   });
 
+  test("cleanup verified DRAFTY_QA leftover scenarios only", async ({ page, request }) => {
+    const target = currentTarget();
+    if (target.kind === "production") {
+      test.skip(!qaEnv.runProduction, "Production flag off.");
+    }
+    await page.goto(target.web);
+    const result = await cleanupQaOwnedLeftovers(request, target.api, page);
+    console.log(JSON.stringify({ target: target.kind, leftover_cleanup: result }));
+    if (target.kind === "production" && result.failed.some((item) => item.endsWith(":503"))) {
+      // Expected until the Storage nested-404 delete fix is merged and deployed to production.
+      console.log(
+        JSON.stringify({
+          production_cleanup: "BLOCKED",
+          reason:
+            "Production API returned 503 during QA scenario delete. The Storage cleanup fix lives on the QA branch until merge+deploy; do not treat branch HEAD as live production.",
+          ids: result.failed.map((item) => item.split(":")[0]),
+        }),
+      );
+      return;
+    }
+    expect(result.failed, JSON.stringify(result.failed)).toEqual([]);
+  });
+
   test("health and homepage are reachable", async ({ page, request }) => {
     const target = currentTarget();
     if (target.kind === "production") {
@@ -84,6 +116,9 @@ test.describe("Drafty live QA", () => {
         modal: body.modal_available ?? body.modal,
         meta: body.meta,
         supabase: body.supabase,
+        budget_run_id: budgetRunId(),
+        budget: budgetSnapshot(),
+        paid_gate: productionPaidQaAuthorized(),
       }),
     );
     await page.goto(target.web);
@@ -189,6 +224,8 @@ test.describe("Drafty live QA", () => {
     if (target.kind === "production") {
       test.skip(!qaEnv.runProduction, "Production flag off.");
       test.skip(!qaEnv.runLiveModal, "Production pawn may require Modal; DRAFTY_QA_RUN_LIVE_MODAL is false.");
+      const gate = productionPaidQaAuthorized();
+      test.skip(!gate.ok, gate.reason);
       test.skip(remaining("modal_geometry") < 1, "Modal geometry budget exhausted.");
     }
 
@@ -301,6 +338,8 @@ test.describe("Drafty live QA", () => {
     if (target.kind === "production") {
       test.skip(!qaEnv.runProduction, "Production flag off.");
       test.skip(!qaEnv.runLiveModal, "Paid Modal FEM disabled.");
+      const gate = productionPaidQaAuthorized();
+      test.skip(!gate.ok, gate.reason);
       test.skip(remaining("modal_fem") < 1, "Modal FEM budget exhausted.");
     }
     await page.goto(target.web);
@@ -431,6 +470,8 @@ test.describe("Drafty live QA", () => {
     // Prefer local when both targets run; production Meta only if local already skipped.
     if (target.kind === "production") {
       test.skip(!qaEnv.runProduction, "Production flag off.");
+      const gate = productionPaidQaAuthorized();
+      test.skip(!gate.ok, gate.reason);
     }
     expect(tryConsume("meta"), "reserve Meta budget").toBe(true);
     await page.goto(target.web);

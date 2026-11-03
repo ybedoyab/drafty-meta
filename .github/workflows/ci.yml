@@ -103,4 +103,4 @@ jobs:
         working-directory: apps/web
         env:
           DRAFTY_LIVE_META: "0"
-        run: npx playwright test e2e/scenario.spec.ts e2e/bracket-fem.spec.ts --reporter=line
+        run: npx playwright test --project=regression e2e/scenario.spec.ts e2e/bracket-fem.spec.ts --reporter=line

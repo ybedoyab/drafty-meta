@@ -1,135 +1,96 @@
 # Drafty Engineering — Automated End-to-End QA Report
 
-**Baseline commit:** `c55173e2beeafef67dad197cc29544c46c08f8a9` (`main` after PR #1)  
+**Baseline / main tip (production today):** `6c6a17e153e505183718dc5276fd82585a1bdc25`  
 **QA harness branch:** `qa/e2e-live-harness`  
-**This incremental commit:** (see git tip after push)  
-**Report updated:** 2026-11-03  
-**Batch 10A:** not started · **Merge/deploy:** not performed  
+**QA branch tip (pre-merge):** see latest push on PR #3  
+**PR:** https://github.com/ybedoyab/drafty-meta/pull/3  
+**Batch 10A:** not started · **Auto-merge:** not performed  
 
-## Endpoints
+## Deploy / paid-cloud gate (critical)
 
-| Target | Web | API |
-|---|---|---|
-| Local | http://127.0.0.1:5173 | http://127.0.0.1:8000 |
-| Production | https://drafty-web-umber.vercel.app | https://drafty-api.vercel.app |
-
-## Environment capabilities (this session)
-
-| Capability | Local | Production |
-|---|---|---|
-| Docker Desktop engine | **available** (Server 29.9.2) | N/A |
-| `drafty-ccx` image | **built and used** | N/A |
-| CalculiX | **available** (`mode=docker`) | unavailable on Vercel (expected; compute=`modal`) |
-| Auth | `supabase` | `supabase` |
-| Modal configured/available | false / false | true / true (health only) |
-| `DRAFTY_QA_RUN_LIVE_MODAL` | **false** | **false** |
-| `DRAFTY_QA_RUN_LIVE_META` | **false** | **false** |
-| `DRAFTY_QA_RUN_PRODUCTION` | true | true |
-
-## Regression
-
-| Check | Result |
+| Claim | Status |
 |---|---|
-| Ruff (touched modules) | PASS |
-| Pytest non-FEM | PASS (prior + this session) |
-| Pytest FEM (`-m fem`) | **PASS (9)** |
-| Production hardening / integration cleanup tests | **PASS (22)** |
-| Vitest / TS build | PASS (prior session; unchanged frontend product code) |
-| Deterministic `bracket-fem.spec.ts` (auth disabled) | **PASS** (~51s, includes one local optimization) |
-| Deterministic Playwright under `auth=supabase` | BLOCKED (expected; CI remains auth-disabled) |
+| Local CalculiX + FEM proven | **YES** (prior session + this prep) |
+| Storage nested-404 delete fix on QA branch | **YES** (`storage.py`) |
+| Same fix live on **Vercel production** | **NO** until PR #3 is merged **and** production redeploys |
+| Paid Modal/Meta production session | **NOT RUN** — flags false and/or production lacks cleanup fix |
 
-## Live QA harness fixes (this session)
+Paid production QA requires **all** of:
 
-- Full bracket lifecycle: Confirm faces → Studio → Run analysis → poll job to **completed** → results/artifacts → reload → re-open Results.
-- Paid-call budget module (`e2e/qa/budget.ts`): ≤1 Modal geometry, ≤1 Modal FEM, ≤1 Meta across the process.
-- Auth hardening: wait for authenticated `/scenarios` GET; JWT probe before API helpers.
-- Artifact fetch uses authenticated API (not bare `page.request`).
-- **Defect fix:** Supabase Storage returns HTTP **400** with nested `statusCode: "404"` for missing objects; `delete_private_object` now treats that as success so local FEM scenario delete no longer 503s.
-- **Defect fix:** `purge_remote_job` skips speculative remote deletes when no remote job/artifact rows exist.
+1. PR #3 merged to `main`
+2. Vercel production deployment of that commit
+3. `DRAFTY_QA_RUN_PRODUCTION=true`
+4. `DRAFTY_QA_RUN_LIVE_MODAL=true` and/or `DRAFTY_QA_RUN_LIVE_META=true`
+5. `DRAFTY_QA_REQUIRE_PROD_COMMIT=<deployed production git SHA>`
+6. Single invocation: `npm run test:qa-production` (`--workers=1 --retries=0`)
 
-## Live results
+## Environment flags (this prep session)
 
-### Local (`qa-local`)
-
-| Case | Status | Evidence |
-|---|---|---|
-| Auth / persistence / isolation / classroom beam / pawn (prior) | PASS | Prior report; not re-burned unnecessarily |
-| Aluminum bracket **real CalculiX** | **PASS** | Job `6883389d-07cb-44d3-adc9-da5d5b9e8279` (also verified `a4b6b782…`, `140dd573…`, `5a119649…` during harness iteration) |
-| Scenario deletion after FEM | **PASS** | `QA cleanup deleted: 1`; geometry cache retained |
-| Live Meta | SKIP | flag false |
-| Mic / live ASR | NOT TESTED | mock only |
-
-**Representative FEM metrics (job `6883389d-07cb-44d3-adc9-da5d5b9e8279`):**
-
-| Field | Value |
+| Flag | Value |
 |---|---|
-| Solver | CalculiX 2.20 · `mode=docker` |
-| Mesh | 31795 nodes · 18980 · C3D10 · order 2 · target 2.4 mm |
-| Max displacement | 1.3038230447564577e-7 m |
-| Governing von Mises | 665097.1852987445 Pa |
-| Equilibrium | **passed=true** |
-| Validation label | `solver_completed` |
-| Warnings | 5 (non-empty; exploratory / numerical notices preserved) |
+| `DRAFTY_QA_RUN_PRODUCTION` | true |
+| `DRAFTY_QA_RUN_LIVE_MODAL` | **false** |
+| `DRAFTY_QA_RUN_LIVE_META` | **false** |
+| `DRAFTY_QA_REQUIRE_PROD_COMMIT` | unset |
 
-### Production (`qa-production`)
+## CI (PR #3)
 
-| Case | Status | Notes |
+| Check | First run on `d7909f4` | After config/CI fix |
 |---|---|---|
-| Prior auth/persistence/isolation/beam/cleanup | PASS | Prior session |
-| Pawn Modal geometry (miss→hit) | **SKIP** | `DRAFTY_QA_RUN_LIVE_MODAL=false` |
-| Bracket Modal FEM | **SKIP** | flag false — **not proven** |
-| Live Meta (one turn) | **SKIP** | `DRAFTY_QA_RUN_LIVE_META=false` |
+| python | PASS | (pending re-run) |
+| api-bundle | PASS | (pending re-run) |
+| web | PASS | (pending re-run) |
+| e2e | **FAIL** | Root cause: Playwright config changed regression defaults (`timeout` / `fullyParallel`) vs `main`. Fixed by restoring CI-like defaults unless live QA is requested; CI now pins `--project=regression`. |
 
-## Invocation / cost
+## Live-call budget
 
-| Resource | Count | Cost |
-|---|---|---|
-| Paid Meta | 0 | NOT MEASURED / not invoked |
-| Paid Modal geometry | 0 | NOT MEASURED / not invoked |
-| Paid Modal CalculiX | 0 | NOT MEASURED / not invoked |
-| Paid Modal optimization | 0 | NOT MEASURED |
-| Local CalculiX solves (QA + benchmarks + bracket-fem) | multiple (local Docker; not cloud-billed) | local |
+| Control | Implementation |
+|---|---|
+| Caps | 1 Modal geometry · 1 Modal FEM · 1 Meta |
+| Persistence | File-backed under OS temp (`drafty-qa-paid-budget.json`) keyed by process run id |
+| Workers | Forced `workers: 1` when live QA is enabled; npm script also passes `--workers=1 --retries=0` |
+| Retries | `retries: 0` globally for QA; failed paid attempts still consume budget (no release) |
+| Production webServer | Skipped when only `qa-production` is selected |
 
-## Screenshots
+## Leftover `DRAFTY_QA_*` cleanup
 
-Under `docs/qa/screenshots/` (passwords cleared). New bracket capture: `local-bracket-fem.png` when produced by the harness.
+| Target | Result |
+|---|---|
+| Local API (branch code + `drafty-ccx`) | **PASS** — deleted 8 leftover bracket scenarios owned by the QA account |
+| Production API | **BLOCKED** — DELETE returned **503** for the same mirrored QA rows. Expected: production has not received the Storage nested-404 fix yet |
 
-## Defects
+Leftover IDs still present on production until post-merge cleanup:
 
-| ID | Sev | Finding | Status |
-|---|---|---|---|
-| D1 | P1 | `dev.ps1` aborted on Docker inspect errors | Fixed prior |
-| D4 | P1 | Bracket live QA did not submit/await FEM | **Fixed** this session |
-| D5 | P1 | Scenario delete 503 after local FEM: Storage delete of missing objects returned HTTP 400/`not_found`, treated as failure | **Fixed** in `storage.py` |
-| D6 | P2 | Speculative remote purge for local-only jobs | **Hardened** in `remote.py` |
-| D3 | P2 | Deterministic E2E incompatible with local `auth=supabase` | Open (CI OK) |
+`535f2a7f-de71-4e18-a56c-3f887de1af7f`, `6decff8a-5f98-4ed1-8c62-eba7a2fd4542`, `5284c7a3-b0bf-46f8-b220-f562df3252ff`, `229f8821-1538-476a-aaf9-29a320424402`, `d6d64762-a808-4b17-843c-3dc618db7175`, `c658a20c-7c2e-4738-98a8-89282610a2fc`, `7d41ac60-112c-407b-ba55-79bb1e0645e0`, `d27dd637-c521-44b5-932d-e205a5846b37`
 
-## Cleanup
+## Proven earlier (not re-run this prep)
 
-- Latest successful local bracket run: scenario deleted (`cleanup deleted: 1`).
-- Shared geometry cache retained by policy.
-- Earlier iteration leftovers (pre-D5 fix) may still exist as `DRAFTY_QA_*` rows if delete 503’d before the Storage fix; re-delete via Projects or retry DELETE now that D5 is fixed.
-- Recorded leftover IDs from failed iterations (for manual retry if needed):  
-  `d27dd637-c521-44b5-932d-e205a5846b37`, `7d41ac60-112c-407b-ba55-79bb1e0645e0`, `c658a20c-7c2e-4738-98a8-89282610a2fc`, `229f8821-1538-476a-aaf9-29a320424402`, `5284c7a3-b0bf-46f8-b220-f562df3252ff`, `535f2a7f-de71-4e18-a56c-3f887de1af7f`.
+| Area | Evidence |
+|---|---|
+| Local FEM benchmarks | 9 passed |
+| Deterministic bracket + optimization E2E | PASS |
+| Authenticated local bracket CalculiX | Job `6883389d-07cb-44d3-adc9-da5d5b9e8279` (nodes 31795, C3D10, equilibrium passed) |
+| Auth / isolation / classroom beam | PASS (prior) |
+
+## Production paid session (post-merge)
+
+| Step | Status |
+|---|---|
+| One pawn geometry miss → hit | **NOT RUN** (await merge+deploy+flags) |
+| One Modal bracket FEM + artifacts + persistence | **NOT RUN** |
+| ≤1 Meta turn | **NOT RUN** |
+| Remote optimization | forbidden / not run |
+| Cost | **NOT MEASURED** |
+
+## Merge readiness
+
+Once CI is fully green on the follow-up commit:
+
+- **PR #3 is merge-ready for harness + local FEM proof + cleanup fix.**
+- **Do not** treat merge as authorization for Batch 10A.
+- **Do not** run paid Modal/Meta until production deploy SHA is confirmed and `DRAFTY_QA_REQUIRE_PROD_COMMIT` is set.
+- After merge+deploy: run exactly one `npm run test:qa-production` session with live flags; stop after the first failed paid attempt.
 
 ## Ready for Batch 10A?
 
-**Not yet.** Local CalculiX FEM is now **proven**. Production Modal FEM/geometry and live Meta remain **unimplemented in this run** because flags are false (by design — no unpaid cloud spend).
-
-Next actions before Batch 10A:
-
-1. Set `DRAFTY_QA_RUN_LIVE_MODAL=true` and run **one** production pawn miss→hit + **one** bracket Modal solve (harness already budget-capped).
-2. Optionally set `DRAFTY_QA_RUN_LIVE_META=true` for **one** Meta turn.
-3. Retry DELETE on any leftover QA scenario IDs listed above.
-
-## Implemented vs proven
-
-| Area | Implemented | Proven end-to-end |
-|---|---|---|
-| Supabase auth / isolation / projects | yes | yes (prior) |
-| Local CalculiX bracket FEM | yes | **yes (this session)** |
-| Local FEM benchmarks | yes | **yes (9 passed)** |
-| Deterministic bracket + optimization E2E | yes | **yes** |
-| Production Modal geometry/FEM | yes | **no** (flag off) |
-| Meta AI live | yes | **no** (flag off) |
-| Scenario delete after FEM | yes | **yes** (after D5 fix) |
+**No.** Await green CI → merge → production deploy → single authorized paid QA session → update this report with cloud job IDs.

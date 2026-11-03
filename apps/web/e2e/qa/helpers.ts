@@ -10,6 +10,16 @@ import {
   redact,
 } from "./env";
 
+/** Known DRAFTY_QA leftover IDs from earlier local FEM iterations (pre Storage delete fix). */
+export const KNOWN_QA_LEFTOVER_IDS = [
+  "d27dd637-c521-44b5-932d-e205a5846b37",
+  "7d41ac60-112c-407b-ba55-79bb1e0645e0",
+  "c658a20c-7c2e-4738-98a8-89282610a2fc",
+  "229f8821-1538-476a-aaf9-29a320424402",
+  "5284c7a3-b0bf-46f8-b220-f562df3252ff",
+  "535f2a7f-de71-4e18-a56c-3f887de1af7f",
+] as const;
+
 export type TrackedResource = {
   scenarioId: string;
   name: string;
@@ -300,6 +310,58 @@ export async function cleanupTracked(
     );
   }
   return { deleted, failed };
+}
+
+/**
+ * Delete only scenarios owned by the authenticated QA account whose names start with DRAFTY_QA_,
+ * plus any explicitly listed leftover IDs that still resolve for this owner.
+ */
+export async function cleanupQaOwnedLeftovers(
+  request: APIRequestContext,
+  apiBase: string,
+  page: Page,
+  extraIds: string[] = [...KNOWN_QA_LEFTOVER_IDS],
+): Promise<{ deleted: string[]; skipped: string[]; failed: string[] }> {
+  const deleted: string[] = [];
+  const skipped: string[] = [];
+  const failed: string[] = [];
+  await signIn(page, "primary");
+  const token = await accessTokenFromPage(page);
+  expect(token).toBeTruthy();
+
+  const listed = await apiJson(request, apiBase, "GET", "/api/v1/scenarios", token);
+  expect(listed.status).toBe(200);
+  const scenarios = Array.isArray(listed.json?.scenarios) ? listed.json.scenarios : [];
+  const byId = new Map<string, { id: string; name?: string }>();
+  for (const row of scenarios) {
+    const id = String(row?.id || "");
+    const name = String(row?.name || "");
+    if (id && name.startsWith(QA_PREFIX)) byId.set(id, { id, name });
+  }
+  for (const id of extraIds) {
+    if (byId.has(id)) continue;
+    const probe = await apiJson(request, apiBase, "GET", `/api/v1/scenarios/${id}`, token);
+    if (probe.status === 200 && String(probe.json?.name || "").startsWith(QA_PREFIX)) {
+      byId.set(id, { id, name: String(probe.json.name) });
+    } else if (probe.status === 404) {
+      skipped.push(`${id}:already-gone`);
+    } else if ([401, 403].includes(probe.status)) {
+      skipped.push(`${id}:not-owned`);
+    } else {
+      skipped.push(`${id}:http-${probe.status}`);
+    }
+  }
+
+  for (const item of byId.values()) {
+    let result = await apiJson(request, apiBase, "DELETE", `/api/v1/scenarios/${item.id}`, token);
+    if (result.status === 503) {
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      result = await apiJson(request, apiBase, "DELETE", `/api/v1/scenarios/${item.id}`, token);
+    }
+    if (result.status < 400 || result.status === 404) deleted.push(`${item.id}:${item.name || ""}`);
+    else failed.push(`${item.id}:${result.status}`);
+  }
+  return { deleted, skipped, failed };
 }
 
 export function assertNonEmptyBinary(buffer: Buffer, kind: "stl" | "step"): void {
