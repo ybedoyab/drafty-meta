@@ -8,12 +8,46 @@ import trimesh
 
 from drafty_engineering.errors import GeometryError
 from drafty_engineering.geometry_math import envelope
-from drafty_engineering.spec import DesignSpec, RevolvedProfile, hole_centers
+from drafty_engineering.spec import (
+    FACE_FRAME,
+    DesignSpec,
+    RevolvedProfile,
+    SketchAddition,
+    addition_profile_points_3d,
+    base_bounds,
+    hole_centers,
+)
 
 REVOLVED_EXPORTS = ("model.step", "model.stl", "preview.glb")
 
 
+def build_sketch_prism(
+    addition: SketchAddition,
+    base: tuple[float, float, float, float, float, float],
+) -> cq.Workplane:
+    """Extrude the sketch profile along its third axis as a CadQuery solid."""
+
+    _u_axis, _v_axis, w_axis, _sign = FACE_FRAME[addition.face]
+    points = addition_profile_points_3d(addition, base, 0.0)
+    wire = cq.Wire.makePolygon([cq.Vector(*point) for point in points] + [cq.Vector(*points[0])])
+    direction = [0.0, 0.0, 0.0]
+    direction[w_axis] = addition.depth_m
+    solid = cq.Solid.extrudeLinear(wire, [], cq.Vector(*direction))
+    return cq.Workplane("XY").newObject([solid])
+
+
 def build_solid(spec: DesignSpec) -> cq.Workplane:
+    if spec.kind == "sketch_prism" and spec.additions:
+        return build_sketch_prism(spec.additions[0], base_bounds(spec) or (0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
+    solid = _build_base_solid(spec)
+    base = base_bounds(spec)
+    if base is not None:
+        for addition in spec.additions:
+            solid = solid.union(build_sketch_prism(addition, base))
+    return solid
+
+
+def _build_base_solid(spec: DesignSpec) -> cq.Workplane:
     if spec.kind == "cantilever_beam" and spec.beam:
         beam = spec.beam
         return (

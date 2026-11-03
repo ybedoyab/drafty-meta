@@ -17,7 +17,7 @@ from drafty_engineering.errors import InputError
 from drafty_engineering.materials import MATERIALS
 
 SurfaceName = Literal["xmin", "xmax", "ymin", "ymax", "zmin", "zmax"]
-PartKind = Literal["cantilever_beam", "plate", "l_bracket", "perforated_plate"]
+PartKind = Literal["cantilever_beam", "plate", "l_bracket", "perforated_plate", "sketch_prism"]
 
 # Public-demo resource bounds. Parts are desktop-scale solids; anything larger
 # is rejected at validation instead of exhausting CAD, mesh, or solver workers.
@@ -97,6 +97,156 @@ class HolePattern(BaseModel):
     margin_m: float = Field(gt=0)
 
 
+# Sketch frame per face: (profile-u axis, outward axis, extrusion axis, outward sign).
+# The profile is drawn as an elevation: u runs across the face, the outward
+# axis rises from the face, and the piece is extruded along the third axis.
+FACE_FRAME: dict[str, tuple[int, int, int, float]] = {
+    "zmax": (0, 2, 1, 1.0),
+    "zmin": (0, 2, 1, -1.0),
+    "xmax": (1, 0, 2, 1.0),
+    "xmin": (1, 0, 2, -1.0),
+    "ymax": (0, 1, 2, 1.0),
+    "ymin": (0, 1, 2, -1.0),
+}
+
+
+class SketchPoint(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    u: float = Field(ge=0, le=1)
+    v: float = Field(ge=0, le=1)
+
+
+class SketchAddition(BaseModel):
+    """One hand-sketched piece: a closed 2D profile extruded and fused to a face.
+
+    Profile points are normalized to the profile bounding box: u across the
+    face, v rising outward from it (0 sits on the face). Width, height, and
+    depth size that box in meters; offsets move its centre across the face.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    label: str = Field(default="Sketch piece", min_length=1, max_length=40)
+    face: SurfaceName = "zmax"
+    profile: list[SketchPoint] = Field(min_length=3, max_length=48)
+    width_m: float = Field(gt=0)
+    height_m: float = Field(gt=0)
+    depth_m: float = Field(gt=0)
+    offset_u_m: float = 0.0
+    offset_w_m: float = 0.0
+
+    @field_validator("label")
+    @classmethod
+    def _check_label(cls, value: str) -> str:
+        return _validate_name(value)
+
+    def profile_area_m2(self) -> float:
+        return abs(_shoelace([(point.u, point.v) for point in self.profile])) * self.width_m * self.height_m
+
+    def volume_m3(self) -> float:
+        return self.profile_area_m2() * self.depth_m
+
+
+def _shoelace(points: list[tuple[float, float]]) -> float:
+    return 0.5 * sum(
+        x1 * y2 - x2 * y1 for (x1, y1), (x2, y2) in zip(points, points[1:] + points[:1])
+    )
+
+
+def base_bounds(spec: "DesignSpec") -> tuple[float, float, float, float, float, float] | None:
+    """Bounding box (xmin, xmax, ymin, ymax, zmin, zmax) of the base part alone."""
+
+    if spec.kind == "cantilever_beam" and spec.beam:
+        beam = spec.beam
+        return (0.0, beam.length_m, -beam.width_m / 2.0, beam.width_m / 2.0, -beam.height_m / 2.0, beam.height_m / 2.0)
+    if spec.kind in {"plate", "perforated_plate"} and spec.plate:
+        plate = spec.plate
+        return (0.0, plate.length_m, -plate.width_m / 2.0, plate.width_m / 2.0, 0.0, plate.thickness_m)
+    if spec.kind == "l_bracket" and spec.bracket:
+        bracket = spec.bracket
+        return (0.0, bracket.leg_x_m, -bracket.width_m / 2.0, bracket.width_m / 2.0, 0.0, bracket.leg_z_m)
+    if spec.kind == "sketch_prism":
+        return (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    return None
+
+
+def addition_bounds(
+    addition: SketchAddition,
+    base: tuple[float, float, float, float, float, float],
+) -> tuple[float, float, float, float, float, float]:
+    """Bounding box of one sketch piece placed on its face of the base box."""
+
+    u_axis, v_axis, w_axis, v_sign = FACE_FRAME[addition.face]
+    ranges: list[tuple[float, float]] = [(base[axis * 2], base[axis * 2 + 1]) for axis in range(3)]
+    us = [point.u for point in addition.profile]
+    vs = [point.v for point in addition.profile]
+    u_centre = (ranges[u_axis][0] + ranges[u_axis][1]) / 2.0 + addition.offset_u_m
+    w_centre = (ranges[w_axis][0] + ranges[w_axis][1]) / 2.0 + addition.offset_w_m
+    face_coord = ranges[v_axis][1] if v_sign > 0 else ranges[v_axis][0]
+    ranges[u_axis] = (
+        u_centre + (min(us) - 0.5) * addition.width_m,
+        u_centre + (max(us) - 0.5) * addition.width_m,
+    )
+    v_values = [face_coord + v_sign * v * addition.height_m for v in vs]
+    ranges[v_axis] = (min(v_values), max(v_values))
+    ranges[w_axis] = (w_centre - addition.depth_m / 2.0, w_centre + addition.depth_m / 2.0)
+    return (ranges[0][0], ranges[0][1], ranges[1][0], ranges[1][1], ranges[2][0], ranges[2][1])
+
+
+def addition_profile_points_3d(
+    addition: SketchAddition,
+    base: tuple[float, float, float, float, float, float],
+    w_fraction: float,
+) -> list[tuple[float, float, float]]:
+    """World points of the profile at one end (0) or the other (1) of the extrusion."""
+
+    u_axis, v_axis, w_axis, v_sign = FACE_FRAME[addition.face]
+    lows = [base[axis * 2] for axis in range(3)]
+    highs = [base[axis * 2 + 1] for axis in range(3)]
+    u_centre = (lows[u_axis] + highs[u_axis]) / 2.0 + addition.offset_u_m
+    w_centre = (lows[w_axis] + highs[w_axis]) / 2.0 + addition.offset_w_m
+    face_coord = highs[v_axis] if v_sign > 0 else lows[v_axis]
+    points: list[tuple[float, float, float]] = []
+    for point in addition.profile:
+        world = [0.0, 0.0, 0.0]
+        world[u_axis] = u_centre + (point.u - 0.5) * addition.width_m
+        world[v_axis] = face_coord + v_sign * point.v * addition.height_m
+        world[w_axis] = w_centre + (w_fraction - 0.5) * addition.depth_m
+        points.append((world[0], world[1], world[2]))
+    return points
+
+
+def _segments_cross(
+    a: tuple[float, float], b: tuple[float, float], c: tuple[float, float], d: tuple[float, float]
+) -> bool:
+    def orient(p: tuple[float, float], q: tuple[float, float], r: tuple[float, float]) -> float:
+        return (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0])
+
+    return orient(a, b, c) * orient(a, b, d) < 0 and orient(c, d, a) * orient(c, d, b) < 0
+
+
+def _profile_crosses(points: list[tuple[float, float]]) -> bool:
+    count = len(points)
+    for index in range(count):
+        a, b = points[index], points[(index + 1) % count]
+        for other in range(index + 2, count):
+            if index == 0 and other == count - 1:
+                continue
+            c, d = points[other], points[(other + 1) % count]
+            if _segments_cross(a, b, c, d):
+                return True
+    return False
+
+
+def _validate_profile(addition: SketchAddition) -> None:
+    points = [(point.u, point.v) for point in addition.profile]
+    if abs(_shoelace(points)) < 0.01 and not _profile_crosses(points):
+        raise ValueError("The sketch outline is too thin. Draw a closed shape with clear area inside it.")
+    if _profile_crosses(points):
+        raise ValueError("The sketch outline crosses itself. Draw one simple closed outline.")
+
+
 class DesignSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -111,6 +261,7 @@ class DesignSpec(BaseModel):
     plate: PlateGeometry | None = None
     bracket: BracketGeometry | None = None
     holes: HolePattern | None = None
+    additions: list[SketchAddition] = Field(default_factory=list, max_length=4)
 
     @field_validator("name")
     @classmethod
@@ -129,6 +280,7 @@ class DesignSpec(BaseModel):
         if self.supports[0].surface == self.loads[0].surface:
             raise ValueError("The support and the load must use different surfaces.")
         self._require_geometry()
+        self._require_additions()
         self._require_within_bounds()
         smallest = _smallest_dimension(self)
         if self.mesh_size_m >= smallest:
@@ -136,6 +288,41 @@ class DesignSpec(BaseModel):
         if self.mesh_size_m < smallest / 100.0:
             raise ValueError("Mesh size is finer than 1/100 of the smallest dimension. Coarsen it before solving.")
         return self
+
+    def _require_additions(self) -> None:
+        for addition in self.additions:
+            _validate_profile(addition)
+            values = [addition.width_m, addition.height_m, addition.depth_m, addition.offset_u_m, addition.offset_w_m]
+            values.extend(value for point in addition.profile for value in (point.u, point.v))
+            if any(not math.isfinite(float(value)) for value in values):
+                raise ValueError("Sketch piece dimensions and offsets must be finite numbers.")
+        if self.kind == "sketch_prism":
+            if len(self.additions) != 1:
+                raise ValueError("A sketch part requires exactly one sketch piece.")
+            if self.additions[0].face != "zmax":
+                raise ValueError("A sketch-only part is drawn standing on its bottom edge. Add it on the top face.")
+            return
+        if not self.additions:
+            return
+        base = base_bounds(self)
+        if base is None:
+            raise ValueError("The design has no base part for a sketch piece.")
+        held = {self.supports[0].surface, self.loads[0].surface}
+        for addition in self.additions:
+            if addition.face in held:
+                raise ValueError(
+                    "A sketch piece cannot sit on the support or load face. Pick another face, "
+                    "or change the held and loaded faces in Loads."
+                )
+            u_axis, _v_axis, w_axis, _sign = FACE_FRAME[addition.face]
+            bounds = addition_bounds(addition, base)
+            for axis in (u_axis, w_axis):
+                low, high = base[axis * 2], base[axis * 2 + 1]
+                if not (bounds[axis * 2] > low and bounds[axis * 2 + 1] < high):
+                    raise ValueError(
+                        "Keep the sketch piece inside the edges of its face. Reduce its width or depth, "
+                        "or move it away from the held and loaded edges."
+                    )
 
     def _require_within_bounds(self) -> None:
         dimensions: list[float] = []
@@ -149,6 +336,8 @@ class DesignSpec(BaseModel):
             )
         if self.holes:
             dimensions.extend([self.holes.radius_m, self.holes.margin_m])
+        for addition in self.additions:
+            dimensions.extend([addition.width_m, addition.height_m, addition.depth_m])
         if any(value > MAX_DIMENSION_M for value in dimensions):
             raise ValueError(f"Each dimension must not exceed {MAX_DIMENSION_M:g} m.")
         load = self.loads[0]
@@ -180,6 +369,10 @@ class DesignSpec(BaseModel):
             raise ValueError("Dimensions, mesh size, and loads must be finite numbers.")
 
     def _require_geometry(self) -> None:
+        if self.kind == "sketch_prism":
+            if self.beam or self.plate or self.bracket or self.holes:
+                raise ValueError("A sketch part uses only its sketch piece geometry.")
+            return
         if self.kind == "cantilever_beam":
             if self.beam is None or self.plate or self.bracket or self.holes:
                 raise ValueError("A cantilever beam requires only beam geometry.")
@@ -283,6 +476,13 @@ class RevolvedProfile(BaseModel):
 
 
 def _design_volume_m3(spec: DesignSpec) -> float:
+    if spec.kind == "sketch_prism" and spec.additions:
+        return spec.additions[0].volume_m3()
+    base = _design_volume_m3_base(spec)
+    return base + sum(addition.volume_m3() for addition in spec.additions)
+
+
+def _design_volume_m3_base(spec: DesignSpec) -> float:
     if spec.kind == "cantilever_beam" and spec.beam:
         return spec.beam.length_m * spec.beam.width_m * spec.beam.height_m
     if spec.kind in {"plate", "perforated_plate"} and spec.plate:
@@ -316,6 +516,16 @@ def _validate_holes(plate: PlateGeometry, holes: HolePattern) -> None:
 
 
 def _smallest_dimension(spec: DesignSpec) -> float:
+    if spec.kind == "sketch_prism" and spec.additions:
+        addition = spec.additions[0]
+        return min(addition.width_m, addition.height_m, addition.depth_m)
+    base = _smallest_dimension_base(spec)
+    if spec.additions:
+        return min(base, *(min(item.width_m, item.height_m, item.depth_m) for item in spec.additions))
+    return base
+
+
+def _smallest_dimension_base(spec: DesignSpec) -> float:
     if spec.kind == "cantilever_beam" and spec.beam:
         return min(spec.beam.length_m, spec.beam.width_m, spec.beam.height_m)
     if spec.kind in {"plate", "perforated_plate"} and spec.plate:

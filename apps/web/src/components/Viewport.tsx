@@ -14,6 +14,17 @@ export type PartTransform =
   | { type: "scale"; factors: [number, number, number] }
   | { type: "rotate"; matrix: [[number, number, number], [number, number, number], [number, number, number]] };
 export type CameraView = "iso" | "front" | "top" | "right";
+export interface DraftSketch {
+  profile: { u: number; v: number }[];
+  origin: [number, number, number];
+  uAxis: [number, number, number];
+  vAxis: [number, number, number];
+  wAxis: [number, number, number];
+  widthM: number;
+  heightM: number;
+  depthM: number;
+  label: string;
+}
 
 export function Viewport({
   previewUrl,
@@ -38,6 +49,8 @@ export function Viewport({
   partSelected = false,
   onPartSelectedChange,
   onPartTransform,
+  draftSketch,
+  onDraftMove,
   floorOffset,
 }: {
   previewUrl: string | null;
@@ -66,6 +79,8 @@ export function Viewport({
   partSelected?: boolean;
   onPartSelectedChange?: (selected: boolean) => void;
   onPartTransform?: (transform: PartTransform) => void;
+  draftSketch?: DraftSketch | null;
+  onDraftMove?: (deltaM: [number, number, number]) => void;
 }) {
   const dark = useTheme() === "dark";
   return (
@@ -89,6 +104,7 @@ export function Viewport({
             <Preview key={previewUrl} url={previewUrl} />
           ) : null}
           </EditablePart>
+          {draftSketch && <DraftPrism draft={draftSketch} onMove={onDraftMove} />}
           {surface && (
             <Markers
               surface={surface}
@@ -117,6 +133,54 @@ export function Viewport({
       </GizmoHelper>
       <axesHelper args={[0.08]} />
     </Canvas>
+  );
+}
+
+function DraftPrism({ draft, onMove }: { draft: DraftSketch; onMove?: (deltaM: [number, number, number]) => void }) {
+  const [node, setNode] = useState<THREE.Group | null>(null);
+  const geometry = useMemo(() => {
+    const shape = new THREE.Shape();
+    draft.profile.forEach((point, index) => {
+      const x = (point.u - 0.5) * draft.widthM;
+      const y = point.v * draft.heightM;
+      if (index === 0) shape.moveTo(x, y);
+      else shape.lineTo(x, y);
+    });
+    shape.closePath();
+    const extruded = new THREE.ExtrudeGeometry(shape, { depth: draft.depthM, bevelEnabled: false });
+    const matrix = new THREE.Matrix4().makeBasis(
+      new THREE.Vector3(...draft.uAxis),
+      new THREE.Vector3(...draft.vAxis),
+      new THREE.Vector3(...draft.wAxis),
+    );
+    matrix.setPosition(new THREE.Vector3(...draft.origin));
+    extruded.applyMatrix4(matrix);
+    return extruded;
+  }, [draft]);
+  useEffect(() => () => geometry.dispose(), [geometry]);
+  const labelPosition: [number, number, number] = [0, 1, 2].map(
+    (axis) => draft.origin[axis] + draft.vAxis[axis] * draft.heightM * 0.5 + draft.wAxis[axis] * draft.depthM * 0.5,
+  ) as [number, number, number];
+  function finishMove() {
+    if (!node) return;
+    const delta: [number, number, number] = [node.position.x, node.position.y, node.position.z];
+    node.position.set(0, 0, 0);
+    if (delta.some((value) => Math.abs(value) > 1e-6)) onMove?.(delta);
+  }
+  return (
+    <>
+      <group ref={setNode}>
+        <mesh geometry={geometry}>
+          <meshStandardMaterial color="#2563eb" transparent opacity={0.55} side={THREE.DoubleSide} />
+        </mesh>
+        <Html position={labelPosition} center sprite zIndexRange={[20, 0]}>
+          <div className="pointer-events-none whitespace-nowrap rounded bg-blue-700 px-1.5 py-0.5 text-[11px] font-medium text-white shadow">
+            {draft.label} — drag to place
+          </div>
+        </Html>
+      </group>
+      {node && <TransformControls object={node} mode="translate" onMouseUp={finishMove} />}
+    </>
   );
 }
 

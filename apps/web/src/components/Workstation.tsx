@@ -1,8 +1,9 @@
-import { Box, Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, CircleAlert, Magnet, MousePointer2, Pencil, RotateCw, Rows3, Scaling, Undo2 } from "lucide-react";
+import { Box, Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, CircleAlert, Magnet, MousePointer2, PenTool, Pencil, RotateCw, Rows3, Scaling, Trash2, Undo2 } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useSearchParams } from "react-router-dom";
 import { Suspense, useEffect, useMemo, useState } from "react";
-import { Viewport, type CameraView, type EditMode, type PartTransform, type Shade } from "@/components/Viewport";
+import { Viewport, type CameraView, type DraftSketch, type EditMode, type PartTransform, type Shade } from "@/components/Viewport";
+import { DrawTool } from "@/components/DrawTool";
 import { GridControl } from "@/components/GridControl";
 import { Button } from "@/components/ui/button";
 import {
@@ -43,6 +44,7 @@ import {
 } from "@/lib/design";
 import { takeStudioSpec } from "@/lib/scenario";
 import { axisSizesMm, hasVisualEdits, rotateForm, scaleForm } from "@/lib/transform";
+import { clampOffsets, draftPlacementM, type SketchAdditionForm } from "@/lib/sketch";
 import { SiteHeader } from "@/components/SiteHeader";
 
 const STAGES = ["queued", "geometry", "meshing", "solving", "postprocessing", "completed"] as const;
@@ -68,6 +70,8 @@ export function Workstation() {
   const [editMode, setEditMode] = useState<EditMode>("select");
   const [partSelected, setPartSelected] = useState(false);
   const [snapScaleToGrid, setSnapScaleToGrid] = useState(true);
+  const [drawOpen, setDrawOpen] = useState(false);
+  const [sketchDraft, setSketchDraft] = useState<{ addition: SketchAdditionForm; standalone: boolean } | null>(null);
   const [bottomCollapsed, setBottomCollapsed] = useState(false);
   const [specApplied, setSpecApplied] = useState(false);
   const [compute, setCompute] = useState<"local" | "modal">("local");
@@ -302,6 +306,64 @@ export function Workstation() {
     preview.mutate(rotated);
   }
 
+  function confirmSketchDraft() {
+    if (!sketchDraft) return;
+    const { addition, standalone } = sketchDraft;
+    const next: DesignForm = standalone
+      ? {
+          ...form,
+          kind: "sketch_prism",
+          name: form.name.trim() && form.name !== benchmarkForm.name ? form.name : "sketch-part",
+          additions: [addition],
+          support: "ymin",
+          loadSurface: "ymax",
+        }
+      : { ...form, additions: [...form.additions, addition] };
+    const issues = formIssues(next);
+    if (issues.length) {
+      setFormError(issues.join(" "));
+      return;
+    }
+    setSketchDraft(null);
+    setForm(next);
+    setFormError(null);
+    setShade("geometry");
+    preview.mutate(next);
+  }
+
+  function removeAddition(id: string) {
+    const next = { ...form, additions: form.additions.filter((addition) => addition.id !== id) };
+    if (next.kind === "sketch_prism") next.kind = "plate";
+    setForm(next);
+    setFormError(null);
+    setShade("geometry");
+    if (form.kind === "sketch_prism") {
+      setPreviewUrl((current) => {
+        if (current) URL.revokeObjectURL(current);
+        return null;
+      });
+    } else {
+      preview.mutate(next);
+    }
+  }
+
+  function handleDraftMove(deltaM: [number, number, number]) {
+    setSketchDraft((current) => {
+      if (!current) return current;
+      const placement = draftPlacementM(
+        current.standalone ? { ...form, kind: "sketch_prism", additions: [current.addition] } : form,
+        current.addition,
+      );
+      const dot = (axis: [number, number, number]) => deltaM[0] * axis[0] + deltaM[1] * axis[1] + deltaM[2] * axis[2];
+      const moved = {
+        ...current.addition,
+        offsetUMm: current.addition.offsetUMm + dot(placement.uAxis) * 1000,
+        offsetWMm: current.addition.offsetWMm + dot(placement.wAxis) * 1000,
+      };
+      return { ...current, addition: current.standalone ? moved : clampOffsets(form, moved) };
+    });
+  }
+
   async function ask() {
     const text = message.trim();
     if (!text) return;
@@ -326,6 +388,16 @@ export function Workstation() {
     }
   }
 
+  const draftSketchValue: DraftSketch | null = sketchDraft
+    ? {
+        ...draftPlacementM(
+          sketchDraft.standalone ? { ...form, kind: "sketch_prism", additions: [sketchDraft.addition] } : form,
+          sketchDraft.addition,
+        ),
+        profile: sketchDraft.addition.profile,
+        label: sketchDraft.addition.label,
+      }
+    : null;
   const current = job.data;
   const result = results.data;
   const selectedMaterial = materials.data?.find((item) => item.id === form.materialId);
@@ -342,9 +414,14 @@ export function Workstation() {
       }
       return Math.hypot(max[0] - min[0], max[1] - min[1], max[2] - min[2]) / 2 || 0.15;
     }
-    return Math.hypot(form.lengthMm, form.widthMm, form.heightMm) / 2000 || 0.15;
-  }, [result, form.lengthMm, form.widthMm, form.heightMm]);
-  const partHalfHeightM = ((form.kind === "cantilever_beam" ? form.heightMm : form.thicknessMm) / 1000) / 2;
+    if (sketchDraft?.standalone && !previewUrl) {
+      const addition = sketchDraft.addition;
+      return Math.hypot(addition.widthMm, addition.depthMm, addition.heightMm) / 2000 || 0.15;
+    }
+    const [sizeX, sizeY, sizeZ] = axisSizesMm(form);
+    return Math.hypot(sizeX, sizeY, sizeZ) / 2000 || 0.15;
+  }, [result, form, sketchDraft, previewUrl]);
+  const partHalfHeightM = ((form.kind === "sketch_prism" ? (form.additions[0]?.heightMm ?? form.heightMm) : form.kind === "cantilever_beam" ? form.heightMm : form.thicknessMm) / 1000) / 2;
   const loadAxis = loadDirection([form.directionX, form.directionY, form.directionZ]).axisLabel;
   const loadLabel =
     form.loadMode === "pressure" ? `Pressure ${form.magnitude} MPa ${loadAxis}` : `${form.magnitude} N ${loadAxis}`;
@@ -380,6 +457,7 @@ export function Workstation() {
       if (event.key === "1") setEditMode("select");
       else if (event.key === "2") setEditMode("scale");
       else if (event.key === "3") setEditMode("rotate");
+      else if (event.key === "4") setDrawOpen(true);
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -387,7 +465,7 @@ export function Workstation() {
 
   return (
     <div
-      className={`grid h-full grid-cols-[360px_minmax(0,1fr)_320px] bg-slate-100 text-gray-900 ${bottomCollapsed ? "grid-rows-[auto_minmax(0,1fr)_38px]" : bottomPanel === "edit" ? "grid-rows-[auto_minmax(0,1fr)_196px]" : logOpen ? "grid-rows-[auto_minmax(0,1fr)_220px]" : "grid-rows-[auto_minmax(0,1fr)_132px]"}`}
+      className={`grid h-full grid-cols-[360px_minmax(0,1fr)_320px] bg-slate-100 text-gray-900 ${bottomCollapsed ? "grid-rows-[auto_minmax(0,1fr)_38px]" : bottomPanel === "edit" ? (sketchDraft ? "grid-rows-[auto_minmax(0,1fr)_308px]" : "grid-rows-[auto_minmax(0,1fr)_196px]") : logOpen ? "grid-rows-[auto_minmax(0,1fr)_220px]" : "grid-rows-[auto_minmax(0,1fr)_132px]"}`}
     >
       <SiteHeader
         className="col-span-3"
@@ -449,6 +527,7 @@ export function Workstation() {
               <option value="plate">Plate</option>
               <option value="l_bracket">L-bracket</option>
               <option value="perforated_plate">Perforated plate</option>
+              <option value="sketch_prism">Sketch part (from Draw)</option>
             </select>
           </label>
           <NumberField label="Length mm" value={form.lengthMm} onChange={(lengthMm) => setForm({ ...form, lengthMm })} />
@@ -651,6 +730,8 @@ export function Workstation() {
             partSelected={partSelected}
             onPartSelectedChange={setPartSelected}
             onPartTransform={handlePartTransform}
+            draftSketch={draftSketchValue}
+            onDraftMove={handleDraftMove}
           />
         </Suspense>
         <div className="pointer-events-none absolute left-3 top-3 rounded-lg border border-gray-200 bg-white/90 px-3 py-1 text-xs text-gray-500 shadow-sm">
@@ -693,7 +774,7 @@ export function Workstation() {
             {stageFull ? "Exit full view" : "Full view"}
           </button>
         </div>
-        {!previewUrl && !result && !activeId && (
+        {!previewUrl && !result && !activeId && !sketchDraft && (
           <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
             <div className="rounded-2xl border border-blue-100 bg-white px-8 py-6 text-center shadow-lg">
               <p className="text-lg font-semibold text-gray-900">Ready to generate?</p>
@@ -999,6 +1080,22 @@ export function Workstation() {
                   <p className="mt-1.5 text-center text-[10px] font-semibold uppercase tracking-widest text-slate-400">Precision</p>
                 </div>
                 <div className="mx-3 w-px shrink-0 bg-slate-200" aria-hidden />
+                <div className="flex flex-col">
+                  <div className="flex gap-1.5 px-1">
+                    <button
+                      type="button"
+                      title="Draw a sketch piece to add to this part (4)"
+                      onClick={() => setDrawOpen(true)}
+                      className="flex h-[76px] w-[80px] flex-col items-center justify-center gap-1 rounded-lg border border-slate-200 bg-white text-slate-700 hover:border-slate-300 hover:bg-slate-50"
+                    >
+                      <PenTool className="h-7 w-7" aria-hidden />
+                      <span className="text-xs font-semibold">Draw</span>
+                      <span className="text-[10px] text-slate-400">add a piece · 4</span>
+                    </button>
+                  </div>
+                  <p className="mt-1.5 text-center text-[10px] font-semibold uppercase tracking-widest text-slate-400">Add</p>
+                </div>
+                <div className="mx-3 w-px shrink-0 bg-slate-200" aria-hidden />
                 <div className="flex min-w-[230px] flex-col justify-center px-1">
                   <p className="text-sm font-semibold text-gray-900">
                     {
@@ -1007,6 +1104,7 @@ export function Workstation() {
                         plate: "Plate",
                         l_bracket: "L-bracket",
                         perforated_plate: "Perforated plate",
+                        sketch_prism: "Sketch part",
                       }[form.kind]
                     }
                   </p>
@@ -1057,7 +1155,42 @@ export function Workstation() {
                 the dimensions; Rotate turns in 90-degree steps and remaps the support and load faces.
                 {form.kind === "l_bracket" && " Rotating an L-bracket cannot be written as the same kind of part, so Rotate does not apply to it."}
                 {form.kind === "perforated_plate" && " Holes stay through the thickness, so tipping a perforated plate on its edge is not offered."}
+                {form.kind === "sketch_prism" && " This part is one drawn piece. Hold and load it on its back and front faces, or draw a new piece to change its outline."}
               </p>
+              {sketchDraft && (
+                <div className="mt-2 flex flex-wrap items-end gap-2 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2">
+                  <p className="text-sm font-semibold text-blue-900">
+                    Placing: {sketchDraft.addition.label}
+                    <span className="block text-xs font-normal text-blue-800">
+                      {sketchDraft.standalone ? "Sketch-only part. " : `On ${sketchDraft.addition.face}. `}
+                      Drag the blue piece in the viewport, or type its offsets. It stays flat on its face.
+                    </span>
+                  </p>
+                  <label className="field">
+                    <span>Across mm</span>
+                    <input type="number" value={Math.round(sketchDraft.addition.offsetUMm * 10) / 10} onChange={(event) => setSketchDraft((current) => current && { ...current, addition: current.standalone ? { ...current.addition, offsetUMm: Number(event.target.value) } : clampOffsets(form, { ...current.addition, offsetUMm: Number(event.target.value) }) })} />
+                  </label>
+                  <label className="field">
+                    <span>Along mm</span>
+                    <input type="number" value={Math.round(sketchDraft.addition.offsetWMm * 10) / 10} onChange={(event) => setSketchDraft((current) => current && { ...current, addition: current.standalone ? { ...current.addition, offsetWMm: Number(event.target.value) } : clampOffsets(form, { ...current.addition, offsetWMm: Number(event.target.value) }) })} />
+                  </label>
+                  <Button type="button" variant="primary" onClick={confirmSketchDraft}>Add this piece</Button>
+                  <Button type="button" onClick={() => setSketchDraft(null)}>Discard</Button>
+                </div>
+              )}
+              {form.additions.length > 0 && (
+                <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                  <span className="text-[11px] font-semibold uppercase tracking-widest text-slate-400">Sketch pieces</span>
+                  {form.additions.map((addition) => (
+                    <span key={addition.id} className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs text-slate-700">
+                      {addition.label} · {addition.face} · {formatEngineering(addition.widthMm)} × {formatEngineering(addition.heightMm)} × {formatEngineering(addition.depthMm)} mm
+                      <button type="button" aria-label={`Remove ${addition.label}`} title={`Remove ${addition.label}`} onClick={() => removeAddition(addition.id)} className="text-slate-400 hover:text-red-600">
+                        <Trash2 className="h-3.5 w-3.5" aria-hidden />
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
               {formError && <p className="mt-1 text-[11px] leading-4 text-amber-700">{formError}</p>}
             </div>
           )}
@@ -1102,6 +1235,19 @@ export function Workstation() {
           </pre>
         )}
       </section>
+      {drawOpen && (
+        <DrawTool
+          form={form}
+          hasPart={Boolean(previewUrl || result)}
+          onClose={() => setDrawOpen(false)}
+          onDraft={(addition, standalone) => {
+            setSketchDraft({ addition, standalone });
+            setDrawOpen(false);
+            setBottomPanel("edit");
+            setBottomCollapsed(false);
+          }}
+        />
+      )}
     </div>
   );
 }

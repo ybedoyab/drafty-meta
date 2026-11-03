@@ -20,12 +20,20 @@ const IDENTITY: QuarterMatrix = [
 
 /** Bounding-box size in millimetres along the CAD X, Y, and Z axes. */
 export function axisSizesMm(form: DesignForm): [number, number, number] {
+  if (form.kind === "sketch_prism" && form.additions[0]) {
+    const addition = form.additions[0];
+    return [addition.widthMm, addition.depthMm, addition.heightMm];
+  }
   if (form.kind === "cantilever_beam") return [form.lengthMm, form.widthMm, form.heightMm];
   if (form.kind === "l_bracket") return [form.legXMm, form.widthMm, form.legZMm];
   return [form.lengthMm, form.widthMm, form.thicknessMm];
 }
 
 function withAxisSizesMm(form: DesignForm, [x, y, z]: [number, number, number]): DesignForm {
+  if (form.kind === "sketch_prism" && form.additions[0]) {
+    const addition = form.additions[0];
+    return { ...form, additions: [{ ...addition, widthMm: x, depthMm: y, heightMm: z }] };
+  }
   if (form.kind === "cantilever_beam") return { ...form, lengthMm: x, widthMm: y, heightMm: z };
   if (form.kind === "l_bracket") return { ...form, legXMm: x, widthMm: y, legZMm: z };
   return { ...form, lengthMm: x, widthMm: y, thicknessMm: z };
@@ -62,7 +70,8 @@ export function scaleForm(
 export function hasVisualEdits(form: DesignForm, baseline: DesignForm): boolean {
   const current = geometrySnapshot(form);
   const loaded = geometrySnapshot(baseline);
-  if ((Object.keys(current) as (keyof typeof current)[]).some((key) => current[key] !== loaded[key])) return true;
+  if ((Object.keys(current) as (keyof typeof current)[]).some((key) => key !== "additions" && current[key] !== loaded[key])) return true;
+  if (JSON.stringify(form.additions) !== JSON.stringify(baseline.additions)) return true;
   return (
     form.support !== baseline.support ||
     form.loadSurface !== baseline.loadSurface ||
@@ -162,6 +171,7 @@ export function rotateForm(form: DesignForm, matrix: QuarterMatrix): DesignForm 
   if (!isQuarterRotation(matrix)) return null;
   if (isIdentity(matrix)) return form;
   if (form.kind === "l_bracket") return null;
+  if (form.kind === "sketch_prism") return null;
   if (form.kind === "perforated_plate") {
     const holeAxis = applyMatrix(matrix, [0, 0, 1]);
     if (holeAxis[0] !== 0 || holeAxis[1] !== 0) return null;

@@ -1,7 +1,9 @@
+import type { SketchAdditionForm } from "./sketch";
+
 export const SURFACES = ["xmin", "xmax", "ymin", "ymax", "zmin", "zmax"] as const;
 
 export type Surface = (typeof SURFACES)[number];
-export type PartKind = "cantilever_beam" | "plate" | "l_bracket" | "perforated_plate";
+export type PartKind = "cantilever_beam" | "plate" | "l_bracket" | "perforated_plate" | "sketch_prism";
 
 export interface DesignForm {
   name: string;
@@ -26,6 +28,7 @@ export interface DesignForm {
   directionX: number;
   directionY: number;
   directionZ: number;
+  additions: SketchAdditionForm[];
 }
 
 export interface DesignSpec {
@@ -45,6 +48,7 @@ export interface DesignSpec {
   plate: { length_m: number; width_m: number; thickness_m: number } | null;
   bracket: { leg_x_m: number; leg_z_m: number; thickness_m: number; width_m: number } | null;
   holes: { radius_m: number; count_x: number; count_y: number; margin_m: number } | null;
+  additions: { label: string; face: Surface; profile: { u: number; v: number }[]; width_m: number; height_m: number; depth_m: number; offset_u_m: number; offset_w_m: number }[];
 }
 
 export const benchmarkForm: DesignForm = {
@@ -70,6 +74,7 @@ export const benchmarkForm: DesignForm = {
   directionX: 0,
   directionY: 0,
   directionZ: -1,
+  additions: [],
 };
 
 export function formToSpec(form: DesignForm): DesignSpec {
@@ -92,6 +97,7 @@ export function formToSpec(form: DesignForm): DesignSpec {
     plate: null,
     bracket: null,
     holes: null,
+    additions: form.additions.map((addition) => ({ label: addition.label, face: addition.face, profile: addition.profile, width_m: addition.widthMm / 1000, height_m: addition.heightMm / 1000, depth_m: addition.depthMm / 1000, offset_u_m: addition.offsetUMm / 1000, offset_w_m: addition.offsetWMm / 1000 })),
   };
   if (form.kind === "cantilever_beam") {
     spec.beam = {
@@ -106,6 +112,8 @@ export function formToSpec(form: DesignForm): DesignSpec {
       thickness_m: form.thicknessMm / 1000,
       width_m: form.widthMm / 1000,
     };
+  } else if (form.kind === "sketch_prism") {
+    // No base geometry: the single sketch addition is the whole part.
   } else {
     spec.plate = {
       length_m: form.lengthMm / 1000,
@@ -151,6 +159,7 @@ export function specToForm(spec: DesignSpec, previous: DesignForm): DesignForm {
     holeCountX: spec.holes?.count_x ?? previous.holeCountX,
     holeCountY: spec.holes?.count_y ?? previous.holeCountY,
     holeMarginMm: (spec.holes?.margin_m ?? previous.holeMarginMm / 1000) * 1000,
+    additions: (spec.additions ?? []).map((addition, index) => ({ id: `sketch-${index + 1}`, label: addition.label, face: addition.face, profile: addition.profile, widthMm: addition.width_m * 1000, heightMm: addition.height_m * 1000, depthMm: addition.depth_m * 1000, offsetUMm: addition.offset_u_m * 1000, offsetWMm: addition.offset_w_m * 1000 })),
   };
 }
 
@@ -169,6 +178,7 @@ export type GeometryForm = Pick<
   | "holeCountX"
   | "holeCountY"
   | "holeMarginMm"
+  | "additions"
 >;
 
 export function geometrySnapshot(form: DesignForm): GeometryForm {
@@ -185,14 +195,16 @@ export function geometrySnapshot(form: DesignForm): GeometryForm {
     holeCountX: form.holeCountX,
     holeCountY: form.holeCountY,
     holeMarginMm: form.holeMarginMm,
+    additions: form.additions,
   };
 }
 
 /** True when the geometry differs from the part as loaded (e.g. the AI-proposed part). */
 export function isGeometryChanged(form: DesignForm, baseline: DesignForm): boolean {
+  if (JSON.stringify(form.additions) !== JSON.stringify(baseline.additions)) return true;
   const current = geometrySnapshot(form);
   const loaded = geometrySnapshot(baseline);
-  return (Object.keys(current) as (keyof GeometryForm)[]).some((key) => current[key] !== loaded[key]);
+  return (Object.keys(current) as (keyof GeometryForm)[]).some((key) => key !== "additions" && current[key] !== loaded[key]);
 }
 
 /**
@@ -213,7 +225,21 @@ export function withGeometry(form: DesignForm, baseline: DesignForm): DesignForm
 }
 
 export function formIssues(form: DesignForm): string[] {
-  const issues: string[] = [];
+  const additionIssues: string[] = [];
+  for (const addition of form.additions) {
+    const sizes = [addition.widthMm, addition.heightMm, addition.depthMm, addition.offsetUMm, addition.offsetWMm];
+    if (sizes.some((value) => !Number.isFinite(value)) || addition.widthMm <= 0 || addition.heightMm <= 0 || addition.depthMm <= 0) {
+      additionIssues.push("Sketch piece width, height, and depth must be finite and positive.");
+    }
+    if (addition.profile.length < 3) additionIssues.push("A sketch piece needs a closed outline with at least three points.");
+    if (form.kind !== "sketch_prism" && (addition.face === form.support || addition.face === form.loadSurface)) {
+      additionIssues.push("A sketch piece cannot sit on the support or load face. Pick another face in Draw, or change the held and loaded faces.");
+    }
+  }
+  if (form.kind === "sketch_prism" && form.additions.length !== 1) {
+    additionIssues.push("A sketch-only part needs exactly one sketch piece.");
+  }
+  const issues: string[] = [...additionIssues];
   const dimensions = [form.lengthMm, form.widthMm, form.heightMm, form.thicknessMm, form.meshMm, form.magnitude];
   if (dimensions.some((value) => !Number.isFinite(value) || value <= 0)) {
     issues.push("Dimensions, mesh size, and load magnitude must be finite and positive.");
