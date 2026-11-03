@@ -46,13 +46,18 @@ const MAX_PROFILE_POINTS = 48;
  * normalized profile. The stroke is auto-closed back to its start; its
  * bounding box becomes the unit square, with v flipped so up is up.
  */
-export function closeSketch(raw: RawPoint[]): SketchPoint[] | null {
+function cleanRawPoints(raw: RawPoint[]): RawPoint[] {
   const cleaned: RawPoint[] = [];
   for (const point of raw) {
     if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) continue;
     const last = cleaned[cleaned.length - 1];
     if (!last || Math.hypot(point.x - last.x, point.y - last.y) > 2) cleaned.push(point);
   }
+  return cleaned;
+}
+
+export function closeSketch(raw: RawPoint[]): SketchPoint[] | null {
+  const cleaned = cleanRawPoints(raw);
   if (cleaned.length < 3) return null;
   const simplified = simplify(cleaned, 2.5);
   const points = downsample(simplified, MAX_PROFILE_POINTS);
@@ -103,6 +108,166 @@ export function classifySketch(profile: SketchPoint[]): string {
   if (corners >= 7) return "Rounded boss";
   if (corners >= 5 && bottomPoints >= 1) return "Arch";
   return "Custom piece";
+}
+
+export type SketchShapeKind = "ellipse" | "rectangle" | "triangle";
+
+export interface BeautifiedSketch {
+  kind: SketchShapeKind;
+  label: string;
+  profile: SketchPoint[];
+  /** 0 to 1: how closely the stroke matched the clean shape. */
+  confidence: number;
+}
+
+const ELLIPSE_POINTS = 32;
+const ELLIPSE_MAX_RMS_ERROR = 0.15;
+
+/**
+ * Read a freehand stroke as a clean shape, locally and deterministically.
+ * Fitting happens on the raw canvas points: the normalized profile squashes
+ * each axis to its bounding box, so a circle and an ellipse are identical
+ * there. Returns null when nothing matches confidently, in which case the
+ * literal simplified outline stands.
+ */
+export function beautifySketch(raw: RawPoint[]): BeautifiedSketch | null {
+  const literal = closeSketch(raw);
+  if (!literal) return null;
+  return fitEllipse(raw) ?? fitRectangle(literal) ?? fitTriangle(literal);
+}
+
+/**
+ * Evenly spaced points along the stroke. Without this, slow parts of a
+ * drawing collect more points and pull any fit toward themselves.
+ */
+function resamplePoints(raw: RawPoint[], spacing: number): RawPoint[] {
+  const points = cleanRawPoints(raw);
+  if (points.length < 2) return points;
+  const result: RawPoint[] = [points[0]];
+  let previous = points[0];
+  let remaining = spacing;
+  for (const current of points.slice(1)) {
+    let target = current;
+    let distance = Math.hypot(target.x - previous.x, target.y - previous.y);
+    while (distance >= remaining && distance > 0) {
+      const step = remaining / distance;
+      const emitted = {
+        x: previous.x + (target.x - previous.x) * step,
+        y: previous.y + (target.y - previous.y) * step,
+      };
+      result.push(emitted);
+      previous = emitted;
+      distance = Math.hypot(target.x - previous.x, target.y - previous.y);
+      remaining = spacing;
+    }
+    remaining -= distance;
+    previous = target;
+  }
+  const last = points[points.length - 1];
+  if (result[result.length - 1] !== last) result.push(last);
+  return result;
+}
+
+function fitEllipse(raw: RawPoint[]): BeautifiedSketch | null {
+  const points = resamplePoints(raw, 4);
+  if (points.length < 12) return null;
+  const xs = points.map((point) => point.x);
+  const ys = points.map((point) => point.y);
+  const minX = Math.min(...xs);
+  const minY = Math.min(...ys);
+  const spanX = Math.max(...xs) - minX;
+  const spanY = Math.max(...ys) - minY;
+  if (spanX < 8 || spanY < 8) return null;
+  const centreX = minX + spanX / 2;
+  const centreY = minY + spanY / 2;
+  const radiusX = spanX / 2;
+  const radiusY = spanY / 2;
+
+  let squaredError = 0;
+  const angles: number[] = [];
+  for (const point of points) {
+    const dx = (point.x - centreX) / radiusX;
+    const dy = (point.y - centreY) / radiusY;
+    const radial = Math.hypot(dx, dy);
+    squaredError += (radial - 1) ** 2;
+    angles.push(Math.atan2(dy, dx));
+  }
+  const rmsError = Math.sqrt(squaredError / points.length);
+  if (rmsError > ELLIPSE_MAX_RMS_ERROR) return null;
+
+  // A partial stroke still completes the shape, as long as it travels well
+  // past halfway around. Less than that and a plain curve would qualify.
+  angles.sort((a, b) => a - b);
+  let widestGap = 0;
+  for (let index = 0; index < angles.length; index += 1) {
+    const next = angles[(index + 1) % angles.length] + (index === angles.length - 1 ? 2 * Math.PI : 0);
+    widestGap = Math.max(widestGap, next - angles[index]);
+  }
+  if (widestGap > 2.8) return null;
+  const coverage = 1 - widestGap / (2 * Math.PI);
+
+  const profile: SketchPoint[] = [];
+  for (let index = 0; index < ELLIPSE_POINTS; index += 1) {
+    const angle = -Math.PI / 2 + (index / ELLIPSE_POINTS) * 2 * Math.PI;
+    profile.push({
+      u: round4(0.5 + 0.5 * Math.cos(angle)),
+      v: round4(0.5 + 0.5 * Math.sin(angle)),
+    });
+  }
+  const aspect = spanY / spanX;
+  return {
+    kind: "ellipse",
+    label: aspect >= 0.85 && aspect <= 1.18 ? "Disc" : "Oval boss",
+    profile,
+    // A completed arc is a bigger claim than a tidied full circle.
+    confidence: clamp((1 - rmsError * 2) * (0.65 + 0.35 * coverage), 0, 1),
+  };
+}
+
+function fitRectangle(profile: SketchPoint[]): BeautifiedSketch | null {
+  const corners = cornerIndices(profile);
+  if (corners.length !== 4) return null;
+  const boxCorners: SketchPoint[] = [
+    { u: 0, v: 0 },
+    { u: 1, v: 0 },
+    { u: 1, v: 1 },
+    { u: 0, v: 1 },
+  ];
+  const claimed = new Set<number>();
+  for (const index of corners) {
+    const point = profile[index];
+    const nearest = boxCorners.findIndex(
+      (corner, cornerIndex) =>
+        !claimed.has(cornerIndex) && Math.hypot(point.u - corner.u, point.v - corner.v) <= 0.14,
+    );
+    if (nearest < 0) return null;
+    claimed.add(nearest);
+  }
+  // Every kept point should hug an edge; an inset edge means a trapezoid.
+  const onEdge = profile.every(
+    (point) => Math.min(point.u, 1 - point.u, point.v, 1 - point.v) <= 0.09,
+  );
+  if (!onEdge) return null;
+  return { kind: "rectangle", label: "Block", profile: boxCorners, confidence: 0.9 };
+}
+
+function fitTriangle(profile: SketchPoint[]): BeautifiedSketch | null {
+  const corners = cornerIndices(profile);
+  if (corners.length !== 3) return null;
+  const snap = (value: number) => (value <= 0.08 ? 0 : value >= 0.92 ? 1 : round4(value));
+  const snapped = corners.map((index) => ({
+    u: snap(profile[index].u),
+    v: snap(profile[index].v),
+  }));
+  if (new Set(snapped.map((point) => `${point.u},${point.v}`)).size !== 3) return null;
+  let area = 0;
+  for (let index = 0; index < snapped.length; index += 1) {
+    const current = snapped[index];
+    const next = snapped[(index + 1) % snapped.length];
+    area += current.u * next.v - next.u * current.v;
+  }
+  if (Math.abs(area) / 2 < 0.1) return null;
+  return { kind: "triangle", label: classifySketch(snapped), profile: snapped, confidence: 0.9 };
 }
 
 /** Bounding box of the base part in metres, in CAD coordinates. Mirrors the API envelope. */
@@ -244,11 +409,11 @@ function spanAt(profile: SketchPoint[], v: number): number {
   return Math.max(...us) - Math.min(...us);
 }
 
-function dominantCorners(profile: SketchPoint[]): number {
-  // Count direction changes sharper than ~35 degrees around the outline.
+function cornerIndices(profile: SketchPoint[]): number[] {
+  // Indices where the outline changes direction sharper than ~35 degrees.
   const count = profile.length;
-  if (count < 3) return count;
-  let corners = 0;
+  const indices: number[] = [];
+  if (count < 3) return indices;
   for (let index = 0; index < count; index += 1) {
     const prev = profile[(index - 1 + count) % count];
     const current = profile[index];
@@ -257,9 +422,15 @@ function dominantCorners(profile: SketchPoint[]): number {
     const b = Math.atan2(next.v - current.v, next.u - current.u);
     let turn = Math.abs(b - a);
     if (turn > Math.PI) turn = 2 * Math.PI - turn;
-    if (turn > 0.6) corners += 1;
+    if (turn > 0.6) indices.push(index);
   }
-  return Math.max(3, Math.min(corners, count));
+  return indices;
+}
+
+function dominantCorners(profile: SketchPoint[]): number {
+  const count = profile.length;
+  if (count < 3) return count;
+  return Math.max(3, Math.min(cornerIndices(profile).length, count));
 }
 
 function simplify(points: RawPoint[], tolerance: number): RawPoint[] {

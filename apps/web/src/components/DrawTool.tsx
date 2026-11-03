@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { SURFACES, type DesignForm, type Surface } from "@/lib/design";
 import {
+  beautifySketch,
   classifySketch,
   closeSketchWithAspect,
   proposeSketchSize,
@@ -39,8 +40,15 @@ export function DrawTool({
   const [label, setLabel] = useState("");
   const [size, setSize] = useState<{ widthMm: number; heightMm: number; depthMm: number } | null>(null);
   const [finished, setFinished] = useState(false);
+  const [tidySketch, setTidySketch] = useState(true);
   const closed = raw.length >= 3 ? closeSketchWithAspect(raw) : null;
-  const proposal = finished ? closed : null;
+  const beautified = raw.length >= 3 ? beautifySketch(raw) : null;
+  // The flag only picks which outline is proposed; the literal stroke is kept.
+  const cleaned = tidySketch ? beautified : null;
+  const proposal =
+    finished && closed
+      ? { profile: cleaned?.profile ?? closed.profile, aspect: closed.aspect }
+      : null;
   const blockedFace = !standalone && (face === form.support || face === form.loadSurface);
 
   useEffect(() => {
@@ -78,11 +86,32 @@ export function DrawTool({
         context.fill();
       }
     }
-  }, [raw, closed]);
+    if (cleaned && raw.length) {
+      const xs = raw.map((point) => point.x);
+      const ys = raw.map((point) => point.y);
+      const minX = Math.min(...xs);
+      const minY = Math.min(...ys);
+      const spanX = Math.max(...xs) - minX;
+      const spanY = Math.max(...ys) - minY;
+      context.strokeStyle = "#059669";
+      context.lineWidth = 2.5;
+      context.setLineDash([6, 4]);
+      context.beginPath();
+      cleaned.profile.forEach((point, index) => {
+        const x = minX + point.u * spanX;
+        const y = minY + (1 - point.v) * spanY;
+        if (index === 0) context.moveTo(x, y);
+        else context.lineTo(x, y);
+      });
+      context.closePath();
+      context.stroke();
+      context.setLineDash([]);
+    }
+  }, [raw, closed, finished, cleaned]);
 
   useEffect(() => {
     if (!proposal) return;
-    setLabel((current) => current || classifySketch(proposal.profile));
+    setLabel((current) => current || (cleaned ? cleaned.label : classifySketch(proposal.profile)));
     setSize((current) => current ?? proposeSketchSize(proposal.aspect, standalone ? null : form, face, standalone));
     // A new outline earns a fresh proposal; size edits after that are kept.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -112,7 +141,7 @@ export function DrawTool({
     onDraft(
       {
         id: `sketch-${Date.now()}`,
-        label: label.trim() || classifySketch(proposal.profile),
+        label: label.trim() || cleaned?.label || classifySketch(proposal.profile),
         face: standalone ? "zmax" : face,
         profile: proposal.profile,
         widthMm: size.widthMm,
@@ -183,8 +212,16 @@ export function DrawTool({
             >
               <Eraser className="mr-1 h-4 w-4" aria-hidden /> Clear
             </Button>
-            <p className="text-xs text-gray-500">
-              {proposal ? `${proposal.profile.length} outline points kept after simplifying.` : "One stroke, one closed outline."}
+            <p className="text-xs text-gray-500" aria-live="polite">
+              {proposal
+                ? cleaned
+                  ? `Cleaned into a ${cleaned.label.toLowerCase()} with ${proposal.profile.length} outline points. Dashed green is the clean shape; blue is your stroke.`
+                  : `${proposal.profile.length} outline points kept after simplifying.`
+                : cleaned
+                  ? `${cleaned.label} locked on — lift the pointer to use it, or keep drawing to change its mind.`
+                  : beautified && !tidySketch
+                    ? `That reads as a ${beautified.label.toLowerCase()}, but Clean up is off, so your exact stroke will be used.`
+                    : "One stroke, one closed outline."}
             </p>
           </div>
           {error && <p className="mt-2 text-sm text-amber-700">{error}</p>}
@@ -193,9 +230,27 @@ export function DrawTool({
           <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Proposal</p>
           <p className="mt-1 text-sm leading-5 text-gray-600">
             {proposal
-              ? "Sized locally from your outline and the current part. No AI call; fix any number before placing it."
+              ? cleaned
+                ? `Read as a ${cleaned.label.toLowerCase()} (${Math.round(cleaned.confidence * 100)}% fit), sized locally from your outline and the current part. No AI call; fix any number before placing it.`
+                : "Sized locally from your outline and the current part. No AI call; fix any number before placing it."
               : "Draw first. The intention and size are proposed from the outline itself."}
           </p>
+          <label className="mt-3 flex items-start gap-2 text-sm text-gray-700">
+            <input
+              type="checkbox"
+              className="mt-0.5"
+              checked={tidySketch}
+              onChange={(event) => {
+                setTidySketch(event.target.checked);
+                // Let the label be re-proposed for the outline now in effect.
+                setLabel("");
+              }}
+            />
+            <span>
+              Clean up my sketch
+              <span className="block text-xs leading-4 text-gray-500">Read a wobbly or part-drawn circle, rectangle, or triangle as the clean shape, and complete it. Turn this off to add exactly what you drew.</span>
+            </span>
+          </label>
           <label className="field mt-3">
             <span>Intention</span>
             <input value={label} onChange={(event) => setLabel(event.target.value)} placeholder="Roof, rib, boss…" />
