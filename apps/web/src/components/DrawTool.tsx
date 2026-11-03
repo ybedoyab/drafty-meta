@@ -3,12 +3,14 @@ import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { SURFACES, type DesignForm, type Surface } from "@/lib/design";
 import {
-  beautifySketch,
+  beautifyCandidates,
   classifySketch,
   closeSketchWithAspect,
   proposeSketchSize,
+  snapProfileToGrid,
   type RawPoint,
   type SketchAdditionForm,
+  type SketchShapeKind,
 } from "@/lib/sketch";
 
 const FACE_LABELS: Record<Surface, string> = {
@@ -23,11 +25,13 @@ const FACE_LABELS: Record<Surface, string> = {
 export function DrawTool({
   form,
   hasPart,
+  gridStepMm = 0,
   onClose,
   onDraft,
 }: {
   form: DesignForm;
   hasPart: boolean;
+  gridStepMm?: number;
   onClose: () => void;
   onDraft: (addition: SketchAdditionForm, standalone: boolean) => void;
 }) {
@@ -41,10 +45,15 @@ export function DrawTool({
   const [size, setSize] = useState<{ widthMm: number; heightMm: number; depthMm: number } | null>(null);
   const [finished, setFinished] = useState(false);
   const [tidySketch, setTidySketch] = useState(true);
+  const [picked, setPicked] = useState<SketchShapeKind | null>(null);
   const closed = raw.length >= 3 ? closeSketchWithAspect(raw) : null;
-  const beautified = raw.length >= 3 ? beautifySketch(raw) : null;
+  const candidates = raw.length >= 3 ? beautifyCandidates(raw) : [];
+  const beautified = candidates[0] ?? null;
   // The flag only picks which outline is proposed; the literal stroke is kept.
-  const cleaned = tidySketch ? beautified : null;
+  const cleaned = tidySketch ? (candidates.find((fit) => fit.kind === picked) ?? beautified) : null;
+  const closeCall = candidates.filter(
+    (fit) => candidates.length > 1 && fit.confidence >= candidates[0].confidence - 0.15,
+  );
   const proposal =
     finished && closed
       ? { profile: cleaned?.profile ?? closed.profile, aspect: closed.aspect }
@@ -112,7 +121,14 @@ export function DrawTool({
   useEffect(() => {
     if (!proposal) return;
     setLabel((current) => current || (cleaned ? cleaned.label : classifySketch(proposal.profile)));
-    setSize((current) => current ?? proposeSketchSize(proposal.aspect, standalone ? null : form, face, standalone));
+    setSize((current) => {
+      if (current) return current;
+      const proposed = proposeSketchSize(proposal.aspect, standalone ? null : form, face, standalone);
+      if (!cleaned || gridStepMm <= 0) return proposed;
+      // A cleaned shape starts life on the studio grid.
+      const snapMm = (value: number) => Math.max(gridStepMm, Math.round(value / gridStepMm) * gridStepMm);
+      return { widthMm: snapMm(proposed.widthMm), heightMm: snapMm(proposed.heightMm), depthMm: snapMm(proposed.depthMm) };
+    });
     // A new outline earns a fresh proposal; size edits after that are kept.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [proposal?.profile]);
@@ -143,7 +159,11 @@ export function DrawTool({
         id: `sketch-${Date.now()}`,
         label: label.trim() || cleaned?.label || classifySketch(proposal.profile),
         face: standalone ? "zmax" : face,
-        profile: proposal.profile,
+        shape: cleaned?.kind === "ellipse" ? "ellipse" : "polygon",
+        profile:
+          cleaned && cleaned.kind !== "ellipse"
+            ? snapProfileToGrid(proposal.profile, size.widthMm, size.heightMm, gridStepMm)
+            : proposal.profile,
         widthMm: size.widthMm,
         heightMm: size.heightMm,
         depthMm: size.depthMm,
@@ -181,6 +201,7 @@ export function DrawTool({
               setRaw([point]);
               setSize(null);
               setLabel("");
+              setPicked(null);
               setError(null);
             }}
             onPointerMove={(event) => {
@@ -204,6 +225,7 @@ export function DrawTool({
                 setRaw([]);
                 setSize(null);
                 setLabel("");
+                setPicked(null);
                 setError(null);
               }}
             >
@@ -263,6 +285,28 @@ export function DrawTool({
           </div>
           {!tidySketch && beautified && (
             <p className="mt-1.5 text-xs text-slate-500">Reads as a {beautified.label.toLowerCase()}.</p>
+          )}
+          {finished && tidySketch && closeCall.length > 1 && (
+            <div className="mt-2 flex flex-wrap gap-1" role="group" aria-label="Shape choices">
+              {closeCall.map((fit) => (
+                <button
+                  key={fit.kind}
+                  type="button"
+                  aria-pressed={cleaned?.kind === fit.kind}
+                  onClick={() => {
+                    setPicked(fit.kind);
+                    setLabel("");
+                  }}
+                  className={
+                    cleaned?.kind === fit.kind
+                      ? "rounded-full bg-slate-900 px-2.5 py-1 text-[11px] font-medium text-white"
+                      : "rounded-full border border-slate-200 px-2.5 py-1 text-[11px] font-medium text-slate-600 hover:bg-slate-50"
+                  }
+                >
+                  {fit.label} · {Math.round(fit.confidence * 100)}%
+                </button>
+              ))}
+            </div>
           )}
           <label className="field mt-3">
             <span>Intention</span>

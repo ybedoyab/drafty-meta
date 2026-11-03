@@ -45,7 +45,7 @@ import {
 import { canRedo, canUndo, createHistory, historyShortcut, recordHistory, redoHistory, undoHistory, type History } from "@/lib/history";
 import { takeStudioSpec } from "@/lib/scenario";
 import { axisSizesMm, hasVisualEdits, rotateForm, scaleForm } from "@/lib/transform";
-import { clampOffsets, draftPlacementM, type SketchAdditionForm } from "@/lib/sketch";
+import { clampOffsets, draftPlacementM, ellipseProfile, type SketchAdditionForm } from "@/lib/sketch";
 import { SiteHeader } from "@/components/SiteHeader";
 
 const STAGES = ["queued", "geometry", "meshing", "solving", "postprocessing", "completed"] as const;
@@ -438,7 +438,8 @@ export function Workstation() {
           sketchDraft.standalone ? { ...form, kind: "sketch_prism", additions: [sketchDraft.addition] } : form,
           sketchDraft.addition,
         ),
-        profile: sketchDraft.addition.profile,
+        // An ellipse piece is a true ellipse in CAD; draw the ghost just as smooth.
+        profile: sketchDraft.addition.shape === "ellipse" ? ellipseProfile(64) : sketchDraft.addition.profile,
         label: sketchDraft.addition.label,
       }
     : null;
@@ -1324,6 +1325,7 @@ export function Workstation() {
         <DrawTool
           form={form}
           hasPart={Boolean(previewUrl || result)}
+          gridStepMm={gridStepMm}
           onClose={() => setDrawOpen(false)}
           onDraft={(addition, standalone) => {
             setSketchDraft({ addition, standalone });

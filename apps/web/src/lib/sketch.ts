@@ -12,10 +12,14 @@ export interface SketchPoint {
   v: number;
 }
 
+export type SketchShape = "polygon" | "ellipse";
+
 export interface SketchAdditionForm {
   id: string;
   label: string;
   face: Surface;
+  /** "ellipse" builds a true ellipse solid; the profile is its outline. */
+  shape?: SketchShape;
   profile: SketchPoint[];
   widthMm: number;
   heightMm: number;
@@ -123,6 +127,19 @@ export interface BeautifiedSketch {
 const ELLIPSE_POINTS = 32;
 const ELLIPSE_MAX_RMS_ERROR = 0.15;
 
+/** Points on the unit-bounding-box ellipse, starting at the bottom. */
+export function ellipseProfile(count: number): SketchPoint[] {
+  const profile: SketchPoint[] = [];
+  for (let index = 0; index < count; index += 1) {
+    const angle = -Math.PI / 2 + (index / count) * 2 * Math.PI;
+    profile.push({
+      u: round4(0.5 + 0.5 * Math.cos(angle)),
+      v: round4(0.5 + 0.5 * Math.sin(angle)),
+    });
+  }
+  return profile;
+}
+
 /**
  * Read a freehand stroke as a clean shape, locally and deterministically.
  * Fitting happens on the raw canvas points: the normalized profile squashes
@@ -130,18 +147,55 @@ const ELLIPSE_MAX_RMS_ERROR = 0.15;
  * there. Returns null when nothing matches confidently, in which case the
  * literal simplified outline stands.
  */
-export function beautifySketch(raw: RawPoint[]): BeautifiedSketch | null {
+/**
+ * Every confident reading of the stroke, best first. Usually there is one;
+ * when two fits score close, the caller can offer both and let the user pick.
+ */
+export function beautifyCandidates(raw: RawPoint[]): BeautifiedSketch[] {
   const literal = closeSketch(raw);
-  if (!literal) return null;
-  return (
-    fitRectangle(literal) ??
-    fitTrapezoid(literal) ??
-    fitArch(literal) ??
-    fitRegularPolygon(literal) ??
-    fitEllipse(raw) ??
-    fitTriangle(literal) ??
-    fitStraightened(literal)
-  );
+  if (!literal) return [];
+  const fits = [
+    fitRectangle(literal),
+    fitTrapezoid(literal),
+    fitArch(literal),
+    fitRegularPolygon(literal),
+    fitEllipse(raw),
+    fitTriangle(literal),
+    fitStraightened(literal),
+  ].filter((fit): fit is BeautifiedSketch => fit !== null);
+  const seen = new Set<string>();
+  return fits.filter((fit) => {
+    const key = `${fit.kind}:${JSON.stringify(fit.profile)}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+export function beautifySketch(raw: RawPoint[]): BeautifiedSketch | null {
+  return beautifyCandidates(raw)[0] ?? null;
+}
+
+/**
+ * Snap profile points to the studio grid: each point's millimetre position
+ * across and up the piece (u × width, v × height) rounds to the grid step.
+ */
+export function snapProfileToGrid(
+  profile: SketchPoint[],
+  widthMm: number,
+  heightMm: number,
+  gridMm: number,
+): SketchPoint[] {
+  if (gridMm <= 0 || widthMm <= 0 || heightMm <= 0) return profile;
+  const snap = (value: number, spanMm: number) =>
+    round4(Math.min(1, Math.max(0, (Math.round((value * spanMm) / gridMm) * gridMm) / spanMm)));
+  const snapped: SketchPoint[] = [];
+  for (const point of profile) {
+    const next = { u: snap(point.u, widthMm), v: snap(point.v, heightMm) };
+    const last = snapped[snapped.length - 1];
+    if (!last || last.u !== next.u || last.v !== next.v) snapped.push(next);
+  }
+  return snapped.length >= 3 ? snapped : profile;
 }
 
 /**
@@ -214,14 +268,7 @@ function fitEllipse(raw: RawPoint[]): BeautifiedSketch | null {
   if (widestGap > 2.8) return null;
   const coverage = 1 - widestGap / (2 * Math.PI);
 
-  const profile: SketchPoint[] = [];
-  for (let index = 0; index < ELLIPSE_POINTS; index += 1) {
-    const angle = -Math.PI / 2 + (index / ELLIPSE_POINTS) * 2 * Math.PI;
-    profile.push({
-      u: round4(0.5 + 0.5 * Math.cos(angle)),
-      v: round4(0.5 + 0.5 * Math.sin(angle)),
-    });
-  }
+  const profile = ellipseProfile(ELLIPSE_POINTS);
   const aspect = spanY / spanX;
   return {
     kind: "ellipse",

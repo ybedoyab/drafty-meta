@@ -123,12 +123,15 @@ class SketchAddition(BaseModel):
     Profile points are normalized to the profile bounding box: u across the
     face, v rising outward from it (0 sits on the face). Width, height, and
     depth size that box in meters; offsets move its centre across the face.
+    With shape "ellipse" the solid is a true ellipse inside that box and the
+    profile is only its stored outline.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     label: str = Field(default="Sketch piece", min_length=1, max_length=40)
     face: SurfaceName = "zmax"
+    shape: Literal["polygon", "ellipse"] = "polygon"
     profile: list[SketchPoint] = Field(min_length=3, max_length=48)
     width_m: float = Field(gt=0)
     height_m: float = Field(gt=0)
@@ -142,6 +145,10 @@ class SketchAddition(BaseModel):
         return _validate_name(value)
 
     def profile_area_m2(self) -> float:
+        if self.shape == "ellipse":
+            # A true ellipse fills pi/4 of its bounding box, whatever the
+            # stored outline points approximate.
+            return math.pi / 4.0 * self.width_m * self.height_m
         return abs(_shoelace([(point.u, point.v) for point in self.profile])) * self.width_m * self.height_m
 
     def volume_m3(self) -> float:

@@ -48,7 +48,7 @@ export interface DesignSpec {
   plate: { length_m: number; width_m: number; thickness_m: number } | null;
   bracket: { leg_x_m: number; leg_z_m: number; thickness_m: number; width_m: number } | null;
   holes: { radius_m: number; count_x: number; count_y: number; margin_m: number } | null;
-  additions: { label: string; face: Surface; profile: { u: number; v: number }[]; width_m: number; height_m: number; depth_m: number; offset_u_m: number; offset_w_m: number }[];
+  additions: { label: string; face: Surface; shape: "polygon" | "ellipse"; profile: { u: number; v: number }[]; width_m: number; height_m: number; depth_m: number; offset_u_m: number; offset_w_m: number }[];
 }
 
 export const benchmarkForm: DesignForm = {
@@ -97,7 +97,7 @@ export function formToSpec(form: DesignForm): DesignSpec {
     plate: null,
     bracket: null,
     holes: null,
-    additions: form.additions.map((addition) => ({ label: addition.label, face: addition.face, profile: addition.profile, width_m: addition.widthMm / 1000, height_m: addition.heightMm / 1000, depth_m: addition.depthMm / 1000, offset_u_m: addition.offsetUMm / 1000, offset_w_m: addition.offsetWMm / 1000 })),
+    additions: form.additions.map((addition) => ({ label: addition.label, face: addition.face, shape: addition.shape ?? "polygon", profile: addition.profile, width_m: addition.widthMm / 1000, height_m: addition.heightMm / 1000, depth_m: addition.depthMm / 1000, offset_u_m: addition.offsetUMm / 1000, offset_w_m: addition.offsetWMm / 1000 })),
   };
   if (form.kind === "cantilever_beam") {
     spec.beam = {
@@ -159,7 +159,7 @@ export function specToForm(spec: DesignSpec, previous: DesignForm): DesignForm {
     holeCountX: spec.holes?.count_x ?? previous.holeCountX,
     holeCountY: spec.holes?.count_y ?? previous.holeCountY,
     holeMarginMm: (spec.holes?.margin_m ?? previous.holeMarginMm / 1000) * 1000,
-    additions: (spec.additions ?? []).map((addition, index) => ({ id: `sketch-${index + 1}`, label: addition.label, face: addition.face, profile: addition.profile, widthMm: addition.width_m * 1000, heightMm: addition.height_m * 1000, depthMm: addition.depth_m * 1000, offsetUMm: addition.offset_u_m * 1000, offsetWMm: addition.offset_w_m * 1000 })),
+    additions: (spec.additions ?? []).map((addition, index) => ({ id: `sketch-${index + 1}`, label: addition.label, face: addition.face, shape: addition.shape ?? "polygon", profile: addition.profile, widthMm: addition.width_m * 1000, heightMm: addition.height_m * 1000, depthMm: addition.depth_m * 1000, offsetUMm: addition.offset_u_m * 1000, offsetWMm: addition.offset_w_m * 1000 })),
   };
 }
 

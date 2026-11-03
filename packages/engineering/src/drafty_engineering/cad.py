@@ -27,13 +27,45 @@ def build_sketch_prism(
 ) -> cq.Workplane:
     """Extrude the sketch profile along its third axis as a CadQuery solid."""
 
-    _u_axis, _v_axis, w_axis, _sign = FACE_FRAME[addition.face]
+    u_axis, v_axis, w_axis, sign = FACE_FRAME[addition.face]
     points = addition_profile_points_3d(addition, base, 0.0)
-    wire = cq.Wire.makePolygon([cq.Vector(*point) for point in points] + [cq.Vector(*points[0])])
     direction = [0.0, 0.0, 0.0]
     direction[w_axis] = addition.depth_m
+    if addition.shape == "ellipse":
+        wire = _ellipse_wire(addition, points, u_axis, w_axis)
+        solid = cq.Solid.extrudeLinear(wire, [], cq.Vector(*direction))
+        return cq.Workplane("XY").newObject([solid])
+    wire = cq.Wire.makePolygon([cq.Vector(*point) for point in points] + [cq.Vector(*points[0])])
     solid = cq.Solid.extrudeLinear(wire, [], cq.Vector(*direction))
     return cq.Workplane("XY").newObject([solid])
+
+
+def _ellipse_wire(
+    addition: SketchAddition,
+    points: list[tuple[float, float, float]],
+    u_axis: int,
+    w_axis: int,
+) -> cq.Wire:
+    """A true ellipse wire in the profile plane, centred on the stored outline."""
+
+    # The box midpoint, not the average of points, so the ellipse matches the
+    # outline the user saw. A full ellipse is symmetric, so only its centre,
+    # radii, and plane matter here.
+    centre = [
+        (min(point[axis] for point in points) + max(point[axis] for point in points)) / 2.0
+        for axis in range(3)
+    ]
+    u_dir = [0.0, 0.0, 0.0]
+    u_dir[u_axis] = 1.0
+    normal = [0.0, 0.0, 0.0]
+    normal[w_axis] = 1.0
+    return cq.Wire.makeEllipse(
+        addition.width_m / 2.0,
+        addition.height_m / 2.0,
+        cq.Vector(*centre),
+        cq.Vector(*normal),
+        cq.Vector(*u_dir),
+    )
 
 
 def build_solid(spec: DesignSpec) -> cq.Workplane:
