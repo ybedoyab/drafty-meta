@@ -1,6 +1,7 @@
-import { Box, Check, ChevronLeft, ChevronRight, CircleAlert, GraduationCap, PanelRightClose, PanelRightOpen } from "lucide-react";
+import { Box, Check, ChevronLeft, ChevronRight, CircleAlert, GraduationCap, PanelRightClose, PanelRightOpen, Pencil } from "lucide-react";
 import { Grid, OrbitControls } from "@react-three/drei";
 import { Canvas } from "@react-three/fiber";
+import { useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { Fragment, Suspense, useEffect, useRef, useState, type ReactNode } from "react";
 import { Logo } from "@/components/Logo";
@@ -25,6 +26,7 @@ import {
   getHealth,
   getModels,
   getScenario,
+  renameScenario,
   loadDemo,
   scenarioEvidenceUrl,
   scenarioGeometryUrl,
@@ -109,6 +111,11 @@ export function Scenario() {
   const [loadFace, setLoadFace] = useState("");
   const [bracket, setBracket] = useState({ legX: "80", legZ: "80", width: "40", thickness: "8", force: "200", limit: "1" });
   const [inspectorOpen, setInspectorOpen] = useState(true);
+  const [editingProjectName, setEditingProjectName] = useState(false);
+  const [projectNameDraft, setProjectNameDraft] = useState("");
+  const [renamingProject, setRenamingProject] = useState(false);
+  const [projectNameError, setProjectNameError] = useState<string | null>(null);
+  const queryClient = useQueryClient();
   const [inspectorStep, setInspectorStep] = useState<InspectorStepId>("inputs");
   const [followGuide, setFollowGuide] = useState(true);
   const evidenceRef = useRef<HTMLInputElement | null>(null);
@@ -161,6 +168,8 @@ export function Scenario() {
     openIdRef.current = entry.kind === "open" ? entry.id : null;
     setSession(null);
     setForm(emptyForm());
+    setEditingProjectName(false);
+    setProjectNameError(null);
     setDraft("");
     setError(null);
     const load =
@@ -257,6 +266,29 @@ export function Scenario() {
     if (!isMetaModelId(models, id)) return;
     setSelectedModelId(id);
     rememberModelId(localStorage, id);
+  }
+
+  async function saveProjectName() {
+    if (!session || renamingProject) return;
+    const name = projectNameDraft.trim();
+    if (!name) {
+      setProjectNameError("The name must not be empty.");
+      return;
+    }
+    setRenamingProject(true);
+    setProjectNameError(null);
+    try {
+      const targetId = session.id;
+      const saved = await renameScenario(targetId, name);
+      if (!shouldApplySession(targetId, openIdRef.current)) return;
+      setSession((current) => (current?.id === targetId ? { ...current, name: saved.name ?? name } : current));
+      setEditingProjectName(false);
+      void queryClient.invalidateQueries({ queryKey: ["scenarios"] });
+    } catch (reason) {
+      setProjectNameError(reason instanceof Error ? reason.message : "The project could not be renamed.");
+    } finally {
+      setRenamingProject(false);
+    }
   }
 
   async function submit(message: string, patch?: ScenarioForm) {
@@ -477,6 +509,7 @@ export function Scenario() {
   const suggestedStep: InspectorStepId = !session ? "inputs" : unsupported ? "results" : session.missing.length > 0 && formPart ? "inputs" : formPart && filledInputs < inputFields.length ? "inputs" : domain === "mechanical" && session.studio_spec ? "results" : session.analysis ? "results" : hasModelStep ? "model" : formPart ? "inputs" : "evidence";
   const activeStep: InspectorStepId = inspectorSteps.some((step) => step.id === inspectorStep) ? inspectorStep : (inspectorSteps[0]?.id ?? "inputs");
   const activeIndex = Math.max(0, inspectorSteps.findIndex((step) => step.id === activeStep));
+  const projectName = session?.name?.trim() ? session.name.trim() : "Untitled";
   function goToStep(id: InspectorStepId) { setFollowGuide(false); setInspectorStep(id); }
   function goRelative(offset: number) { const next = inspectorSteps[activeIndex + offset]; if (next) goToStep(next.id); }
   useEffect(() => { if (followGuide) setInspectorStep(suggestedStep); }, [followGuide, suggestedStep]);
@@ -492,7 +525,67 @@ export function Scenario() {
       >
         <aside className="space-y-3 overflow-auto rounded-xl border border-slate-200 bg-white p-4">
           <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">Project</p>
-          <p className="text-sm font-medium">{session?.demo ? `Demo ${session.demo.version}` : "Working scenario"}</p>
+          {editingProjectName ? (
+            <form
+              className="space-y-2"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void saveProjectName();
+              }}
+            >
+              <input
+                className="w-full rounded-md border border-slate-300 px-2 py-1 text-sm"
+                aria-label="Project name"
+                placeholder="Untitled"
+                value={projectNameDraft}
+                maxLength={120}
+                autoFocus
+                onChange={(event) => setProjectNameDraft(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Escape") {
+                    setEditingProjectName(false);
+                    setProjectNameError(null);
+                  }
+                }}
+              />
+              <div className="flex items-center gap-3 text-sm">
+                <button type="submit" className="text-blue-800 hover:underline disabled:opacity-50" disabled={renamingProject}>
+                  Save
+                </button>
+                <button
+                  type="button"
+                  className="text-slate-500 hover:underline disabled:opacity-50"
+                  disabled={renamingProject}
+                  onClick={() => {
+                    setEditingProjectName(false);
+                    setProjectNameError(null);
+                  }}
+                >
+                  Cancel
+                </button>
+              </div>
+              {projectNameError && <p className="text-sm text-red-700">{projectNameError}</p>}
+            </form>
+          ) : (
+            <div className="flex items-start justify-between gap-2">
+              <p className="min-w-0 break-words text-sm font-medium">{projectName}</p>
+              <button
+                type="button"
+                aria-label={`Rename ${projectName}`}
+                title="Rename"
+                className="shrink-0 text-slate-500 hover:text-slate-800 disabled:opacity-50"
+                disabled={!session || busy || renamingProject}
+                onClick={() => {
+                  setProjectNameDraft(session?.name ?? "");
+                  setProjectNameError(null);
+                  setEditingProjectName(true);
+                }}
+              >
+                <Pencil className="h-4 w-4" aria-hidden />
+              </button>
+            </div>
+          )}
+          <p className="text-xs text-slate-500">{session?.demo ? `Demo ${session.demo.version}` : "Working scenario"}</p>
           <ol className="space-y-1 text-sm">
             {WORKFLOW.map((stage) => (
               <li key={stage} className={stage === workflow ? "rounded-md bg-slate-900 px-2 py-1 font-medium text-white" : "rounded-md px-2 py-1 text-slate-600"}>
