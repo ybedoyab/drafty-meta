@@ -11,8 +11,10 @@ from drafty_ai.client import MetaNotConfigured, MetaRequestError, configured
 from drafty_ai.responses import create_response
 from drafty_ai.tools import execute_tool
 from drafty_engineering.catalog import (
+    AMBIGUOUS,
     UNKNOWN,
     UNSUPPORTED,
+    ambiguous_sentence,
     catalog_view,
     get_part,
     scenario_domains,
@@ -21,6 +23,7 @@ from drafty_engineering.catalog import (
     unsupported_sentence,
 )
 from drafty_engineering.plan import (
+    ambiguous_study,
     build_scenario,
     classify_request,
     evaluate_bracket,
@@ -43,8 +46,9 @@ message is at most 80 words. Ask for missing physical inputs. Name visible objec
 {supported_parts_sentence()}
 If the request is not one of these parts, say Drafty cannot model it yet, list what it can do, \
 and never say you will generate geometry or a file. Ask no dimension questions for such a part.
-domain is {_or_list([*scenario_domains(), UNSUPPORTED, UNKNOWN])}. \
-physical_system is {_or_list([*(part.id for part in scenario_parts()), UNSUPPORTED, UNKNOWN])}.
+If several registered parts match, ask which one to build. Do not pick one silently.
+domain is {_or_list([*scenario_domains(), UNSUPPORTED, AMBIGUOUS, UNKNOWN])}. \
+physical_system is {_or_list([*(part.id for part in scenario_parts()), UNSUPPORTED, AMBIGUOUS, UNKNOWN])}.
 tool is one allowlisted name. The server may reject it. claims has at most two items and no invented numbers.
 questions has at most four short questions. observations has at most three items and no measurements.
 Use web_search once, only for a published load, code, or material reference.
@@ -142,36 +146,30 @@ class ModelReply(BaseModel):
     claims: list[Claim] = []
 
 
+# Session metadata not declared on Part.inputs. Catalog fields are layered on top.
+_SESSION_FIELDS = {
+    "student_count": None,
+    "domain": "",
+    "physical_system": "",
+    "objective": "",
+    "requested_part": "",
+}
+
+
 def blank_inputs() -> dict:
-    return {
-        "jurisdiction": "",
-        "span_m": None,
-        "tributary_width_m": None,
-        "dead_n_per_m2": None,
-        "live_n_per_m2": None,
-        "beam_self_weight_n_per_m": None,
-        "depth_m": None,
-        "flange_width_m": None,
-        "flange_thickness_m": None,
-        "web_thickness_m": None,
-        "student_count": None,
-        "supports": "",
-        "domain": "",
-        "physical_system": "",
-        "objective": "",
-        "force_n": None,
-        "displacement_limit_m": None,
-        "material_id": "",
-        "leg_x_m": None,
-        "leg_z_m": None,
-        "bracket_thickness_m": None,
-        "bracket_width_m": None,
-        "support_face": "",
-        "load_face": "",
-        "requested_part": "",
-        "overall_height_m": None,
-        "base_diameter_m": None,
-    }
+    """Initial inputs from the part registry plus session metadata.
+
+    Saved scenarios keep their existing keys via merge; this only seeds new sessions
+    and demos. Adding a PartInput automatically appears here.
+    """
+
+    fields = dict(_SESSION_FIELDS)
+    for part in scenario_parts():
+        for item in part.inputs:
+            if item.name in fields:
+                continue
+            fields[item.name] = None if item.kind == "number" else ""
+    return fields
 
 
 def absorb_message(inputs: dict, message: str) -> dict:
@@ -281,6 +279,8 @@ def advance_scenario(
         study = evaluate_revolved(inputs)
     elif domain == UNSUPPORTED:
         study = unsupported_study(requested_part)
+    elif domain == AMBIGUOUS:
+        study = ambiguous_study(requested_part)
     else:
         study = neutral_study()
     analysis = _fresh_analysis(state.get("analysis"), inputs)
@@ -385,7 +385,7 @@ def advance_scenario(
                 ).strip()
     phase = (
         "unsupported"
-        if domain == UNSUPPORTED
+        if domain in {UNSUPPORTED, AMBIGUOUS}
         else _phase(
             study,
             images_sent=images_sent,
@@ -399,10 +399,13 @@ def advance_scenario(
         studio_spec = {**studio_spec, "approval": "pending"}
     geometry_spec = proposed_geometry_spec(inputs) if domain == "geometry" else None
     rejected_claims: list[dict] = []
-    if domain == UNSUPPORTED:
+    if domain in {UNSUPPORTED, AMBIGUOUS}:
         accepted, promises = _strip_promises(accepted)
         rejected_claims.extend(promises)
-        questions = []
+        if domain == AMBIGUOUS and not questions:
+            questions = ["Which registered part should Drafty build?"]
+        elif domain == UNSUPPORTED:
+            questions = []
     known = _known_numbers(inputs, study) | _user_numbers(state.get("messages") or [], message)
     number_claims, stray = _rejected_claims(accepted, parsed_claims, known)
     rejected_claims.extend(number_claims)
@@ -556,6 +559,11 @@ def _model_prompt(
         selected = (
             f"The user asked for {requested_part or 'a part'}. Drafty has no model for it. "
             "Say so, and do not promise geometry or a file."
+        )
+    elif system == AMBIGUOUS:
+        selected = (
+            f"Several registered parts match ({requested_part or 'more than one'}). "
+            "Ask which one to build. Do not pick one and do not promise geometry."
         )
     else:
         selected = "The server has not selected a part yet."
@@ -761,6 +769,8 @@ def _summary(domain: str, study: dict, inputs: dict, image_count: int, images_se
         return " ".join(parts)
     if domain == UNSUPPORTED:
         return unsupported_sentence(str(inputs.get("requested_part") or ""))
+    if domain == AMBIGUOUS:
+        return ambiguous_sentence(str(inputs.get("requested_part") or ""))
     if domain == "geometry":
         return _geometry_summary(study)
     if domain != "structural":

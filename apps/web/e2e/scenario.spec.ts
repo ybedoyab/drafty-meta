@@ -150,6 +150,7 @@ test("an aluminum bracket opens in Studio and does not start CalculiX", async ({
   await page.getByRole("button", { name: "Approve and open Studio" }).click();
   await expect(page.getByLabel("Part")).toHaveValue("l_bracket");
   await expect(page.getByLabel("Material")).toHaveValue("aluminum_6061_t6");
+  await page.locator('nav[aria-label="Design steps"]').getByRole("button", { name: /Loads/ }).click();
   await expect(page.getByLabel("Support")).toHaveValue("xmin");
   await expect(page.getByLabel("Load face")).toHaveValue("zmax");
   await expect(page.getByRole("link", { name: "Back to scenario" })).toBeVisible();

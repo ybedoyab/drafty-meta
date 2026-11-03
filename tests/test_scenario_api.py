@@ -188,7 +188,10 @@ def test_deleting_a_scenario_removes_it_from_the_list(tmp_path, monkeypatch):
         listed = client.get("/api/v1/scenarios")
         malformed = client.delete("/api/v1/scenarios/not-a-uuid")
     assert deleted.status_code == 200
-    assert deleted.json() == {"id": first, "deleted": True, "name": "Untitled"}
+    assert deleted.json()["id"] == first
+    assert deleted.json()["deleted"] is True
+    assert deleted.json()["name"] == "Untitled"
+    assert deleted.json()["cleanup"]["geometry_cache"] == "retained"
     assert missing.status_code == 404
     assert again.status_code == 404
     assert kept.status_code == 200

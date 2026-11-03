@@ -12,6 +12,7 @@ InputKind = Literal["number", "text", "choice", "face"]
 PartDomain = Literal["structural", "mechanical", "geometry"]
 
 UNSUPPORTED = "unsupported"
+AMBIGUOUS = "ambiguous"
 UNKNOWN = "unknown"
 DEFAULT_FORM_PART = "simply_supported_ibeam"
 NOTHING_CREATED = "No geometry, file, or calculation was created."
@@ -360,6 +361,14 @@ def unsupported_sentence(noun: str) -> str:
     return f"Drafty can't model {subject} yet. {supported_parts_sentence()} {NOTHING_CREATED} {CAPABILITIES_POINTER}"
 
 
+def ambiguous_sentence(candidates: str) -> str:
+    options = candidates.strip() or "more than one registered part"
+    return (
+        f"That request matches {options}. Say which one to build. "
+        f"{supported_parts_sentence()} {NOTHING_CREATED}"
+    )
+
+
 def catalog_view(system: str | None, requested: str | None = None) -> dict:
     """What the web page needs: every part, the active part, and the form to show."""
 
@@ -370,14 +379,22 @@ def catalog_view(system: str | None, requested: str | None = None) -> dict:
     elif system == UNSUPPORTED:
         status = UNSUPPORTED
         form = None
+    elif system == AMBIGUOUS:
+        status = AMBIGUOUS
+        form = None
     else:
         status = "unclassified"
         form = PARTS[DEFAULT_FORM_PART]
+    message = ""
+    if status == UNSUPPORTED:
+        message = unsupported_sentence(requested or "")
+    elif status == AMBIGUOUS:
+        message = ambiguous_sentence(requested or "")
     return {
         "status": status,
-        "requested_part": (requested or None) if status == UNSUPPORTED else None,
+        "requested_part": (requested or None) if status in {UNSUPPORTED, AMBIGUOUS} else None,
         "active_part": active.public() if active else None,
         "form_part": form.public() if form else None,
         "parts": [part.public() for part in PARTS.values()],
-        "message": unsupported_sentence(requested or "") if status == UNSUPPORTED else "",
+        "message": message,
     }

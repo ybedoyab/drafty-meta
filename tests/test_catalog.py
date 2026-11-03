@@ -91,7 +91,9 @@ def test_reply_schema_enums_come_from_the_registry():
     from drafty_ai.responses import REPLY_FORMAT
 
     systems = REPLY_FORMAT["schema"]["properties"]["physical_system"]["enum"]
-    assert set(systems) == {part.id for part in scenario_parts()} | {"unsupported", "unknown"}
+    assert set(systems) == {part.id for part in scenario_parts()} | {"unsupported", "ambiguous", "unknown"}
+    domains = REPLY_FORMAT["schema"]["properties"]["domain"]["enum"]
+    assert "ambiguous" in domains
 
 
 @pytest.mark.parametrize(

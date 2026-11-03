@@ -1,10 +1,10 @@
 import { createClient, type Session, type SupabaseClient } from "@supabase/supabase-js";
 
-const url = import.meta.env.SUPABASE_URL;
-const publishableKey = import.meta.env.SUPABASE_PUBLISHABLE_KEY;
+const url = String(import.meta.env.SUPABASE_URL || "").trim();
+const publishableKey = String(import.meta.env.SUPABASE_PUBLISHABLE_KEY || "").trim();
 
 export const supabase: SupabaseClient | null =
-  url && publishableKey ? createClient(url, publishableKey) : null;
+  url.startsWith("http") && publishableKey ? createClient(url, publishableKey) : null;
 
 export async function accessToken(): Promise<string | null> {
   if (!supabase) return null;

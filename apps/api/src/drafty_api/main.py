@@ -20,7 +20,7 @@ from drafty_api.jobs import (
     recover_interrupted_jobs,
     request_cancel,
 )
-from drafty_api.scenarios import attach_job, read_scenario
+from drafty_api.scenarios import assert_scenario_allows_solver, attach_job, read_scenario
 from drafty_api.scenarios import router as scenario_router
 from drafty_api.settings import assert_production_auth, settings
 from drafty_api.speech import router as speech_router
@@ -99,9 +99,25 @@ app.include_router(speech_router)
 
 @app.get("/api/v1/health")
 def health() -> dict:
+    """Liveness for the web app and CI. Provider probes are best-effort and timed.
+
+    A stuck Modal/Supabase client must not prevent the Scenario page from loading.
+    """
+
     from drafty_api.remote import provider_status
 
-    providers = provider_status()
+    try:
+        providers = provider_status()
+    except Exception:
+        providers = {
+            "meta": {"configured": settings.meta_configured, "reachable": False, "tested": False},
+            "modal": {"configured": settings.modal_available, "reachable": False, "tested": False},
+            "supabase": {
+                "configured": settings.supabase_configured,
+                "reachable": False,
+                "tested": False,
+            },
+        }
     modal_ready = bool(providers["modal"]["reachable"])
     return {
         "service": "drafty",
@@ -213,7 +229,8 @@ def post_job(body: CreateJobRequest, request: Request) -> dict:
             ),
         )
     if body.scenario_id:
-        read_scenario(body.scenario_id, owner)
+        session = read_scenario(body.scenario_id, owner)
+        assert_scenario_allows_solver(session)
     job = create_job(
         owner,
         body.kind,

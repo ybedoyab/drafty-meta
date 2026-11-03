@@ -6,8 +6,10 @@ from typing import Literal, NamedTuple
 from pydantic import BaseModel, ConfigDict, Field
 
 from drafty_engineering.catalog import (
+    AMBIGUOUS,
     PARTS,
     UNSUPPORTED,
+    ambiguous_sentence,
     get_part,
     keyword_pattern,
     part_tools,
@@ -17,8 +19,10 @@ from drafty_engineering.catalog import (
 from drafty_engineering.materials import MATERIALS
 from drafty_engineering.spec import BracketGeometry, DesignSpec, Direction, Load, Support
 
-Domain = Literal["structural", "mechanical", "geometry", "unsupported", "unknown"]
-System = Literal["simply_supported_ibeam", "l_bracket", "revolved_profile", "unsupported", "unknown"]
+Domain = Literal["structural", "mechanical", "geometry", "unsupported", "ambiguous", "unknown"]
+System = Literal[
+    "simply_supported_ibeam", "l_bracket", "revolved_profile", "unsupported", "ambiguous", "unknown"
+]
 QuantityStatus = Literal["confirmed", "assumed", "researched", "calculated", "unknown"]
 ToolName = Literal[
     "inspect_scenario",
@@ -128,26 +132,45 @@ def classify_request(
     prior_system: str = "",
     prior_requested: str = "",
 ) -> Request:
-    """Match the message to a registry part, or record the part the user asked for that Drafty cannot build."""
+    """Match the message to a registry part, or record the part the user asked for that Drafty cannot build.
+
+    When several registry parts match, return ambiguous instead of silently picking the first.
+    Aluminum wording may narrow bracket vs beam, but only when that leaves exactly one hit.
+    """
 
     hits = [part for part in scenario_parts() if part.keywords and keyword_pattern(part).search(message)]
     if len(hits) > 1 and _ALUMINUM.search(message):
-        hits = [part for part in hits if part.domain == "mechanical"] or hits
-    if hits:
+        narrowed = [part for part in hits if part.domain == "mechanical"]
+        if len(narrowed) == 1:
+            hits = narrowed
+    if len(hits) > 1:
+        return Request(AMBIGUOUS, AMBIGUOUS, _candidate_labels(hits))
+    if len(hits) == 1:
         return Request(hits[0].domain, hits[0].id)
-    open_request = prior_domain in {"", "unknown", UNSUPPORTED}
+    open_request = prior_domain in {"", "unknown", UNSUPPORTED, AMBIGUOUS}
     noun = requested_noun(message, weak=open_request)
     if noun:
         return Request(UNSUPPORTED, UNSUPPORTED, noun)
     if prior_domain == UNSUPPORTED:
         return Request(UNSUPPORTED, UNSUPPORTED, prior_requested)
+    if prior_domain == AMBIGUOUS:
+        return Request(AMBIGUOUS, AMBIGUOUS, prior_requested)
     prior = get_part(prior_system)
     if prior is not None and prior.in_scenario:
         return Request(prior.domain, prior.id)
-    for part in scenario_parts():
-        if part.domain == prior_domain:
-            return Request(part.domain, part.id)
+    domain_hits = [part for part in scenario_parts() if part.domain == prior_domain]
+    if len(domain_hits) == 1:
+        return Request(domain_hits[0].domain, domain_hits[0].id)
+    if len(domain_hits) > 1:
+        return Request(AMBIGUOUS, AMBIGUOUS, _candidate_labels(domain_hits))
     return Request("unknown", "unknown")
+
+
+def _candidate_labels(parts: list) -> str:
+    names = [part.phrase for part in parts]
+    if len(names) <= 1:
+        return names[0] if names else ""
+    return ", ".join(names[:-1]) + f", or {names[-1]}"
 
 
 def requested_noun(message: str, *, weak: bool = True) -> str:
@@ -208,6 +231,24 @@ def unsupported_study(noun: str) -> dict:
         "ready_for_beam_elements": False,
         "reason": unsupported_sentence(noun),
         "verification": ["No geometry, file, or calculation was created for this request."],
+    }
+
+
+def ambiguous_study(candidates: str) -> dict:
+    """Several registry parts matched. Ask which one; do not pick silently or start a solver."""
+
+    return {
+        "missing": ["which registered part to build"],
+        "errors": [],
+        "assumptions": [],
+        "sources": [],
+        "line": None,
+        "section": None,
+        "beam": None,
+        "ready_for_3d_simulation": False,
+        "ready_for_beam_elements": False,
+        "reason": ambiguous_sentence(candidates),
+        "verification": ["No geometry, file, or calculation was created until the part is chosen."],
     }
 
 
@@ -369,10 +410,13 @@ def build_scenario(
 ) -> EngineeringScenario:
     part = get_part(inputs.get("physical_system"))
     unsupported_request = inputs.get("physical_system") == UNSUPPORTED
+    ambiguous_request = inputs.get("physical_system") == AMBIGUOUS
     if part is not None:
         domain, system = part.domain, part.id
     elif unsupported_request:
         domain, system = UNSUPPORTED, UNSUPPORTED
+    elif ambiguous_request:
+        domain, system = AMBIGUOUS, AMBIGUOUS
     else:
         domain, system = "unknown", "unknown"
     quantities = _quantities(inputs, study, domain)
@@ -387,8 +431,11 @@ def build_scenario(
     elif study.get("beam"):
         simulator = "analytical"
         validation = "ready" if not study.get("missing") else "incomplete"
-    elif study.get("ready_for_cad"):
+    elif study.get("ready_for_cad") and part is not None and part.analysis != ("none",):
         validation = "ready"
+    elif study.get("ready_for_cad") and part is not None and part.analysis == ("none",):
+        # Geometry-only: CAD can be downloaded, but this is not an engineering validation.
+        validation = "incomplete"
     suitable = list(part.methods) if part else []
     unsupported = list(part.limits) if part else []
     actions = []
@@ -397,6 +444,9 @@ def build_scenario(
         unsupported = [f"geometry for {noun}", f"any solver for {noun}"]
         validation = "blocked"
         actions.append("Choose one of the supported parts. Drafty has no model for this request yet.")
+    elif ambiguous_request:
+        validation = "blocked"
+        actions.append("Name one registered part. Drafty will not pick among matches.")
     elif study.get("missing"):
         actions.append("Ask for the missing quantities before any solve.")
     elif system == "simply_supported_ibeam" and analysis is None:
@@ -410,7 +460,9 @@ def build_scenario(
     return EngineeringScenario(
         description=description[:500],
         objective=str(inputs.get("objective") or description[:240]),
-        requested_part=str(inputs.get("requested_part") or "") if unsupported_request else "",
+        requested_part=(
+            str(inputs.get("requested_part") or "") if unsupported_request or ambiguous_request else ""
+        ),
         domain=domain,
         physical_system=system,
         quantities=quantities,
@@ -439,7 +491,7 @@ def route_tool(
 
     if requested and requested not in TOOL_NAMES:
         return str(requested), "rejected"
-    if domain == UNSUPPORTED or system == UNSUPPORTED:
+    if domain in {UNSUPPORTED, AMBIGUOUS} or system in {UNSUPPORTED, AMBIGUOUS}:
         if requested and requested != "inspect_scenario":
             return str(requested), "rejected"
         return "inspect_scenario", "ok"
@@ -482,7 +534,7 @@ def workflow_stage(
         return "model"
     if searched:
         return "research"
-    if domain in {"unknown", UNSUPPORTED}:
+    if domain in {"unknown", UNSUPPORTED, AMBIGUOUS}:
         return "understand"
     return "model"
 

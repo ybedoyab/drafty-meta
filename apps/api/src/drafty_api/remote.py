@@ -237,15 +237,21 @@ def provider_status() -> dict:
     cached = _PROVIDER_CACHE["value"]
     if cached is not None and now - float(_PROVIDER_CACHE["at"]) < 30:
         return cached
-    modal_configured = settings.modal_available
+    # Only probe Modal when tokens are set. A local CLI profile alone must not block /health.
+    modal_tokens = settings.modal_configured
+    modal_available = settings.modal_available
     supabase_configured = settings.supabase_configured
     meta_configured = settings.meta_configured
     supabase_reachable = _supabase_reachable() if supabase_configured else False
-    modal_reachable = _modal_reachable() if modal_configured else False
+    modal_reachable = _modal_reachable() if modal_tokens else False
     modal_tested = _modal_tested() if supabase_reachable else False
     value = {
         "meta": {"configured": meta_configured, "reachable": False, "tested": False},
-        "modal": {"configured": modal_configured, "reachable": modal_reachable, "tested": modal_tested},
+        "modal": {
+            "configured": modal_available,
+            "reachable": modal_reachable,
+            "tested": modal_tested,
+        },
         "supabase": {"configured": supabase_configured, "reachable": supabase_reachable, "tested": supabase_reachable},
     }
     _PROVIDER_CACHE["at"] = now
@@ -514,12 +520,26 @@ def _supabase_reachable() -> bool:
 
 
 def _modal_reachable() -> bool:
-    try:
+    """Resolve the Modal function name with a hard timeout so /health cannot hang."""
+
+    from concurrent.futures import ThreadPoolExecutor
+    from concurrent.futures import TimeoutError as FuturesTimeout
+
+    def _lookup() -> None:
         import modal
 
         modal.Function.from_name("drafty-engineering", "run_simulation")
+
+    pool = ThreadPoolExecutor(max_workers=1)
+    try:
+        pool.submit(_lookup).result(timeout=3)
+    except FuturesTimeout:
+        return False
     except Exception:
         return False
+    finally:
+        # Do not wait for a stuck Modal client thread; that would block /health again.
+        pool.shutdown(wait=False, cancel_futures=True)
     return True
 
 

@@ -213,6 +213,43 @@ def upload_private_object(object_path: str, data: bytes, content_type: str) -> b
     return response.status_code < 400
 
 
+def upload_private_object_if_absent(object_path: str, data: bytes, content_type: str) -> bool:
+    """Store once. Existing objects stay immutable (no upsert)."""
+
+    if not settings.supabase_configured:
+        return False
+    base = settings.supabase_url.rstrip("/")
+    key = settings.supabase_secret
+    response = httpx.post(
+        f"{base}/storage/v1/object/artifacts/{object_path}",
+        headers={
+            "apikey": key,
+            "Authorization": f"Bearer {key}",
+            "Content-Type": content_type,
+            "x-upsert": "false",
+        },
+        content=data,
+        timeout=60,
+    )
+    # 409 = already present; treat as success for content-addressed digests.
+    return response.status_code < 400 or response.status_code == 409
+
+
+def delete_private_object(object_path: str) -> bool:
+    """Best-effort delete of one private storage object. Missing objects are success."""
+
+    if not settings.supabase_configured:
+        return True
+    base = settings.supabase_url.rstrip("/")
+    key = settings.supabase_secret
+    response = httpx.delete(
+        f"{base}/storage/v1/object/artifacts/{object_path}",
+        headers={"apikey": key, "Authorization": f"Bearer {key}"},
+        timeout=30,
+    )
+    return response.status_code < 400 or response.status_code == 404
+
+
 def download_private_object(object_path: str) -> bytes | None:
     if not settings.supabase_configured:
         return None

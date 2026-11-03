@@ -153,7 +153,9 @@ def test_the_pawn_conversation_builds_a_profile_and_says_no_check_ran():
     assert "no structural check was run" in text
     assert "not a stored engineering result" not in text
     assert built["engineering"]["simulator"] == "none"
-    assert built["engineering"]["validation_status"] == "ready"
+    # Geometry-only CAD readiness is not an engineering validation.
+    assert built["engineering"]["validation_status"] == "incomplete"
+    assert any("No structural check" in action for action in built["engineering"]["next_actions"])
     assert built["tool_trace"][0]["tool"] == "create_supported_cad"
     assert built["tool_trace"][0]["status"] == "executed"
     assert built["tool_trace"][0]["output"]["started"] is False

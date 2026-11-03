@@ -19,6 +19,7 @@ from drafty_api.auth import current_access_token, current_owner
 from drafty_api.images import inspect_image
 from drafty_api.settings import settings
 from drafty_api.storage import (
+    delete_private_object,
     delete_remote_scenario,
     download_private_object,
     fetch_scenario,
@@ -27,8 +28,9 @@ from drafty_api.storage import (
     signed_object_url,
     upload_private_object,
 )
+from drafty_engineering.artifacts import MAX_ARTIFACT_BYTES
 from drafty_engineering.beam_fem import analyze_simply_supported_udl
-from drafty_engineering.catalog import PARTS, catalog_view, scenario_parts
+from drafty_engineering.catalog import PARTS, catalog_view, get_part, scenario_parts
 from drafty_engineering.demos import bracket_record, classroom_record
 from drafty_engineering.plan import build_scenario, evaluate_bracket, proposed_bracket_spec, workflow_stage
 from drafty_engineering.scenario import classroom_kwargs, evaluate_classroom
@@ -347,15 +349,26 @@ def get_scenario(scenario_id: str, request: Request) -> dict:
 
 @router.delete("/api/v1/scenarios/{scenario_id}")
 def delete_scenario(scenario_id: str, request: Request) -> dict:
-    """Delete a scenario the caller owns, locally and in the mirror. Unknown ids stay 404."""
+    """Delete a scenario the caller owns, with explicit cleanup of linked resources.
+
+    Removes: mirrored scenario row, private evidence objects, linked jobs (cancel + local
+    job directories), and the local scenario directory. Shared content-addressed geometry
+    digests under data/geometry/ are immutable cache and are not deleted with the scenario.
+    """
 
     owner = current_owner(request)
     session = read_scenario(scenario_id, owner)
     removed_remote = delete_remote_scenario(scenario_id, current_access_token())
     if settings.production and removed_remote is not True:
         raise HTTPException(status_code=503, detail="The scenario was not deleted.")
+    cleanup = _cleanup_scenario_resources(session, owner)
     shutil.rmtree(scenario_dir(scenario_id), ignore_errors=True)
-    return {"id": scenario_id, "deleted": True, "name": session.get("name") or "Untitled"}
+    return {
+        "id": scenario_id,
+        "deleted": True,
+        "name": session.get("name") or "Untitled",
+        "cleanup": cleanup,
+    }
 
 
 @router.post("/api/v1/scenarios/{scenario_id}/rename")
@@ -518,6 +531,57 @@ def attach_job(scenario_id: str, owner_id: str, job_id: str, kind: str) -> None:
     _write(session)
 
 
+def assert_scenario_allows_solver(session: dict) -> None:
+    """Geometry-only and unresolved parts must not start CalculiX or other solvers."""
+
+    inputs = session.get("inputs") or {}
+    system = str(inputs.get("physical_system") or "")
+    part = get_part(system)
+    if part is not None and (part.domain == "geometry" or part.analysis == ("none",)):
+        raise HTTPException(
+            status_code=422,
+            detail="This scenario is geometry only. No structural solver can be started for it.",
+        )
+
+
+def _cleanup_scenario_resources(session: dict, owner_id: str) -> dict:
+    """Cancel linked jobs, drop local job dirs, and delete private evidence objects."""
+
+    from drafty_api.jobs import job_dir, request_cancel
+
+    evidence_removed = 0
+    for item in session.get("evidence") or []:
+        media = item.get("media_type")
+        ext = EXTENSIONS.get(str(media or ""))
+        if not ext:
+            continue
+        path = f"evidence/{session['id']}/{item['id']}{ext}"
+        if delete_private_object(path):
+            evidence_removed += 1
+    jobs_cancelled = 0
+    jobs_removed = 0
+    for entry in session.get("jobs") or []:
+        job_id = str(entry.get("id") or "")
+        if not job_id:
+            continue
+        try:
+            request_cancel(job_id, owner_id)
+            jobs_cancelled += 1
+        except HTTPException:
+            pass
+        try:
+            shutil.rmtree(job_dir(job_id), ignore_errors=True)
+            jobs_removed += 1
+        except HTTPException:
+            pass
+    return {
+        "evidence_objects": evidence_removed,
+        "jobs_cancelled": jobs_cancelled,
+        "jobs_removed": jobs_removed,
+        "geometry_cache": "retained",
+    }
+
+
 @router.post("/api/v1/scenarios/{scenario_id}/reject")
 def reject_model(scenario_id: str, request: Request) -> dict:
     session = read_scenario(scenario_id, current_owner(request))
@@ -597,6 +661,21 @@ def analyze_scenario(scenario_id: str, body: AnalyzeBody, request: Request) -> d
     if body.compare and not session.get("analysis"):
         raise HTTPException(status_code=422, detail="Run the confirmed beam before comparing an edit.")
     merged = _merge_inputs(session, clean_inputs(body.inputs))
+    system = str(merged.get("physical_system") or session.get("inputs", {}).get("physical_system") or "")
+    part = get_part(system)
+    if part is not None and (part.domain == "geometry" or part.analysis == ("none",)):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "This part is geometry only. No structural solver runs for it, "
+                "and beam-element analysis is not available."
+            ),
+        )
+    if system and system != "simply_supported_ibeam":
+        raise HTTPException(
+            status_code=422,
+            detail="Euler-Bernoulli beam elements are only available for the classroom I-beam.",
+        )
     try:
         solved = _beam_record(merged, body.elements)
     except ValueError as exc:
@@ -618,7 +697,13 @@ def analyze_scenario(scenario_id: str, body: AnalyzeBody, request: Request) -> d
 
 @router.get("/api/v1/scenarios/{scenario_id}/geometry/{name}", response_model=None)
 def scenario_geometry(scenario_id: str, name: str, request: Request) -> FileResponse | Response:
-    """Build STEP, STL, or the GLB preview from the server-built profile. No solver runs."""
+    """Serve STEP, STL, or GLB from a content-hash cache. No solver runs.
+
+    Authorization is scenario ownership. Identical valid profiles reuse the same immutable
+    digest locally and in private storage; Modal runs only on a cache miss in production.
+    """
+
+    from drafty_api.geometry_cache import load_or_build_geometry, profile_digest, read_local_cache
 
     owner = current_owner(request)
     session = read_scenario(scenario_id, owner)
@@ -633,42 +718,33 @@ def scenario_geometry(scenario_id: str, name: str, request: Request) -> FileResp
     except ValidationError as exc:
         raise HTTPException(status_code=422, detail="The stored profile is not valid.") from exc
     filename = f"{profile.name}{Path(name).suffix}"
-    if settings.production:
-        from drafty_api.jobs import charge_preview
-        from drafty_api.remote import remote_geometry
+    files, hit = load_or_build_geometry(profile, owner)
+    data = files[name]
+    if len(data) > MAX_ARTIFACT_BYTES:
+        raise HTTPException(status_code=502, detail="Geometry file exceeds the size limit.")
+    digest = profile_digest(profile)
+    headers = {
+        "X-Drafty-Geometry-Digest": digest,
+        "X-Drafty-Geometry-Cache": "hit" if hit else "miss",
+    }
+    if not settings.production and read_local_cache(digest) is not None:
+        from drafty_api.geometry_cache import geometry_dir
 
-        charge_preview(owner)
-        files = remote_geometry(profile.model_dump())
-        return Response(
-            content=files[name],
+        return FileResponse(
+            geometry_dir(digest) / name,
             media_type=media,
-            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+            filename=filename,
+            headers=headers,
         )
-    digest = hashlib.sha256(profile.model_dump_json().encode()).hexdigest()[:20]
-    directory = settings.data_dir / "geometry" / digest
-    if not (directory / name).exists():
-        _build_geometry(profile, directory, owner)
-    return FileResponse(directory / name, media_type=media, filename=filename)
-
-
-def _build_geometry(profile: RevolvedProfile, directory: Path, owner: str) -> None:
-    from drafty_api.jobs import charge_preview
-    from drafty_engineering.cad import export_revolved
-    from drafty_engineering.errors import DraftyError
-
-    charge_preview(owner)
-    staging = directory.with_name(f"{directory.name}-{uuid.uuid4().hex[:8]}")
-    try:
-        export_revolved(profile, staging)
-    except DraftyError as exc:
-        shutil.rmtree(staging, ignore_errors=True)
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    try:
-        staging.replace(directory)
-    except OSError:
-        shutil.rmtree(staging, ignore_errors=True)
-        if not directory.exists():
-            raise
+    return Response(
+        content=data,
+        media_type=media,
+        headers={
+            **headers,
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Content-Length": str(len(data)),
+        },
+    )
 
 
 @router.get("/api/v1/scenarios/{scenario_id}/report")
@@ -744,13 +820,16 @@ async def add_evidence(
 def remove_evidence(scenario_id: str, evidence_id: str, request: Request) -> dict:
     session = read_scenario(scenario_id, current_owner(request))
     _evidence_id(evidence_id)
-    kept = [item for item in session["evidence"] if item["id"] != evidence_id]
-    if len(kept) == len(session["evidence"]):
+    item = next((entry for entry in session["evidence"] if entry["id"] == evidence_id), None)
+    if item is None:
         raise HTTPException(status_code=404, detail="Image not found.")
     directory = scenario_dir(scenario_id) / "evidence"
     for path in directory.glob(f"{evidence_id}.*"):
         path.unlink(missing_ok=True)
-    session["evidence"] = kept
+    ext = EXTENSIONS.get(str(item.get("media_type") or ""))
+    if ext:
+        delete_private_object(f"evidence/{scenario_id}/{evidence_id}{ext}")
+    session["evidence"] = [entry for entry in session["evidence"] if entry["id"] != evidence_id]
     session["updated_at"] = datetime.now(UTC).isoformat()
     _write(session)
     return _public(session)

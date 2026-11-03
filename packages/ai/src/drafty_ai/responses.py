@@ -7,7 +7,7 @@ import httpx
 
 from drafty_ai.client import ALLOWED_MODELS as ALLOWED_RESPONSE_MODELS
 from drafty_ai.client import MetaNotConfigured, MetaRequestError, configured
-from drafty_engineering.catalog import UNKNOWN, UNSUPPORTED, scenario_domains, scenario_parts
+from drafty_engineering.catalog import AMBIGUOUS, UNKNOWN, UNSUPPORTED, scenario_domains, scenario_parts
 
 __all__ = ["ALLOWED_RESPONSE_MODELS"]
 REPLY_FORMAT = {
@@ -21,10 +21,10 @@ REPLY_FORMAT = {
             "message": {"type": "string"},
             "questions": {"type": "array", "items": {"type": "string"}},
             "observations": {"type": "array", "items": {"type": "string"}},
-            "domain": {"type": "string", "enum": [*scenario_domains(), UNSUPPORTED, UNKNOWN]},
+            "domain": {"type": "string", "enum": [*scenario_domains(), UNSUPPORTED, AMBIGUOUS, UNKNOWN]},
             "physical_system": {
                 "type": "string",
-                "enum": [*(part.id for part in scenario_parts()), UNSUPPORTED, UNKNOWN],
+                "enum": [*(part.id for part in scenario_parts()), UNSUPPORTED, AMBIGUOUS, UNKNOWN],
             },
             "tool": {
                 "type": "string",

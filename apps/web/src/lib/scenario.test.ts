@@ -114,7 +114,12 @@ describe("scenario inputs", () => {
     const storage = new Map<string, string>();
     const memory = {
       getItem: (key: string) => storage.get(key) ?? null,
-      setItem: (key: string, value: string) => storage.set(key, value),
+      setItem: (key: string, value: string) => {
+        storage.set(key, value);
+      },
+      removeItem: (key: string) => {
+        storage.delete(key);
+      },
     } as unknown as Storage;
     expect(recallScenarioId(memory)).toBeNull();
     rememberScenarioId(memory, "11111111-1111-4111-8111-111111111111");
