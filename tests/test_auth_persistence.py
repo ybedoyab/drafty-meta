@@ -59,3 +59,51 @@ def test_scenario_mirror_uses_the_caller_token_not_the_service_role(monkeypatch)
     assert captured["headers"]["apikey"] == "publishable-key"
     assert "secret-key" not in str(captured["headers"])
     assert captured["json"]["owner_id"] == "owner-a"
+
+
+def test_scenario_mirror_snapshot_does_not_request_version_upsert(monkeypatch):
+    """scenario_versions is INSERT-only for authenticated; Prefer upsert needs UPDATE."""
+
+    monkeypatch.setattr(settings, "supabase_url", "https://example.supabase.co")
+    monkeypatch.setattr(settings, "supabase_publishable_key", "publishable-key")
+    monkeypatch.setattr(settings, "supabase_secret_key", "secret-key")
+    posts: list[dict] = []
+
+    class Response:
+        def raise_for_status(self) -> None:
+            return None
+
+    class Client:
+        def __init__(self, *args, **kwargs) -> None:
+            del args, kwargs
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args) -> bool:
+            return False
+
+        def post(self, url, headers, json):
+            posts.append({"url": url, "headers": dict(headers), "json": json})
+            return Response()
+
+    monkeypatch.setattr(httpx, "Client", Client)
+    status = mirror_scenario(
+        {
+            "id": "11111111-1111-1111-1111-111111111111",
+            "owner_id": "owner-a",
+            "version": 2,
+            "inputs": {"support_face": "xmin"},
+            "studio_spec": {"kind": "l_bracket"},
+            "studio_approval": "pending",
+        },
+        "user-access-token",
+        snapshot=True,
+    )
+    assert status == "mirrored"
+    assert len(posts) == 2
+    assert posts[0]["headers"].get("Prefer") == "resolution=merge-duplicates"
+    assert "scenario_versions" in posts[1]["url"]
+    assert posts[1]["headers"].get("Prefer") == "return=minimal"
+    assert "resolution=merge-duplicates" not in str(posts[1]["headers"])
+    assert posts[1]["json"]["studio_spec"]["kind"] == "l_bracket"

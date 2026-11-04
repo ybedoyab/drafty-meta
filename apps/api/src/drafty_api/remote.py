@@ -306,24 +306,61 @@ def remote_preview(spec: dict) -> bytes:
     return bytes(payload)
 
 
-def remote_geometry(profile: dict) -> dict[str, bytes]:
-    """STEP, STL, and the GLB preview for a revolved profile, built on Modal."""
+def spawn_remote_geometry(profile: dict) -> str:
+    """Start Modal generate_revolved without waiting. Returns the FunctionCall id."""
 
     import modal
 
     call = modal.Function.from_name("drafty-engineering", "generate_revolved").spawn(profile)
+    call_id = getattr(call, "object_id", None) or getattr(call, "call_id", None)
+    if not call_id:
+        raise HTTPException(status_code=502, detail="Modal did not return a geometry call id.")
+    return str(call_id)
+
+
+def poll_remote_geometry(call_id: str, timeout: float = 0) -> dict[str, bytes] | None:
+    """Collect geometry bytes when ready. None means still running. Does not cancel."""
+
+    import modal
+
+    call = modal.FunctionCall.from_id(str(call_id))
     try:
-        payload = call.get(timeout=50)
-    except TimeoutError as exc:
-        _cancel_call(call)
-        raise HTTPException(
-            status_code=504,
-            detail="The geometry is still building on Modal. Try again in a moment.",
-        ) from exc
+        payload = call.get(timeout=timeout)
+    except TimeoutError:
+        return None
     names = ("model.step", "model.stl", "preview.glb")
     if not isinstance(payload, dict) or any(not isinstance(payload.get(name), (bytes, bytearray)) for name in names):
         raise HTTPException(status_code=502, detail="Modal did not return the geometry files.")
     return {name: bytes(payload[name]) for name in names}
+
+
+def cancel_remote_geometry_call(call_id: str) -> None:
+    """Best-effort cancel when a call id could not be durably attached."""
+
+    import modal
+
+    try:
+        call = modal.FunctionCall.from_id(str(call_id))
+    except Exception:
+        return
+    _cancel_call(call)
+
+
+def remote_geometry(profile: dict) -> dict[str, bytes]:
+    """STEP, STL, and the GLB preview for a revolved profile, built on Modal.
+
+    Prefer spawn_remote_geometry + poll_remote_geometry for production HTTP handlers so
+    serverless request limits do not cancel long CadQuery builds.
+    """
+
+    call_id = spawn_remote_geometry(profile)
+    files = poll_remote_geometry(call_id, timeout=50)
+    if files is None:
+        raise HTTPException(
+            status_code=504,
+            detail="The geometry is still building on Modal. Try again in a moment.",
+        )
+    return files
 
 
 _PROVIDER_CACHE: dict = {"at": 0.0, "value": None}
