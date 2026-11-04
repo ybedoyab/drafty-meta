@@ -38,13 +38,14 @@ Paid production QA requires **all** of:
 | Check | Status on tip |
 |---|---|
 | python / api-bundle / web | PASS on recent tips |
-| e2e | Was **FAIL**. Root causes found: (1) `main@6c6a17e` itself fails the same Send/turn suite (confirmed by re-running main CI). (2) Scenario create adopted the session before `navigate`, so a fast first **Send** could start a turn that the open-route effect immediately **aborted** — zero `/turn` completions in API logs. (3) Live QA Playwright settings had leaked into CI on main via `2d32dc5`; this branch isolates them in `playwright.qa.config.ts`. |
+| e2e | Was **FAIL**. Root causes: (1) `main@6c6a17e` fails the same Send/turn suite. (2) Idempotent routing remounted Scenario between `/scenario/new` and `/scenario/:id`, wiping the typed draft before Send — zero `/turn` in API logs. (3) Live QA Playwright settings leaked into CI on main via `2d32dc5`; isolated here in `playwright.qa.config.ts`. |
 
 Fixes on this branch (assertions unchanged):
 
 - Live QA config isolated from CI regression
 - CI runs `scenario.spec.ts` then `bracket-fem.spec.ts` with `--workers=1`
-- Scenario create path navigates without adopting; open route loads the session
+- Single Scenario route mount; `scenarioEntry("new")` is create; draft preserved across create→open
+- Create navigates without adopting; open route loads the session
 - Abort in-flight turns only when the open scenario id actually changes
 
 ## Live-call budget

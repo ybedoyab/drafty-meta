@@ -47,14 +47,6 @@ export function App() {
               }
             />
             <Route
-              path="/scenario/new"
-              element={
-                <Guard>
-                  <Scenario />
-                </Guard>
-              }
-            />
-            <Route
               path="/scenario/:scenarioId"
               element={
                 <Guard>

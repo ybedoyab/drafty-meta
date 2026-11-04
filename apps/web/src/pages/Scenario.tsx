@@ -166,16 +166,23 @@ export function Scenario() {
   // Create must not adopt before navigate: adopting enables Send while the
   // route is still "/scenario/new", so a fast first turn is aborted when the
   // open-route effect runs and calls turnAbort.abort().
+  //
+  // Keep the typed draft across create→open: App mounts one Scenario for both
+  // "/scenario/new" and "/scenario/:id". Only clear draft on a fresh New Problem
+  // or when switching between two open scenario ids.
   useEffect(() => {
     let cancel = false;
+    const previousOpenId = openIdRef.current;
     const nextOpenId = entry.kind === "open" ? entry.id : null;
-    if (nextOpenId !== openIdRef.current) turnAbort.current?.abort();
+    const switchingOpenScenarios =
+      previousOpenId !== null && nextOpenId !== null && previousOpenId !== nextOpenId;
+    if (previousOpenId !== nextOpenId) turnAbort.current?.abort();
     openIdRef.current = nextOpenId;
     setSession(null);
     setForm(emptyForm());
     setEditingProjectName(false);
     setProjectNameError(null);
-    setDraft("");
+    if (entry.kind === "create" || switchingOpenScenarios) setDraft("");
     setError(null);
     const load =
       entry.kind === "open" ? getScenario(entry.id) : shareInFlight(creationSlot.current, createScenario);
