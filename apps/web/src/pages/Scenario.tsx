@@ -772,6 +772,7 @@ export function Scenario() {
               </Button>
               <MicButton
                 disabled={busy || !session}
+                requestKey={session?.id ?? scenarioId ?? "new"}
                 onTranscript={(text) => setDraft((current) => (current ? `${current} ${text}` : text))}
                 onError={setError}
               />
