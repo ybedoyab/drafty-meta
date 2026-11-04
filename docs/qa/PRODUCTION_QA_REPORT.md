@@ -1,15 +1,13 @@
 # Drafty Engineering — Automated End-to-End QA Report
 
-**Latest authorized production QA:** `meta-only-919cd326-20261104124808`  
-**Production SHA:** `919cd326527e843bf2c1f4cbf05cb8e372e2d831`  
-**Prior FEM-only session (preserved):** `fem-only-145e1c37-20261104103205`  
-**Batch 10A:** not started  
-**Meta AI paid provider requests (that session):** **1** — **no further paid Meta/Modal/CAD**  
-**Observed provider response:** **PASS** (not offline-template)  
-**Playwright UI assertions:** **FAIL** (`Drafty:` vs `Drafty`)  
-**API persistence verification:** **NOT COMPLETED** (scenario deleted by `afterAll`)  
-**Evidence retention (that session):** **FAIL** — Meta scenario was not on the retain ledger  
-**Follow-up (unpaid):** Meta QA retain + API-first verify + UI locator regressions landed on branch `fix/meta-qa-evidence-retention` — **do not re-run paid Meta** to validate
+**Latest authorized production QA:** `fem-batch10a-v5-65fb796-20261104155241`  
+**Production SHA:** `65fb79600a7c5d47e7f162c8916c134e42239c63`  
+**Modal worker:** `drafty-engineering` **v5** (Batch 10A)  
+**Prior FEM-only session (preserved):** `fem-only-145e1c37-20261104103205` / job `4f8ed6cc-…`  
+**Prior Meta-only session (preserved):** `meta-only-919cd326-20261104124808`  
+**Batch 10A cloud FEM:** **FULL PASS** (API-only path; Studio UI not exercised)  
+**Modal FEM paid requests (this session):** **1**  
+**Meta / CAD preview / optimization (this session):** **0**
 
 Historical archives (immutable; do not overwrite):
 
@@ -19,6 +17,67 @@ Historical archives (immutable; do not overwrite):
 - `docs/qa/archive/drafty-qa-paid-budget_prod-qa-4fbd50b-20261104042159.json`
 - `docs/qa/archive/drafty-qa-paid-budget_fem-only-145e1c37-20261104103205.json`
 - `docs/qa/archive/drafty-qa-paid-budget_meta-only-919cd326-20261104124808.json`
+- `docs/qa/archive/drafty-qa-paid-budget_fem-batch10a-v5-65fb796-20261104155241.json`
+
+---
+
+## FEM Batch 10A / Modal v5 session `fem-batch10a-v5-65fb796-20261104155241` (2026-11-04)
+
+**Authorization:** user explicitly authorized ONE production Modal FEM on worker v5. Zero Meta. Zero optimization. Zero separate CAD preview. Zero Modal redeploy. Playwright Studio path rejected because Workstation auto-calls `/designs/preview` on load.
+
+### Verdict (separate axes)
+
+| Axis | Result |
+|---|---|
+| Modal provider execution | **PASS** — job `6066bc77-…` `completed`, `compute=modal`, CalculiX |
+| Batch 10A runtime code verification | **PASS** — `jacobian_validation_method` present on Modal-produced `results.json` |
+| Jacobian sampled validity | **PASS** — status `sampled_ok_certification_inconclusive`; inverted=0; degenerate=0; min/max J > 0 |
+| Whole-element certification | **INCONCLUSIVE** (honest; never `certified_valid`) |
+| Numerical equilibrium | **PASS** |
+| Engineering reports | **PASS** — `report.json` quality + gates; PDF `%PDF-` with Mesh quality / Jacobian sampling text |
+| Persistence | **PASS** — re-GET results + scenario after completion |
+| Studio UI restoration | **NOT TESTED** (API-only to keep CAD preview = 0) |
+| Evidence retention | **PASS** — scenario retained before invoke; prior FEM scenario kept |
+| Overall | **FULL PASS** |
+
+### Preflight (unpaid)
+
+| Check | Result |
+|---|---|
+| Git HEAD | `65fb796…` |
+| Modal app | `drafty-engineering` **v5** · 0 running containers |
+| Functions | `run_simulation` / `optimize_design` / `generate_preview` / `generate_revolved` resolvable |
+| API health | **200** · `auth=supabase` · `modal_available=true` |
+| Prior FEM | job `4f8ed6cc-…` still `completed` |
+| `DRAFTY_QA_RELEASE_RETAINED` | unset |
+| LIVE_MODAL / LIVE_META | false (Playwright QA flags; FEM executed via authorized API script) |
+
+### Execution (exactly one paid FEM)
+
+API-only sequence: create scenario → load bracket demo → faces `xmin`/`zmax` → approve → **retain** → `POST /api/v1/jobs` (`compute=modal`) once → GET poll → artifact GETs.
+
+| Field | Value |
+|---|---|
+| Scenario ID | `abc2180d-e0e3-4ddb-87cc-da3f8ada8c7b` |
+| Job ID | `6066bc77-07d0-44ad-a49b-720b947d99fd` |
+| Invoke (UTC) | `2026-11-04T20:52:51Z` |
+| Mesh | C3D10 · **31 795** nodes / **18 980** elements |
+| Jacobian method | `numpy_tet10_analytical_derivatives+selective_adaptive` |
+| Jacobian status | `sampled_ok_certification_inconclusive` |
+| min / max J | `3.74e-9` / `4.00e-8` |
+| Ratio min | ≈ 1.0 |
+| quality_gates | `mesh_validity=passed_sampled`, `mesh_quality=reported` |
+| Equilibrium | passed |
+| Benchmark | not applicable (bracket, not tip-loaded cantilever) |
+| PDF | 3130 bytes · Mesh quality + limitation text present |
+| Provider count | **modal_fem invocations=1**, completed=1 · Meta=0 · CAD preview=0 · opt=0 |
+| Cost | Modal wall time ~1 minute; no dollar amount exposed by API |
+
+Evidence files:
+
+- `docs/qa/evidence/fem-evidence_fem-batch10a-v5-65fb796-20261104155241.json`
+- `docs/qa/evidence/fem-readonly-verify_fem-batch10a-v5-65fb796-20261104155241.json`
+- `docs/qa/archive/drafty-qa-paid-budget_fem-batch10a-v5-65fb796-20261104155241.json`
 
 ---
 

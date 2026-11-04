@@ -1,0 +1,35 @@
+{
+  "used": {
+    "modal_geometry": 0,
+    "modal_fem": 1,
+    "meta": 0
+  },
+  "reservations": {
+    "modal_geometry": 0,
+    "modal_fem": 1,
+    "meta": 0
+  },
+  "invocation_attempts": {
+    "modal_geometry": 0,
+    "modal_fem": 1,
+    "meta": 0
+  },
+  "completed_responses": {
+    "modal_geometry": 0,
+    "modal_fem": 1,
+    "meta": 0
+  },
+  "ui_assertions": {
+    "modal_geometry": 0,
+    "modal_fem": 0,
+    "meta": 0
+  },
+  "billing": {},
+  "jobIds": [
+    "6066bc77-07d0-44ad-a49b-720b947d99fd"
+  ],
+  "runId": "fem-batch10a-v5-65fb796-20261104155241",
+  "sourceSha": "65fb79600a7c5d47e7f162c8916c134e42239c63",
+  "modalVersion": "v5",
+  "path": "api-only (no Studio preview)"
+}
