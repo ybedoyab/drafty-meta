@@ -108,7 +108,37 @@ test("after reload, Jobs queue must be opened before a completed job can show Re
     units: { length: "m" },
     validation_status: "solver_completed",
     solver: { name: "calculix", version: "CalculiX", mode: "modal" },
-    mesh: { nodes: 31795, elements: 18980, element_type: "C3D10", target_size_m: 0.004 },
+    mesh: {
+      nodes: 31795,
+      elements: 18980,
+      element_type: "C3D10",
+      target_size_m: 0.004,
+      quality: {
+        element_type: "C3D10",
+        elements_checked: 18980,
+        jacobian_validation_method: "numpy_tet10_analytical_derivatives+selective_adaptive",
+        jacobian_validation_status: "sampled_ok_certification_inconclusive",
+        min_jacobian: 3.741420378864258e-9,
+        max_jacobian: 4.0036956154647843e-8,
+        normalized_jacobian_ratio_min: 0.9999999999998163,
+        inverted_elements: 0,
+        degenerate_elements: 0,
+        inconclusive_elements: 18980,
+        low_jacobian_ratio_elements: 0,
+        low_jacobian_ratio_threshold: 0.1,
+        quality_warnings: [],
+        certification_note:
+          "certified_valid is never claimed by the NumPy path; inconclusive means no inversion was demonstrated",
+      },
+    },
+    quality_gates: {
+      solver_completed: true,
+      equilibrium_verified: true,
+      mesh_validity: "passed_sampled",
+      mesh_quality: "reported",
+      stress_assessment: "exploratory",
+      validated_feasibility: false,
+    },
     mass_kg: 0.42,
     max_displacement_m: 1.3e-7,
     max_von_mises_pa: 2.037e6,
@@ -191,6 +221,15 @@ test("after reload, Jobs queue must be opened before a completed job can show Re
   await showRunStep(page, "Results");
   await expect(page.getByText("Governing von Mises", { exact: true })).toBeVisible();
   await expect(page.getByText(/not a certified safety factor/i).first()).toBeVisible();
+  await expect(page.getByTestId("quality-gates")).toBeVisible();
+  await expect(page.getByTestId("mesh-quality")).toBeVisible();
+  await expect(page.getByText("passed_sampled")).toBeVisible();
+  await expect(page.getByText("sampled_ok_certification_inconclusive")).toBeVisible();
+  await expect(page.getByText("Whole-element certification")).toBeVisible();
+  await expect(page.getByTestId("mesh-certification-note")).toContainText("never claimed");
+  await expect(page.getByTestId("mesh-soft-warning")).toHaveCount(0);
+  await page.getByTestId("mesh-quality").scrollIntoViewIfNeeded();
+  await page.screenshot({ path: "../../docs/screenshots/studio-mesh-quality-batch10a.png" });
 });
 
 test("the bottom edition tools offer visual tools and swap with the jobs queue", async ({ page }) => {

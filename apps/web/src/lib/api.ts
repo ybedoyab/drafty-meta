@@ -64,11 +64,47 @@ export interface SurfaceResult {
   von_mises_pa: number[];
 }
 
+export interface MeshQualityResult {
+  element_type?: string;
+  elements?: number;
+  elements_checked?: number;
+  jacobian?: string;
+  jacobian_validation_method?: string;
+  jacobian_validation_status?: string;
+  min_jacobian?: number | null;
+  max_jacobian?: number | null;
+  normalized_jacobian_ratio_min?: number | null;
+  normalized_jacobian_ratio_max?: number | null;
+  inverted_elements?: number;
+  degenerate_elements?: number;
+  inconclusive_elements?: number;
+  quality_warnings?: string[];
+  certification_note?: string;
+  low_jacobian_ratio_elements?: number;
+  low_jacobian_ratio_threshold?: number;
+}
+
+export interface QualityGatesResult {
+  solver_completed?: boolean;
+  equilibrium_verified?: boolean;
+  mesh_validity?: string;
+  mesh_quality?: string;
+  stress_assessment?: string;
+  validated_feasibility?: boolean;
+}
+
 export interface SimulationResult {
   units: Record<string, string>;
   validation_status: string;
   solver: { name: string; version: string; mode: string };
-  mesh: { nodes: number; elements: number; element_type: string; target_size_m: number };
+  mesh: {
+    nodes: number;
+    elements: number;
+    element_type: string;
+    target_size_m: number;
+    quality?: MeshQualityResult;
+  };
+  quality_gates?: QualityGatesResult;
   mass_kg: number;
   max_displacement_m: number;
   max_von_mises_pa: number;

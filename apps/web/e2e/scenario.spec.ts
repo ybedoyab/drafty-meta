@@ -372,3 +372,284 @@ test("landing screenshots", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.screenshot({ path: "../../docs/screenshots/landing-mobile.png", fullPage: true });
 });
+
+function mechanicalStudioSession(id: string, name: string, thicknessM = 0.008) {
+  return {
+    id,
+    name,
+    missing: [],
+    messages: [],
+    evidence: [],
+    errors: [],
+    assumptions: [],
+    sources: [],
+    verification: [],
+    model_questions: [],
+    observations: [],
+    mode: "guided",
+    model: null,
+    calculation: null,
+    section: null,
+    beam: null,
+    analysis: null,
+    comparison: null,
+    ai: "off",
+    jobs: [],
+    inputs: {},
+    model_proposal: {
+      family: "l_bracket",
+      ready_for_3d_simulation: true,
+      reason: "mocked",
+    },
+    engineering: {
+      domain: "mechanical",
+      physical_system: "bracket",
+      missing: [],
+      suitable_methods: ["solid_fem"],
+      unsupported: [],
+      validation_status: "proposed",
+      simulator: "calculix",
+      quantities: [],
+    },
+    studio_approval: "confirmed",
+    studio_spec: {
+      name: "retained-bracket",
+      kind: "l_bracket",
+      material_id: "aluminum_6061_t6",
+      mesh_size_m: 0.004,
+      element_order: 2,
+      supports: [{ surface: "xmin", constraint: "encastre" }],
+      loads: [
+        {
+          surface: "zmax",
+          mode: "force",
+          magnitude: 200,
+          direction: { x: 0, y: 0, z: -1 },
+        },
+      ],
+      beam: null,
+      plate: null,
+      bracket: { leg_x_m: 0.08, leg_z_m: 0.08, thickness_m: thicknessM, width_m: 0.04 },
+      holes: null,
+      additions: [],
+    },
+    geometry_spec: null,
+  };
+}
+
+const tinyGlb = Buffer.from(
+  "Z2xURgIAAACEAAAASAAAAAAAAABAAAAAAAAAAFgAAABiaW5hcnkAAAAAAAgAAAAAAAAAAAAAAAAAAAA=",
+  "base64",
+);
+
+test("scenario Model does not auto-call designs/preview for a studio_spec", async ({ page }) => {
+  const scenarioId = "abc2180d-e0e3-4ddb-87cc-da3f8ada8c7b";
+  let previewPosts = 0;
+  const session = mechanicalStudioSession(scenarioId, "Retained Batch 10A");
+  await page.route("**/api/v1/health", (route) =>
+    route.fulfill({
+      json: {
+        service: "drafty",
+        solver: { available: true, mode: "docker", detail: "drafty-ccx" },
+        meta: false,
+        modal: false,
+        supabase: false,
+        auth: "disabled",
+        compute: "local",
+      },
+    }),
+  );
+  await page.route("**/api/v1/models", (route) => route.fulfill({ json: { models: [] } }));
+  await page.route(`**/api/v1/scenarios/${scenarioId}`, (route) => route.fulfill({ json: session }));
+  await page.route("**/api/v1/designs/preview", async (route) => {
+    previewPosts += 1;
+    await route.fulfill({ status: 500, json: { detail: "preview stubbed in this test" } });
+  });
+
+  await page.goto(`/scenario/${scenarioId}`);
+  await showInspectorStep(page, "Model");
+  await expect(page.getByRole("button", { name: "Generate preview" })).toBeVisible();
+  await expect(page.getByText(/does not generate CAD/i)).toBeVisible();
+  await expect.poll(() => previewPosts).toBe(0);
+
+  await page.reload();
+  await showInspectorStep(page, "Model");
+  await expect(page.getByRole("button", { name: "Generate preview" })).toBeVisible();
+  await expect.poll(() => previewPosts).toBe(0);
+
+  await page.getByRole("button", { name: "Generate preview" }).click();
+  await expect.poll(() => previewPosts).toBe(1);
+});
+
+test("explicit Generate preview succeeds and rebuild stays gated behind the button", async ({ page }) => {
+  const scenarioId = "abc2180d-e0e3-4ddb-87cc-da3f8ada8c7b";
+  let previewPosts = 0;
+  await page.route("**/api/v1/health", (route) =>
+    route.fulfill({
+      json: {
+        service: "drafty",
+        solver: { available: true, mode: "docker", detail: "drafty-ccx" },
+        meta: false,
+        modal: false,
+        supabase: false,
+        auth: "disabled",
+        compute: "local",
+      },
+    }),
+  );
+  await page.route("**/api/v1/models", (route) => route.fulfill({ json: { models: [] } }));
+  await page.route(`**/api/v1/scenarios/${scenarioId}`, (route) =>
+    route.fulfill({ json: mechanicalStudioSession(scenarioId, "Retained Batch 10A") }),
+  );
+  await page.route("**/api/v1/designs/preview", async (route) => {
+    previewPosts += 1;
+    await route.fulfill({
+      status: 200,
+      contentType: "model/gltf-binary",
+      body: tinyGlb,
+    });
+  });
+
+  await page.goto(`/scenario/${scenarioId}`);
+  await showInspectorStep(page, "Model");
+  await expect.poll(() => previewPosts).toBe(0);
+  await page.getByRole("button", { name: "Generate preview" }).click();
+  await expect(page.getByRole("button", { name: "Rebuild preview" })).toBeVisible();
+  await expect.poll(() => previewPosts).toBe(1);
+  await expect(page.getByText("Building the preview.")).toHaveCount(0);
+});
+
+test("navigating away while preview is pending abandons the busy state", async ({ page }) => {
+  const firstId = "abc2180d-e0e3-4ddb-87cc-da3f8ada8c7b";
+  const secondId = "11111111-2222-4333-8444-555555555555";
+  let releaseFirst: (() => void) | null = null;
+  const firstGate = new Promise<void>((resolve) => {
+    releaseFirst = resolve;
+  });
+  let previewPosts = 0;
+
+  await page.route("**/api/v1/health", (route) =>
+    route.fulfill({
+      json: {
+        service: "drafty",
+        solver: { available: true, mode: "docker", detail: "drafty-ccx" },
+        meta: false,
+        modal: false,
+        supabase: false,
+        auth: "disabled",
+        compute: "local",
+      },
+    }),
+  );
+  await page.route("**/api/v1/models", (route) => route.fulfill({ json: { models: [] } }));
+  await page.route(`**/api/v1/scenarios/${firstId}`, (route) =>
+    route.fulfill({ json: mechanicalStudioSession(firstId, "First") }),
+  );
+  await page.route(`**/api/v1/scenarios/${secondId}`, (route) =>
+    route.fulfill({ json: mechanicalStudioSession(secondId, "Second", 0.01) }),
+  );
+  await page.route("**/api/v1/designs/preview", async (route) => {
+    previewPosts += 1;
+    const body = route.request().postDataJSON() as { bracket?: { thickness_m?: number } };
+    if (body.bracket?.thickness_m === 0.008) {
+      await firstGate;
+      await route.fulfill({
+        status: 200,
+        contentType: "model/gltf-binary",
+        body: tinyGlb,
+      });
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "model/gltf-binary",
+      body: tinyGlb,
+    });
+  });
+
+  await page.goto(`/scenario/${firstId}`);
+  await showInspectorStep(page, "Model");
+  await page.getByRole("button", { name: "Generate preview" }).click();
+  await expect(page.getByRole("button", { name: "Building preview" })).toBeVisible();
+  await expect.poll(() => previewPosts).toBe(1);
+
+  await page.goto(`/scenario/${secondId}`);
+  await showInspectorStep(page, "Model");
+  await expect(page.getByRole("button", { name: "Generate preview" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Building preview" })).toHaveCount(0);
+
+  releaseFirst?.();
+  await expect.poll(() => previewPosts).toBe(1);
+  await expect(page.getByRole("button", { name: "Generate preview" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Rebuild preview" })).toHaveCount(0);
+});
+
+test("switching scenario before a prior preview completes never shows the stale solid", async ({ page }) => {
+  const firstId = "abc2180d-e0e3-4ddb-87cc-da3f8ada8c7b";
+  const secondId = "22222222-3333-4444-8555-666666666666";
+  let releaseFirst: (() => void) | null = null;
+  const firstGate = new Promise<void>((resolve) => {
+    releaseFirst = resolve;
+  });
+  let firstSettled = false;
+  let secondPosts = 0;
+
+  await page.route("**/api/v1/health", (route) =>
+    route.fulfill({
+      json: {
+        service: "drafty",
+        solver: { available: true, mode: "docker", detail: "drafty-ccx" },
+        meta: false,
+        modal: false,
+        supabase: false,
+        auth: "disabled",
+        compute: "local",
+      },
+    }),
+  );
+  await page.route("**/api/v1/models", (route) => route.fulfill({ json: { models: [] } }));
+  await page.route(`**/api/v1/scenarios/${firstId}`, (route) =>
+    route.fulfill({ json: mechanicalStudioSession(firstId, "First") }),
+  );
+  await page.route(`**/api/v1/scenarios/${secondId}`, (route) =>
+    route.fulfill({ json: mechanicalStudioSession(secondId, "Second", 0.012) }),
+  );
+  await page.route("**/api/v1/designs/preview", async (route) => {
+    const body = route.request().postDataJSON() as { bracket?: { thickness_m?: number } };
+    if (body.bracket?.thickness_m === 0.008) {
+      await firstGate;
+      firstSettled = true;
+      await route.fulfill({
+        status: 200,
+        contentType: "model/gltf-binary",
+        body: tinyGlb,
+      });
+      return;
+    }
+    secondPosts += 1;
+    await route.fulfill({
+      status: 200,
+      contentType: "model/gltf-binary",
+      body: tinyGlb,
+    });
+  });
+
+  await page.goto(`/scenario/${firstId}`);
+  await showInspectorStep(page, "Model");
+  await page.getByRole("button", { name: "Generate preview" }).click();
+  await expect(page.getByRole("button", { name: "Building preview" })).toBeVisible();
+
+  await page.goto(`/scenario/${secondId}`);
+  await showInspectorStep(page, "Model");
+  await expect(page.getByRole("button", { name: "Generate preview" })).toBeVisible();
+
+  releaseFirst?.();
+  await expect.poll(() => firstSettled).toBe(true);
+  await expect(page.getByRole("button", { name: "Rebuild preview" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Generate preview" })).toBeVisible();
+  expect(secondPosts).toBe(0);
+
+  await page.getByRole("button", { name: "Generate preview" }).click();
+  await expect(page.getByRole("button", { name: "Rebuild preview" })).toBeVisible();
+  await expect.poll(() => secondPosts).toBe(1);
+});

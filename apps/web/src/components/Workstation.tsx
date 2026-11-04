@@ -45,6 +45,7 @@ import {
   type PartKind,
 } from "@/lib/design";
 import { canRedo, canUndo, createHistory, historyShortcut, recordHistory, redoHistory, undoHistory, type History } from "@/lib/history";
+import { gateLabel, summarizeMeshQuality } from "@/lib/meshQuality";
 import { takeStudioSpec } from "@/lib/scenario";
 import { axisSizesMm, hasVisualEdits, rotateForm, scaleForm } from "@/lib/transform";
 import { clampOffsets, draftPlacementM, ellipseProfile, type SketchAdditionForm } from "@/lib/sketch";
@@ -96,22 +97,14 @@ export function Workstation() {
   const [displacementLimitM, setDisplacementLimitM] = useState<number | null>(null);
 
   useEffect(() => {
+    // Passive navigation must not POST /api/v1/designs/preview. Spec load restores
+    // form state only; geometry generation waits for Preview / edit actions.
     if (!scenarioId) {
       const pending = takeStudioSpec(localStorage);
       if (pending && typeof pending === "object") {
         setSpecApplied(true);
         setBaselineForm(specToForm(pending as DesignSpec, benchmarkForm));
         loadForm(specToForm(pending as DesignSpec, benchmarkForm));
-        void previewSpec(formToSpec(specToForm(pending as DesignSpec, benchmarkForm)))
-          .then((url) => {
-            setPreviewUrl((current) => {
-              if (current) URL.revokeObjectURL(current);
-              return url;
-            });
-          })
-          .catch((error: unknown) =>
-            setFormError(error instanceof Error ? error.message : "The preview could not be built."),
-          );
       }
       return;
     }
@@ -122,20 +115,6 @@ export function Workstation() {
         setSpecApplied(true);
         setBaselineForm(specToForm(scenario.studio_spec as unknown as DesignSpec, benchmarkForm));
         loadForm(specToForm(scenario.studio_spec as unknown as DesignSpec, benchmarkForm));
-        void previewSpec(formToSpec(specToForm(scenario.studio_spec as unknown as DesignSpec, benchmarkForm)))
-          .then((url) => {
-            if (cancel) {
-              URL.revokeObjectURL(url);
-              return;
-            }
-            setPreviewUrl((current) => {
-              if (current) URL.revokeObjectURL(current);
-              return url;
-            });
-          })
-          .catch((error: unknown) => {
-            if (!cancel) setFormError(error instanceof Error ? error.message : "The preview could not be built.");
-          });
         const limit = scenario.inputs.displacement_limit_m;
         if (typeof limit === "number") setDisplacementLimitM(limit);
       })
@@ -860,8 +839,14 @@ export function Workstation() {
         {!previewUrl && !result && !activeId && !sketchDraft && (
           <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
             <div className="rounded-2xl border border-blue-100 bg-white px-8 py-6 text-center shadow-lg">
-              <p className="text-lg font-semibold text-gray-900">Ready to generate?</p>
-              <p className="mt-1 text-sm text-gray-500">Load the example or enter dimensions, then preview the solid.</p>
+              <p className="text-lg font-semibold text-gray-900">
+                {specApplied ? "Preview when you need geometry" : "Ready to generate?"}
+              </p>
+              <p className="mt-1 text-sm text-gray-500">
+                {specApplied
+                  ? "Opening Studio does not rebuild CAD. Use Preview solid when you want a new solid."
+                  : "Load the example or enter dimensions, then preview the solid."}
+              </p>
             </div>
           </div>
         )}
@@ -1402,55 +1387,150 @@ function StepFooter({ steps, activeIndex, label, onRelative, onSelect }: { steps
 }
 function ResultReadout({ result }: { result: SimulationResult }) {
   const benchmark = result.benchmark;
+  const meshQuality = summarizeMeshQuality(result.mesh.quality, result.mesh);
+  const gates = result.quality_gates;
   return (
-    <dl className="mt-3 space-y-1 font-mono text-xs">
-      <Row label="Solver" value={result.solver.version} />
-      <Row label="Mesh" value={`${result.mesh.elements} ${result.mesh.element_type}`} />
-      <Row label="Mass" value={`${formatEngineering(result.mass_kg)} kg`} />
-      <Row label="Max displacement" value={`${formatEngineering(mmFromMeters(result.max_displacement_m))} mm`} />
-      <Row label="Governing von Mises" value={`${formatEngineering(mpaFromPascals(result.governing_von_mises_pa))} MPa`} />
-      <Row label="Contour peak von Mises" value={`${formatEngineering(mpaFromPascals(result.max_von_mises_pa))} MPa`} />
-      <Row label="Exploratory factor" value={formatEngineering(result.safety_factor, 3)} />
-      {result.stress_assessment && (
+    <div className="mt-3 space-y-4" data-testid="result-readout">
+      <section aria-labelledby="result-solver-heading">
+        <h3 id="result-solver-heading" className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+          Solver completion
+        </h3>
+        <dl className="mt-1 space-y-1 font-mono text-xs">
+          <Row label="Solver" value={result.solver.version} />
+          <Row label="Status" value={result.validation_status} />
+          <Row label="Mass" value={`${formatEngineering(result.mass_kg)} kg`} />
+          <Row label="Max displacement" value={`${formatEngineering(mmFromMeters(result.max_displacement_m))} mm`} />
+          <Row label="Governing von Mises" value={`${formatEngineering(mpaFromPascals(result.governing_von_mises_pa))} MPa`} />
+          <Row label="Contour peak von Mises" value={`${formatEngineering(mpaFromPascals(result.max_von_mises_pa))} MPa`} />
+          <Row label="Exploratory factor" value={formatEngineering(result.safety_factor, 3)} />
+        </dl>
+        {result.stress_assessment && (
+          <p className="pt-1 text-[11px] leading-4 text-amber-700">
+            {result.stress_assessment.safety_factor_status}. {result.stress_assessment.exclusion}.{" "}
+            {result.stress_assessment.exclusion_reason} {result.stress_assessment.mesh_sensitivity}
+          </p>
+        )}
         <p className="pt-1 text-[11px] leading-4 text-amber-700">
-          {result.stress_assessment.safety_factor_status}. {result.stress_assessment.exclusion}.{" "}
-          {result.stress_assessment.exclusion_reason} {result.stress_assessment.mesh_sensitivity}
+          The factor uses governing stress away from the fixed face. The contour peak stays visible and can be higher
+          because of the support singularity.{" "}
+          {result.stress_assessment?.safety_factor_status === "unreliable"
+            ? "This governing sample is not reliable enough to accept a design."
+            : "This is not a certified safety factor."}
         </p>
-      )}
-      {result.equilibrium && (
-        <Row
-          label="Force balance"
-          value={
-            result.equilibrium.passed
-              ? "reactions match the load"
-              : "residual above the 0.1% balance check"
-          }
-        />
-      )}
-        <p className="pt-1 text-[11px] leading-4 text-amber-700">
-        The factor uses governing stress away from the fixed face. The contour peak stays visible and can be higher
-        because of the support singularity.{" "}
-        {result.stress_assessment?.safety_factor_status === "unreliable"
-          ? "This governing sample is not reliable enough to accept a design."
-          : "This is not a certified safety factor."}
-      </p>
-      <Row label="Validation" value={result.validation_status} />
-      {benchmark.applicable && (
-        <>
+      </section>
+
+      <section aria-labelledby="result-gates-heading" data-testid="quality-gates">
+        <h3 id="result-gates-heading" className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+          Validation gates
+        </h3>
+        <p className="mt-1 text-[11px] leading-4 text-slate-500">
+          Solver completion, mesh validity, numerical equilibrium, and engineering feasibility are reported separately.
+        </p>
+        <dl className="mt-1 space-y-1 font-mono text-xs">
           <Row
-            label="Tip deflection"
-            value={`${formatEngineering(mmFromMeters(benchmark.fem_tip_deflection_m ?? 0))} / ${formatEngineering(mmFromMeters(benchmark.analytical_tip_deflection_m ?? 0))} mm`}
+            label="Solver completed"
+            value={gateLabel(gates?.solver_completed ?? (result.validation_status ? true : null))}
           />
-          <Row label="Deflection error" value={percent(benchmark.deflection_error)} />
-          <Row label="Midspan stress error" value={percent(benchmark.stress_error)} />
-        </>
+          <Row
+            label="Mesh validity"
+            value={gateLabel(gates?.mesh_validity ?? (meshQuality.legacyOnly ? "legacy" : null))}
+          />
+          <Row
+            label="Mesh quality"
+            value={gateLabel(gates?.mesh_quality ?? (meshQuality.available ? (meshQuality.legacyOnly ? "legacy" : "reported") : null))}
+          />
+          <Row
+            label="Equilibrium"
+            value={
+              gates?.equilibrium_verified != null
+                ? gateLabel(gates.equilibrium_verified)
+                : result.equilibrium
+                  ? result.equilibrium.passed
+                    ? "passed"
+                    : "failed"
+                  : "—"
+            }
+          />
+          <Row
+            label="Engineering feasibility"
+            value={gateLabel(
+              gates?.validated_feasibility ??
+                (result.stress_assessment?.safety_factor_status === "unreliable" ? false : null),
+            )}
+          />
+          <Row label="Stress assessment" value={gateLabel(gates?.stress_assessment ?? result.stress_assessment?.safety_factor_status)} />
+        </dl>
+        {result.equilibrium && (
+          <p className="pt-1 text-[11px] leading-4 text-slate-600">
+            Force balance:{" "}
+            {result.equilibrium.passed
+              ? "reactions match the load"
+              : "residual above the 0.1% balance check"}
+            .
+          </p>
+        )}
+      </section>
+
+      <section aria-labelledby="result-mesh-heading" data-testid="mesh-quality">
+        <h3 id="result-mesh-heading" className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+          Mesh quality
+        </h3>
+        {!meshQuality.available ? (
+          <p className="mt-1 text-[11px] leading-4 text-slate-500">Mesh quality metadata is not available for this job.</p>
+        ) : (
+          <>
+            {meshQuality.legacyOnly && (
+              <p className="mt-1 text-[11px] leading-4 text-amber-700" data-testid="mesh-quality-legacy">
+                Historical job — Batch 10A Jacobian fields are not present. Showing legacy mesh summary only.
+              </p>
+            )}
+            <dl className="mt-1 space-y-1 font-mono text-xs">
+              <Row label="Element type" value={meshQuality.elementType} />
+              <Row label="Element count" value={meshQuality.elementCount} />
+              <Row label="Jacobian method" value={meshQuality.method} />
+              <Row label="Jacobian status" value={meshQuality.status} />
+              <Row label="Min determinant" value={meshQuality.minJacobian} />
+              <Row label="Max determinant" value={meshQuality.maxJacobian} />
+              <Row label="Normalized quality ratio" value={meshQuality.ratioMin} />
+              <Row label="Inverted elements" value={meshQuality.inverted} />
+              <Row label="Degenerate elements" value={meshQuality.degenerate} />
+              <Row label="Inconclusive elements" value={meshQuality.inconclusive} />
+              <Row label="Whole-element certification" value={meshQuality.wholeElementLabel} />
+            </dl>
+            <p className="pt-1 text-[11px] leading-4 text-slate-600" data-testid="mesh-certification-note">
+              {meshQuality.certificationNote}
+            </p>
+            {meshQuality.softWarnings.map((warning) => (
+              <p key={warning} className="pt-1 text-[11px] leading-4 text-amber-700" data-testid="mesh-soft-warning">
+                Soft quality warning: {warning}
+              </p>
+            ))}
+          </>
+        )}
+      </section>
+
+      {benchmark.applicable && (
+        <section aria-labelledby="result-benchmark-heading">
+          <h3 id="result-benchmark-heading" className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+            Benchmark
+          </h3>
+          <dl className="mt-1 space-y-1 font-mono text-xs">
+            <Row
+              label="Tip deflection"
+              value={`${formatEngineering(mmFromMeters(benchmark.fem_tip_deflection_m ?? 0))} / ${formatEngineering(mmFromMeters(benchmark.analytical_tip_deflection_m ?? 0))} mm`}
+            />
+            <Row label="Deflection error" value={percent(benchmark.deflection_error)} />
+            <Row label="Midspan stress error" value={percent(benchmark.stress_error)} />
+          </dl>
+        </section>
       )}
+
       {result.warnings.map((warning) => (
-        <p key={warning} className="pt-1 text-[11px] leading-4 text-amber-700">
+        <p key={warning} className="text-[11px] leading-4 text-amber-700">
           {warning}
         </p>
       ))}
-    </dl>
+    </div>
   );
 }
 
