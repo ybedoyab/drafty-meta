@@ -1,0 +1,25 @@
+{
+  "used": {
+    "modal_geometry": 1,
+    "modal_fem": 1,
+    "meta": 0
+  },
+  "reservations": {
+    "modal_geometry": 1,
+    "modal_fem": 1,
+    "meta": 0
+  },
+  "invocation_attempts": {
+    "modal_geometry": 1,
+    "modal_fem": 0,
+    "meta": 0
+  },
+  "completed_responses": {
+    "modal_geometry": 1,
+    "modal_fem": 0,
+    "meta": 0
+  },
+  "billing": {},
+  "jobIds": [],
+  "runId": "prod-qa-4fbd50b-20261104042159"
+}

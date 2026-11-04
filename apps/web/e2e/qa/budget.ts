@@ -10,8 +10,13 @@
  * Accounting layers (kept separate on purpose):
  * - reservations: slots reserved before a paid attempt (safety cap)
  * - invocation_attempts: provider/API calls that were actually started
- * - completed_responses: provider responses that finished successfully
+ * - completed_responses: provider/solver + artifact verification succeeded
+ *   (NOT the same as full Playwright UI assertions after reload)
+ * - ui_assertions: optional Studio UI restoration checks that passed
  * - billing: optional measured cost fields when available
+ *
+ * A UI assertion failure must never be read as a failed Modal computation when
+ * `completed_responses` already counted the provider finish.
  *
  * `used` mirrors `reservations` for backward-compatible report snapshots.
  */
@@ -34,6 +39,8 @@ type BudgetFile = {
   reservations: Counters;
   invocation_attempts: Counters;
   completed_responses: Counters;
+  /** Studio / Playwright UI checks that passed after provider completion. */
+  ui_assertions: Counters;
   billing: Record<string, unknown>;
   jobIds: string[];
   runId: string;
@@ -52,6 +59,7 @@ function emptyBudget(): BudgetFile {
     reservations: emptyCounters(),
     invocation_attempts: emptyCounters(),
     completed_responses: emptyCounters(),
+    ui_assertions: emptyCounters(),
     billing: {},
     jobIds: [],
     runId: RUN_ID,
@@ -78,6 +86,7 @@ function readBudget(): BudgetFile {
       reservations,
       invocation_attempts: normalizeCounters(parsed.invocation_attempts),
       completed_responses: normalizeCounters(parsed.completed_responses),
+      ui_assertions: normalizeCounters(parsed.ui_assertions),
       billing: parsed.billing && typeof parsed.billing === "object" ? { ...parsed.billing } : {},
       jobIds: Array.isArray(parsed.jobIds) ? parsed.jobIds.map(String) : [],
       runId: RUN_ID,
@@ -110,6 +119,7 @@ export function budgetAccounting(): {
   reservations: Counters;
   invocation_attempts: Counters;
   completed_responses: Counters;
+  ui_assertions: Counters;
   billing: Record<string, unknown>;
 } {
   const budget = readBudget();
@@ -117,6 +127,7 @@ export function budgetAccounting(): {
     reservations: { ...budget.reservations },
     invocation_attempts: { ...budget.invocation_attempts },
     completed_responses: { ...budget.completed_responses },
+    ui_assertions: { ...budget.ui_assertions },
     billing: { ...budget.billing },
   };
 }
@@ -148,10 +159,21 @@ export function recordInvocationAttempt(kind: PaidKind): void {
   writeBudget(budget);
 }
 
-/** Record a completed provider response (not merely a reservation). */
+/**
+ * Record verified provider/solver completion (results + durable artifacts).
+ * Call this before post-reload UI assertions so a UI flake cannot zero the provider count.
+ */
 export function recordCompletedResponse(kind: PaidKind): void {
   const budget = readBudget();
   budget.completed_responses[kind] = (budget.completed_responses[kind] || 0) + 1;
+  budget.runId = RUN_ID;
+  writeBudget(budget);
+}
+
+/** Record that Studio UI restoration assertions passed after provider completion. */
+export function recordUiAssertion(kind: PaidKind): void {
+  const budget = readBudget();
+  budget.ui_assertions[kind] = (budget.ui_assertions[kind] || 0) + 1;
   budget.runId = RUN_ID;
   writeBudget(budget);
 }

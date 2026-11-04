@@ -6,7 +6,7 @@
 
 | Item | Value |
 |---|---|
-| Production SHA (verify again at run time) | `979cdbd2f9c2f6be89fe9459cebe4a07c5a0168b` (or newer if redeployed) |
+| Production SHA (verify again at run time) | `145e1c37f4c05334a31c98808e85ad092021c407` (PR #9 merged) |
 | Prior CAD | PASS on `prod-qa-4fbd50b-20261104042159` (digest `5614aa62cf8c…`) |
 | Prior FEM | Modal `run_simulation` invoked once; job/Storage lost to cleanup; report 404 unverified |
 | Evidence fix | PR for `fix/qa-preserve-fem-evidence` — record job id at submit; retain scenario |

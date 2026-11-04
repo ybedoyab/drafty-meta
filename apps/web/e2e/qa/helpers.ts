@@ -467,6 +467,13 @@ export async function runApprovedBracketFem(
     timeoutMs?: number;
     /** Called immediately after POST /jobs succeeds — before poll or report downloads. */
     onJobSubmitted?: (job: { id: string; status: string; compute?: string }) => void;
+    /**
+     * Called after job completion + results/report artifact GETs succeed.
+     * Use for provider `completed_responses` — do not wait for post-reload UI.
+     */
+    onSolverArtifactsVerified?: (job: { id: string; status: string; compute?: string }) => void;
+    /** Called after reload → Jobs queue → select job → Results UI assertions pass. */
+    onUiRestored?: (job: { id: string }) => void;
   } = {},
 ): Promise<{ jobId: string; results: any; report: any }> {
   await showInspectorStep(page, "Results");
@@ -563,15 +570,27 @@ export async function runApprovedBracketFem(
     }
   }
 
+  // Provider/solver path is complete once results + report artifacts are verified.
+  // UI restoration after reload is a separate assertion (see onUiRestored).
+  opts.onSolverArtifactsVerified?.({
+    id: submitted.id,
+    status: String(terminal.json?.status || "completed"),
+    compute: submitted.compute,
+  });
+
   await page.reload();
   const persisted = await apiJson(request, apiBase, "GET", `/api/v1/jobs/${submitted.id}/results`, token);
   expect(persisted.status).toBe(200);
   expect(Number(persisted.json?.mesh?.nodes)).toBeGreaterThan(10);
-  // Re-open the completed job in Studio Results after reload.
-  await page.locator('nav[aria-label="Run steps"]').getByRole("button", { name: /Results/ }).click();
+  // After reload, Workstation resets bottomPanel to "edit" and activeId to null.
+  // The jobs table is only mounted when the bottom "Jobs queue" tab is selected.
+  await page.getByRole("tab", { name: /Jobs queue/ }).click();
+  await expect(page.getByRole("columnheader", { name: "Job" })).toBeVisible({ timeout: 30_000 });
   await expect(page.getByRole("cell", { name: submitted.id.slice(0, 8) })).toBeVisible({ timeout: 30_000 });
   await page.getByRole("cell", { name: submitted.id.slice(0, 8) }).click();
+  await page.locator('nav[aria-label="Run steps"]').getByRole("button", { name: /Results/ }).click();
   await expect(page.getByText("Governing von Mises", { exact: true })).toBeVisible({ timeout: 60_000 });
+  opts.onUiRestored?.({ id: submitted.id });
 
   return { jobId: submitted.id, results, report };
 }
