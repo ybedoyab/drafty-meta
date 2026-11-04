@@ -103,4 +103,8 @@ jobs:
         working-directory: apps/web
         env:
           DRAFTY_LIVE_META: "0"
-        run: npx playwright test e2e/scenario.spec.ts e2e/bracket-fem.spec.ts --reporter=line
+        # Keep assertions unchanged. Run scenario UI tests before the real CalculiX
+        # job so the FEM worker does not starve demo loads on the shared runner.
+        run: |
+          npx playwright test e2e/scenario.spec.ts --reporter=line
+          npx playwright test e2e/bracket-fem.spec.ts --reporter=line --workers=1

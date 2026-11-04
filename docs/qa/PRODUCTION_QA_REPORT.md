@@ -38,7 +38,7 @@ Paid production QA requires **all** of:
 | Check | Status on tip |
 |---|---|
 | python / api-bundle / web | PASS on `5643711` and later |
-| e2e | Was **FAIL** while `playwright.config.ts` diverged from `main` (even with “restored” defaults). **Fix:** restore `playwright.config.ts` to be identical to `main`; move live QA to `playwright.qa.config.ts` + `npm run test:qa-*`. |
+| e2e | Was **FAIL** (flake under parallel CalculiX + demo load contention; also earlier config drift). **Fixes:** (1) `playwright.config.ts` identical to `main`; live QA in `playwright.qa.config.ts`. (2) CI runs `scenario.spec.ts` then `bracket-fem.spec.ts` separately so FEM does not starve UI demos. Assertions unchanged. |
 
 Live QA entrypoints (do not use default CI config):
 
