@@ -1,0 +1,280 @@
+{
+  "runId": "demo-freeze-agent-8092615-20261104175200",
+  "web": "https://drafty-web-umber.vercel.app",
+  "api": "https://drafty-api.vercel.app",
+  "expectedSha": "8092615",
+  "started_at": "2026-11-04T22:40:05.116Z",
+  "caps": {
+    "meta": 3,
+    "cad": 1,
+    "fem": 1
+  },
+  "counts": {
+    "meta": 3,
+    "cad": 1,
+    "fem": 1,
+    "speech": 0,
+    "optimize": 0
+  },
+  "posts": [
+    {
+      "kind": "meta_turn",
+      "status": 200,
+      "at": "2026-11-04T22:40:18.721Z",
+      "meta_count": 3
+    },
+    {
+      "kind": "cad_preview",
+      "status": 200,
+      "at": "2026-11-04T22:40:32.307Z"
+    },
+    {
+      "kind": "fem_job",
+      "status": 200,
+      "at": "2026-11-04T22:40:37.493Z",
+      "jobId": "f0c39d56-afd4-4374-b4f1-b08d21d31e9d"
+    }
+  ],
+  "checks": {
+    "auth": "PASS",
+    "health": {
+      "status": 200,
+      "auth": "supabase",
+      "meta": true,
+      "modal": true,
+      "modal_available": true,
+      "compute": "modal"
+    },
+    "health_gate": "PASS",
+    "meta_ui_ready": "PASS",
+    "start_with_ai": "CONTINUED",
+    "meta_agent": "PASS",
+    "confirm_faces": "ALREADY_CONFIRMED",
+    "open_studio": "PASS",
+    "cad_preview": "PASS",
+    "fem": "PASS",
+    "report_download": "PASS",
+    "persistence": "PASS",
+    "budget": {
+      "meta": "3/3",
+      "cad": "1/1",
+      "fem": "1/1",
+      "speech": 0,
+      "optimize": 0
+    }
+  },
+  "meta": {
+    "continued_from": {
+      "meta_turns": 3,
+      "usage": {
+        "requests": 3,
+        "input_tokens": 8031,
+        "output_tokens": 1168
+      },
+      "mode": "meta-responses"
+    },
+    "after_open": {
+      "mode": "meta-responses",
+      "meta_turns": 3,
+      "usage": {
+        "requests": 3,
+        "input_tokens": 8031,
+        "output_tokens": 1168
+      },
+      "missing_force_or_limit": false,
+      "excerpt": "All L-bracket inputs are complete. I will now propose the structured Drafty engineering scenario so Confirm faces can appear. This is an L-bracket, not the classroom beam. This is an aluminum L-bracket for the existing solid schema. CalculiX starts only after the model is approved in Studio. It is not the classroom beam and it is not a certified minimum-mass design."
+    },
+    "turn2": {
+      "mode": "meta-responses",
+      "meta_turns": 4,
+      "usage": {
+        "requests": 4,
+        "input_tokens": 11883,
+        "output_tokens": 1517
+      },
+      "excerpt": "All L-bracket inputs are complete. I will now propose the structured Drafty engineering scenario so Confirm faces can appear. This is an L-bracket, not the classroom beam. This is an aluminum L-bracket for the existing solid schema. CalculiX starts only after the model is approved in Studio. It is not the classroom beam and it is not a certified minimum-mass design.",
+      "missing_force_or_limit": false
+    },
+    "final": {
+      "requests": 3,
+      "session_meta_turns": 4,
+      "usage": {
+        "requests": 4,
+        "input_tokens": 11883,
+        "output_tokens": 1517
+      },
+      "model": "muse-spark-1.3",
+      "mode": "meta-responses",
+      "previous_response_id": "resp_6aebb44c58bd7342b7c640de",
+      "inputs": {
+        "domain": "mechanical",
+        "span_m": null,
+        "depth_m": null,
+        "force_n": 200,
+        "leg_x_m": 0.08,
+        "leg_z_m": 0.08,
+        "supports": "",
+        "load_face": "zmax",
+        "load_mode": "",
+        "objective": "",
+        "material_id": "aluminum_6061_t6",
+        "beam.width_m": null,
+        "jurisdiction": "",
+        "support_face": "xmin",
+        "beam.height_m": null,
+        "beam.length_m": null,
+        "dead_n_per_m2": null,
+        "holes.count_x": null,
+        "holes.count_y": null,
+        "live_n_per_m2": null,
+        "plate.width_m": null,
+        "student_count": null,
+        "flange_width_m": null,
+        "holes.margin_m": null,
+        "holes.radius_m": null,
+        "load_magnitude": null,
+        "plate.length_m": null,
+        "requested_part": "",
+        "base_diameter_m": null,
+        "bracket_width_m": 0.04,
+        "physical_system": "l_bracket",
+        "web_thickness_m": null,
+        "overall_height_m": null,
+        "plate.thickness_m": null,
+        "tributary_width_m": null,
+        "flange_thickness_m": null,
+        "bracket_thickness_m": 0.008,
+        "displacement_limit_m": 0.001,
+        "beam_self_weight_n_per_m": null
+      },
+      "bracket": null
+    }
+  },
+  "cad": {
+    "status": 200,
+    "count": 1
+  },
+  "fem": {
+    "jobId": "f0c39d56-afd4-4374-b4f1-b08d21d31e9d",
+    "submit": {
+      "status": 200,
+      "compute": "modal",
+      "status_field": "submitted"
+    },
+    "terminal": {
+      "status": "completed",
+      "compute": "modal",
+      "message": "Completed",
+      "error": null
+    },
+    "results": {
+      "solver": {
+        "name": "calculix",
+        "version": "CalculiX Version 2.20, Copyright(C) 1998-2022 Guido Dhondt",
+        "mode": "local",
+        "input": "model.inp",
+        "results": [
+          "model.dat",
+          "model.frd"
+        ]
+      },
+      "mesh": {
+        "nodes": 31795,
+        "elements": 18980,
+        "element_order": 2,
+        "element_type": "C3D10",
+        "target_size_m": 0.0024,
+        "load_area_m2": 0.00032,
+        "quality": {
+          "elements": 18980,
+          "min_corner_volume_m3": 6.23570063144066e-10,
+          "max_corner_volume_m3": 6.672826025774628e-9,
+          "inverted_elements": 0,
+          "jacobian": "C3D10 sampled+adaptive det(J); corner volumes also checked; certification remains inconclusive without a Bézier/Gmsh bound",
+          "element_type": "C3D10",
+          "elements_checked": 18980,
+          "jacobian_validation_method": "numpy_tet10_analytical_derivatives+selective_adaptive",
+          "jacobian_validation_status": "sampled_ok_certification_inconclusive",
+          "jacobian_sample_scheme": {
+            "name": "tet10_vertices_edges_faces_centroid_quad4",
+            "point_count": 19,
+            "limitation": "Positive sampled det J does not prove positivity throughout the quadratic tetrahedron; curved mid-edge distortion can invert the map between samples."
+          },
+          "min_jacobian": 3.741420378864258e-9,
+          "max_jacobian": 4.0036956154647843e-8,
+          "normalized_jacobian_ratio_min": 0.9999999999998163,
+          "normalized_jacobian_ratio_max": 0.9999999999999989,
+          "degenerate_elements": 0,
+          "inconclusive_elements": 18980,
+          "sampled_valid_elements": 18980,
+          "adaptive_elements_checked": 0,
+          "low_jacobian_ratio_elements": 0,
+          "low_jacobian_ratio_threshold": 0.1,
+          "low_jacobian_ratio_percent": 0,
+          "ige": null,
+          "icn": null,
+          "ige_status": "unavailable",
+          "icn_status": "unavailable",
+          "quality_warnings": [
+            "Positive sampled det J does not prove positivity throughout the quadratic tetrahedron; curved mid-edge distortion can invert the map between samples.",
+            "Whole-element certification is inconclusive without a Bézier/Gmsh positivity bound; adaptive sampling can only prove invalidity, not certify validity.",
+            "Adaptive subdivision ran on 0 low-ratio element(s) (trigger ratio < 0.35); not a whole-mesh certification."
+          ],
+          "certification_note": "certified_valid is never claimed by the NumPy path; inconclusive means no inversion was demonstrated.",
+          "tolerance_note": "det J compared to 1e-12 * max(|J0|, L^3) where J0 = 6 * signed corner volume (affine mapping determinant)"
+        }
+      },
+      "max_displacement_m": 1.3038230447564577e-7,
+      "max_von_mises_pa": 2036514.4013122725,
+      "governing_von_mises_pa": 665097.1852987445,
+      "equilibrium": {
+        "applied_force_n": [
+          0,
+          0,
+          -200.00000000000006
+        ],
+        "applied_on_support_n": [
+          0,
+          0,
+          -8.142175082210573
+        ],
+        "solver_reaction_n": [
+          -5.790661046917167e-7,
+          2.481465223545809e-7,
+          191.85782601014623
+        ],
+        "reaction_force_n": [
+          -5.790661046917167e-7,
+          2.481465223545809e-7,
+          200.0000010923568
+        ],
+        "residual_n": 0.0000012610065416013864,
+        "relative_residual": 6.30503270800693e-9,
+        "tolerance": 0.001,
+        "passed": true
+      },
+      "validation_status": "solver_completed",
+      "quality": {
+        "element_type": "C3D10",
+        "elements": 18980,
+        "mesh_validity": "passed_sampled"
+      }
+    },
+    "report_json_status": 200,
+    "pdf_link": true
+  },
+  "persistence": {
+    "reload": "PASS",
+    "jobId": "f0c39d56-afd4-4374-b4f1-b08d21d31e9d"
+  },
+  "fallback": {
+    "job_batch10a": "6066bc77-07d0-44ad-a49b-720b947d99fd",
+    "job_legacy": "4f8ed6cc-7d26-4a53-ba2a-ba1569ab4933"
+  },
+  "errors": [],
+  "verdict": "PASS",
+  "prior_meta_consumed": 2,
+  "scenarioId": "072d3280-1bd3-4a10-a9bc-138fb41ebef3",
+  "scenarioName": "DRAFTY_QA_demo_freeze_demo-freeze-agent-8092615-20261104173800",
+  "finished_at": "2026-11-04T22:41:20.340Z"
+}

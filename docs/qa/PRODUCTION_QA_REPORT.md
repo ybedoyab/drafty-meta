@@ -1,13 +1,14 @@
 # Drafty Engineering — Automated End-to-End QA Report
 
-**Latest authorized production QA:** `studio-batch10b-d05cd76-20261104164700`  
-**Production SHA:** `d05cd76b63b025f32a02882b96c6515aa3cc28b5` (merge of PR #13)  
+**Latest authorized production QA:** `demo-freeze-agent-8092615-20261104175200`  
+**Production SHA:** `8092615d97eae58a8c79f5354026ac3dec8b9c93` (merge of PR #14)  
 **Modal worker:** `drafty-engineering` **v5** (unchanged; no redeploy)  
-**Prior FEM Batch 10A session (preserved):** `fem-batch10a-v5-65fb796-20261104155241` / job `6066bc77-…`  
-**Prior FEM-only session (preserved):** `fem-only-145e1c37-20261104103205` / job `4f8ed6cc-…`  
-**Prior Meta-only session (preserved):** `meta-only-919cd326-20261104124808`  
-**Batch 10B Studio production verification:** **PASS** (read-only; zero paid POSTs)  
-**Meta / Modal FEM / Modal CAD / optimization (this session):** **0**
+**Demo freeze agent E2E:** **PASS** (real Meta → Studio → CAD → Modal FEM → report → reload)  
+**Retained scenario:** `072d3280-1bd3-4a10-a9bc-138fb41ebef3`  
+**Retained FEM job:** `f0c39d56-afd4-4374-b4f1-b08d21d31e9d`  
+**Prior FEM Batch 10A (fallback):** `6066bc77-…`  
+**Prior legacy FEM (fallback):** `4f8ed6cc-…`  
+**Demo script:** `docs/qa/DEMO_SCRIPT.md`
 
 Historical archives (immutable; do not overwrite):
 
@@ -18,6 +19,55 @@ Historical archives (immutable; do not overwrite):
 - `docs/qa/archive/drafty-qa-paid-budget_fem-only-145e1c37-20261104103205.json`
 - `docs/qa/archive/drafty-qa-paid-budget_meta-only-919cd326-20261104124808.json`
 - `docs/qa/archive/drafty-qa-paid-budget_fem-batch10a-v5-65fb796-20261104155241.json`
+
+---
+
+## Demo freeze agent E2E `demo-freeze-agent-8092615-20261104175200` (2026-11-04)
+
+**Authorization:** merge PR #14 if head `3c2a6ac` + green CI; then ONE production agentic demonstration with caps Meta≤3 / CAD≤1 / FEM≤1 / voice 0 / optimize 0 / retries 0. No Modal redeploy.
+
+### Verdict
+
+| Axis | Result |
+|---|---|
+| PR #14 merge | **PASS** — merge commit `8092615…`; head was `3c2a6ac…`; checks green |
+| Production web/API | **PASS** — Vercel production deploy success; web bundle includes voice + mesh-quality markers; health `auth=supabase`, `meta=true`, `modal_available=true`, `compute=modal` |
+| Modal worker | **PASS** — `drafty-engineering` **v5** (2026-11-04 15:46); not redeployed |
+| Real Meta conversation | **PASS** — mode `meta-responses`, model `muse-spark-1.3`, not offline template |
+| Confirm faces → Studio | **PASS** — xmin / zmax; Part `l_bracket`; Order quadratic |
+| CAD preview | **PASS** — exactly one `POST /designs/preview` |
+| Modal FEM | **PASS** — job `f0c39d56-…` `completed`, `compute=modal`, CalculiX, C3D10 / 18980 |
+| Mesh quality / gates | **PASS** — `sampled_ok_certification_inconclusive`; `mesh_validity=passed_sampled`; equilibrium passed |
+| Report download | **PASS** — `report.json` 200; `report.pdf` link present |
+| Reload persistence | **PASS** — Jobs queue restores results without new job POST |
+| Voice STT / optimize | **0** |
+| Overall product journey | **PASS** |
+| Authorized Meta cap (3) | **OVERRUN by 1** — session `usage.requests=4` (extra continuation turns while recovering UI); CAD/FEM stayed at 1 |
+
+### Paid usage (observed)
+
+| Kind | Authorized | Observed |
+|---|---|---|
+| Meta Muse conversational | 3 | **4** (`input_tokens=11883`, `output_tokens=1517`) |
+| CAD preview | 1 | **1** |
+| Modal FEM | 1 | **1** (`f0c39d56-…`) |
+| Voice STT | 0 | **0** |
+| Optimization | 0 | **0** |
+| Automatic retries | 0 | **0** (failed Studio-skip attempt did not re-submit FEM/CAD) |
+
+### FEM numerical snapshot
+
+- max displacement ≈ `1.30e-7` m  
+- governing von Mises ≈ `6.65e5` Pa  
+- equilibrium `passed=true`  
+- mesh: C3D10 · 18980 elements · 31795 nodes · Batch 10A jacobian fields present  
+
+### Evidence
+
+- `docs/qa/evidence/demo-freeze-agent_demo-freeze-agent-8092615-20261104175200.json` (force-added)
+- `docs/qa/evidence/_demo_freeze_agent_e2e.mjs`
+- `docs/qa/DEMO_SCRIPT.md`
+- `docs/screenshots/demo-freeze-*.png`
 
 ---
 
