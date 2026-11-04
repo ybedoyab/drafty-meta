@@ -17,6 +17,7 @@ const UNRELATED = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 describe("production leftover cleanup fail-closed jobs inventory", () => {
   const evidenceDir = path.join(os.tmpdir(), `drafty-qa-leftover-vitest-${process.pid}`);
   const evidenceTmp = path.join(os.tmpdir(), `drafty-qa-fem-leftover-vitest-${process.pid}.json`);
+  const metaTmp = path.join(os.tmpdir(), `drafty-qa-meta-leftover-vitest-${process.pid}.json`);
   const retentionTmp = path.join(os.tmpdir(), `drafty-qa-retained-leftover-vitest-${process.pid}.json`);
 
   beforeEach(() => {
@@ -24,6 +25,7 @@ describe("production leftover cleanup fail-closed jobs inventory", () => {
     vi.stubEnv("DRAFTY_QA_RELEASE_RETAINED", "");
     vi.stubEnv("DRAFTY_QA_EVIDENCE_DIR", evidenceDir);
     vi.stubEnv("DRAFTY_QA_EVIDENCE_TMP", evidenceTmp);
+    vi.stubEnv("DRAFTY_QA_META_EVIDENCE_TMP", metaTmp);
     vi.stubEnv("DRAFTY_QA_RETENTION_TMP", retentionTmp);
     fs.mkdirSync(evidenceDir, { recursive: true });
     clearEvidenceForTests();

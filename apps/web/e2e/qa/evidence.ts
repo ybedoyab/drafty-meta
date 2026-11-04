@@ -1,10 +1,13 @@
 /**
- * Durable FEM / QA evidence for production investigation.
+ * Durable FEM / Meta QA evidence for production investigation.
  *
  * Written synchronously to disk so a Playwright assertion failure or process exit
- * cannot erase the submitted job id. Retained scenario ids live in a **run-id-
- * independent** ledger so later QA sessions (new DRAFTY_QA_BUDGET_RUN_ID) still
- * skip leftover cleanup until explicitly released.
+ * cannot erase the submitted job id or Meta scenario id. Retained scenario ids
+ * live in a **run-id-independent** ledger so later QA sessions (new
+ * DRAFTY_QA_BUDGET_RUN_ID) still skip leftover cleanup until explicitly released.
+ *
+ * Meta scenarios are retained **before** the paid provider request so afterAll /
+ * leftover cleanup cannot delete conversation + response metadata on a UI flake.
  *
  * Release authorization (any one):
  * - DRAFTY_QA_RELEASE_RETAINED=true (all retained)
@@ -34,9 +37,40 @@ export type FemEvidenceRecord = {
   runId: string;
 };
 
+export type MetaEvidencePhase =
+  | "created"
+  | "invoked"
+  | "provider_ok"
+  | "provider_fail"
+  | "offline_fallback"
+  | "ui_assert_failed";
+
+export type MetaEvidenceRecord = {
+  scenarioId: string;
+  scenarioName?: string;
+  owner?: string;
+  retain: boolean;
+  recordedAt: string;
+  updatedAt: string;
+  phase: MetaEvidencePhase;
+  runId: string;
+  mode?: string | null;
+  meta_turns?: number | null;
+  previous_response_id?: string | null;
+  usage?: Record<string, unknown> | null;
+  assistantExcerpt?: string | null;
+  error?: string | null;
+};
+
 type EvidenceFile = {
   runId: string;
   jobs: FemEvidenceRecord[];
+  retainedScenarioIds: string[];
+};
+
+type MetaEvidenceFile = {
+  runId: string;
+  scenarios: MetaEvidenceRecord[];
   retainedScenarioIds: string[];
 };
 
@@ -102,9 +136,20 @@ function readJsonFile<T>(filePath: string): T | null {
 
 function writeAtomic(filePath: string, data: unknown): void {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  const tmp = `${filePath}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(data, null, 2), "utf8");
-  fs.renameSync(tmp, filePath);
+  const tmp = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  const payload = JSON.stringify(data, null, 2);
+  fs.writeFileSync(tmp, payload, "utf8");
+  try {
+    fs.renameSync(tmp, filePath);
+  } catch {
+    // Windows can EPERM on replace-via-rename when another handle exists.
+    fs.writeFileSync(filePath, payload, "utf8");
+    try {
+      fs.unlinkSync(tmp);
+    } catch {
+      /* ignore */
+    }
+  }
 }
 
 function normalizeIdList(value: unknown): string[] {
@@ -112,7 +157,7 @@ function normalizeIdList(value: unknown): string[] {
   return [...new Set(value.map((item) => String(item || "").trim()).filter(Boolean))];
 }
 
-/** Merge retention hints from a single evidence archive (any run id). */
+/** Merge retention hints from a single FEM evidence archive (any run id). */
 function absorbEvidenceFile(
   retained: Set<string>,
   released: Set<string>,
@@ -129,6 +174,20 @@ function absorbEvidenceFile(
   void released;
 }
 
+/** Merge retention hints from a Meta evidence archive (any run id). */
+function absorbMetaEvidenceFile(
+  retained: Set<string>,
+  parsed: Partial<MetaEvidenceFile> | null,
+): void {
+  if (!parsed) return;
+  for (const id of normalizeIdList(parsed.retainedScenarioIds)) retained.add(id);
+  if (Array.isArray(parsed.scenarios)) {
+    for (const item of parsed.scenarios as MetaEvidenceRecord[]) {
+      if (item?.retain && item.scenarioId) retained.add(String(item.scenarioId));
+    }
+  }
+}
+
 function listEvidenceArchives(): string[] {
   try {
     const dir = archiveDir();
@@ -140,6 +199,23 @@ function listEvidenceArchives(): string[] {
   } catch {
     return [];
   }
+}
+
+function listMetaEvidenceArchives(): string[] {
+  try {
+    const dir = archiveDir();
+    if (!fs.existsSync(dir)) return [];
+    return fs
+      .readdirSync(dir)
+      .filter((name) => name.startsWith("meta-evidence_") && name.endsWith(".json"))
+      .map((name) => path.join(dir, name));
+  } catch {
+    return [];
+  }
+}
+
+function metaRunTmpPath(): string {
+  return process.env.DRAFTY_QA_META_EVIDENCE_TMP || path.join(os.tmpdir(), "drafty-qa-meta-evidence.json");
 }
 
 /**
@@ -162,6 +238,11 @@ function loadLedger(): RetentionLedger {
 
   for (const archivePath of listEvidenceArchives()) {
     absorbEvidenceFile(retained, released, readJsonFile<Partial<EvidenceFile>>(archivePath));
+  }
+
+  absorbMetaEvidenceFile(retained, readJsonFile<Partial<MetaEvidenceFile>>(metaRunTmpPath()));
+  for (const archivePath of listMetaEvidenceArchives()) {
+    absorbMetaEvidenceFile(retained, readJsonFile<Partial<MetaEvidenceFile>>(archivePath));
   }
 
   // Explicit release wins over retain if both somehow appear.
@@ -251,6 +332,164 @@ export function archiveEvidencePath(): string {
   return path.join(archiveDir(), `fem-evidence_${activeRunId()}.json`);
 }
 
+export function archiveMetaEvidencePath(): string {
+  return path.join(archiveDir(), `meta-evidence_${activeRunId()}.json`);
+}
+
+function emptyMetaRunFile(runId = activeRunId()): MetaEvidenceFile {
+  return { runId, scenarios: [], retainedScenarioIds: [] };
+}
+
+function readMetaRunFile(filePath: string, expectedRunId: string): MetaEvidenceFile {
+  const parsed = readJsonFile<Partial<MetaEvidenceFile>>(filePath);
+  if (!parsed || parsed.runId !== expectedRunId) return emptyMetaRunFile(expectedRunId);
+  return {
+    runId: expectedRunId,
+    scenarios: Array.isArray(parsed.scenarios) ? (parsed.scenarios as MetaEvidenceRecord[]) : [],
+    retainedScenarioIds: normalizeIdList(parsed.retainedScenarioIds),
+  };
+}
+
+function loadMetaRunEvidence(): MetaEvidenceFile {
+  const runId = activeRunId();
+  const tmp = readMetaRunFile(metaRunTmpPath(), runId);
+  if (tmp.scenarios.length) return tmp;
+  return readMetaRunFile(path.join(archiveDir(), `meta-evidence_${runId}.json`), runId);
+}
+
+function persistMetaRunEvidence(data: MetaEvidenceFile): void {
+  const runId = activeRunId();
+  const ledger = loadLedger();
+  data.runId = runId;
+  data.retainedScenarioIds = [...ledger.retainedScenarioIds];
+  writeAtomic(metaRunTmpPath(), data);
+  // Per-run archive — never overwrite other runs' files.
+  writeAtomic(path.join(archiveDir(), `meta-evidence_${runId}.json`), data);
+}
+
+/**
+ * Persist a Meta QA scenario as retained **before** the paid provider request.
+ * Mirrors FEM retain-at-submit so afterAll / leftover cleanup cannot erase evidence.
+ */
+export function recordMetaScenarioRetained(input: {
+  scenarioId: string;
+  scenarioName?: string;
+  owner?: string;
+}): MetaEvidenceRecord {
+  const now = new Date().toISOString();
+  const scenarioId = String(input.scenarioId || "").trim();
+  if (!scenarioId) {
+    throw new Error("recordMetaScenarioRetained requires scenarioId");
+  }
+  markRetained(scenarioId);
+
+  const data = loadMetaRunEvidence();
+  const record: MetaEvidenceRecord = {
+    scenarioId,
+    scenarioName: input.scenarioName,
+    owner: input.owner,
+    retain: true,
+    recordedAt: now,
+    updatedAt: now,
+    phase: "created",
+    runId: activeRunId(),
+    mode: null,
+    meta_turns: null,
+    previous_response_id: null,
+    usage: null,
+    assistantExcerpt: null,
+    error: null,
+  };
+  const idx = data.scenarios.findIndex((item) => item.scenarioId === scenarioId);
+  if (idx >= 0) {
+    data.scenarios[idx] = {
+      ...data.scenarios[idx],
+      ...record,
+      recordedAt: data.scenarios[idx].recordedAt,
+      retain: true,
+    };
+  } else {
+    data.scenarios.push(record);
+  }
+  persistMetaRunEvidence(data);
+  return record;
+}
+
+export function updateMetaEvidence(
+  scenarioId: string,
+  patch: Partial<
+    Pick<
+      MetaEvidenceRecord,
+      | "phase"
+      | "mode"
+      | "meta_turns"
+      | "previous_response_id"
+      | "usage"
+      | "assistantExcerpt"
+      | "error"
+      | "retain"
+      | "scenarioName"
+      | "owner"
+    >
+  >,
+): MetaEvidenceRecord | null {
+  const id = String(scenarioId || "").trim();
+  if (!id) return null;
+  const data = loadMetaRunEvidence();
+  let idx = data.scenarios.findIndex((item) => item.scenarioId === id);
+  if (idx < 0) {
+    // Scenario may have been retained under a prior run id — still honor retain.
+    if (patch.retain !== false) markRetained(id);
+    const now = new Date().toISOString();
+    const created: MetaEvidenceRecord = {
+      scenarioId: id,
+      scenarioName: patch.scenarioName,
+      owner: patch.owner,
+      retain: patch.retain !== false,
+      recordedAt: now,
+      updatedAt: now,
+      phase: patch.phase || "created",
+      runId: activeRunId(),
+      mode: patch.mode ?? null,
+      meta_turns: patch.meta_turns ?? null,
+      previous_response_id: patch.previous_response_id ?? null,
+      usage: patch.usage ?? null,
+      assistantExcerpt: patch.assistantExcerpt ?? null,
+      error: patch.error ?? null,
+    };
+    data.scenarios.push(created);
+    persistMetaRunEvidence(data);
+    return created;
+  }
+  const next: MetaEvidenceRecord = {
+    ...data.scenarios[idx],
+    ...patch,
+    updatedAt: new Date().toISOString(),
+  };
+  if (next.retain) markRetained(next.scenarioId);
+  data.scenarios[idx] = next;
+  persistMetaRunEvidence(data);
+  return next;
+}
+
+export function recordedMetaScenarios(): MetaEvidenceRecord[] {
+  const byId = new Map<string, MetaEvidenceRecord>();
+  for (const archivePath of listMetaEvidenceArchives()) {
+    const parsed = readJsonFile<Partial<MetaEvidenceFile>>(archivePath);
+    if (!parsed || !Array.isArray(parsed.scenarios)) continue;
+    for (const item of parsed.scenarios as MetaEvidenceRecord[]) {
+      if (item?.scenarioId) byId.set(String(item.scenarioId), item);
+    }
+  }
+  const tmp = readJsonFile<Partial<MetaEvidenceFile>>(metaRunTmpPath());
+  if (tmp && Array.isArray(tmp.scenarios)) {
+    for (const item of tmp.scenarios as MetaEvidenceRecord[]) {
+      if (item?.scenarioId) byId.set(String(item.scenarioId), item);
+    }
+  }
+  return [...byId.values()];
+}
+
 /** Record a FEM job as soon as POST /jobs succeeds (before poll / reports). */
 export function recordFemJobSubmitted(input: {
   jobId: string;
@@ -319,6 +558,11 @@ export function retainScenarioEvidence(scenarioId: string): void {
     if (job.scenarioId === scenarioId) job.retain = true;
   }
   persistRunEvidence(data);
+  const meta = loadMetaRunEvidence();
+  for (const item of meta.scenarios) {
+    if (item.scenarioId === scenarioId) item.retain = true;
+  }
+  persistMetaRunEvidence(meta);
 }
 
 export function releaseRetainedScenario(scenarioId: string): void {
@@ -328,6 +572,11 @@ export function releaseRetainedScenario(scenarioId: string): void {
     if (job.scenarioId === scenarioId) job.retain = false;
   }
   persistRunEvidence(data);
+  const meta = loadMetaRunEvidence();
+  for (const item of meta.scenarios) {
+    if (item.scenarioId === scenarioId) item.retain = false;
+  }
+  persistMetaRunEvidence(meta);
 }
 
 export function releaseAllRetained(): void {
@@ -340,6 +589,9 @@ export function releaseAllRetained(): void {
   const data = loadRunEvidence();
   for (const job of data.jobs) job.retain = false;
   persistRunEvidence(data);
+  const meta = loadMetaRunEvidence();
+  for (const item of meta.scenarios) item.retain = false;
+  persistMetaRunEvidence(meta);
 }
 
 export function retainedScenarioIds(): string[] {
@@ -380,9 +632,10 @@ export function recordedFemJobs(): FemEvidenceRecord[] {
 
 export function clearEvidenceForTests(): void {
   writeAtomic(runTmpPath(), emptyRunFile());
+  writeAtomic(metaRunTmpPath(), emptyMetaRunFile());
   writeAtomic(ledgerTmpPath(), emptyLedger());
   writeAtomic(ledgerArchivePath(), emptyLedger());
-  for (const archivePath of listEvidenceArchives()) {
+  for (const archivePath of [...listEvidenceArchives(), ...listMetaEvidenceArchives()]) {
     try {
       fs.unlinkSync(archivePath);
     } catch {
