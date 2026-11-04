@@ -311,7 +311,26 @@ def spawn_remote_geometry(profile: dict) -> str:
 
     import modal
 
-    call = modal.Function.from_name("drafty-engineering", "generate_revolved").spawn(profile)
+    try:
+        call = modal.Function.from_name("drafty-engineering", "generate_revolved").spawn(profile)
+    except Exception as exc:
+        # Map provider lookup / auth failures to an actionable HTTP error without
+        # leaking tokens. Callers must mark the durable build failed when this raises
+        # after a preview charge so CAD does not stay pending forever.
+        name = type(exc).__name__
+        detail = str(exc).replace("\n", " ").strip()[:240]
+        if "not found" in detail.lower() or name.endswith("NotFoundError"):
+            raise HTTPException(
+                status_code=502,
+                detail=(
+                    "Modal function 'generate_revolved' was not found on app "
+                    "'drafty-engineering'. Redeploy the Modal app, then retry."
+                ),
+            ) from exc
+        raise HTTPException(
+            status_code=502,
+            detail=f"Modal geometry spawn failed ({name}).",
+        ) from exc
     call_id = getattr(call, "object_id", None) or getattr(call, "call_id", None)
     if not call_id:
         raise HTTPException(status_code=502, detail="Modal did not return a geometry call id.")

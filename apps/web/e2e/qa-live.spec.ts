@@ -253,9 +253,19 @@ test.describe("Drafty live QA", () => {
       { timeout: 180_000 },
     );
     if (target.kind === "production") {
+      // Reservation only — do not count Send itself as a Modal invocation.
       expect(tryConsume("modal_geometry"), "reserve Modal geometry budget").toBe(true);
-      recordInvocationAttempt("modal_geometry");
     }
+    const geometryAttemptPromise =
+      target.kind === "production"
+        ? page.waitForResponse(
+            (res) =>
+              res.url().includes(`/api/v1/scenarios/${pawnScenarioId}/geometry/`) &&
+              res.request().method() === "GET" &&
+              [200, 202, 502, 503, 504].includes(res.status()),
+            { timeout: 180_000 },
+          )
+        : null;
     await page.getByRole("button", { name: "Send" }).click();
     await showInspectorStep(page, "Inputs");
     await expect(page.getByLabel("Height mm")).toBeVisible({ timeout: 60_000 });
@@ -264,6 +274,14 @@ test.describe("Drafty live QA", () => {
     await expect(page.getByRole("heading", { name: "Geometry" })).toBeVisible();
     await expect(page.getByText(/no structural check was run|geometry only/i).first()).toBeVisible();
     await expect(page.getByRole("button", { name: "Run 3D simulation" })).toHaveCount(0);
+    if (geometryAttemptPromise) {
+      const attempt = await geometryAttemptPromise;
+      // A 202 pending poll or terminal error proves the provider path was entered;
+      // a cache hit 200 without pending would mean no Modal work.
+      if (attempt.status() !== 200 || (attempt.headers()["x-drafty-geometry-cache"] || "").toLowerCase() === "miss") {
+        recordInvocationAttempt("modal_geometry");
+      }
+    }
     const firstGeometry = await firstGeometryPromise;
     const firstCache = (firstGeometry.headers()["x-drafty-geometry-cache"] || "").toLowerCase();
     const firstDigest = firstGeometry.headers()["x-drafty-geometry-digest"] || "";

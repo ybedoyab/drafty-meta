@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
+import re
 import shutil
 import threading
 import time
@@ -24,6 +26,11 @@ from fastapi import HTTPException
 from drafty_api.settings import settings
 from drafty_engineering.artifacts import MAX_ARTIFACT_BYTES
 from drafty_engineering.spec import RevolvedProfile
+
+_LOG = logging.getLogger("drafty_api.geometry")
+_SECRET_RE = re.compile(
+    r"(?i)(bearer\s+[a-z0-9._\-]+|api[_-]?key\s*[:=]\s*\S+|token\s*[:=]\s*\S+|eyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+)"
+)
 
 # Bump when CadQuery export, faceting, or GLB packing changes affect bytes for the same profile.
 GENERATOR_REVISION = "revolved-export-v1"
@@ -333,23 +340,93 @@ def _load_or_progress_remote(
             )
 
         # Winner: durable charge before spawn, then attach call id (cancel spawn if attach fails).
+        stage_started = time.perf_counter()
         if not bool(claim.get("charged")):
             from drafty_api.jobs import charge_preview
 
             charge_preview(owner)
             marked = _mark_build_charged(digest)
             if marked is not True:
+                _log_geometry_stage(
+                    digest,
+                    "mark_charged",
+                    ok=False,
+                    http_status=503,
+                    elapsed_ms=_elapsed_ms(stage_started),
+                    error="charge_not_persisted",
+                )
                 raise HTTPException(
                     status_code=503,
                     detail="Geometry build charge could not be persisted. Retry shortly.",
                 )
+            _log_geometry_stage(
+                digest,
+                "mark_charged",
+                ok=True,
+                http_status=200,
+                elapsed_ms=_elapsed_ms(stage_started),
+            )
 
         from drafty_api.remote import cancel_remote_geometry_call, spawn_remote_geometry
 
-        call_id = spawn_remote_geometry(profile.model_dump())
+        spawn_started = time.perf_counter()
+        try:
+            call_id = spawn_remote_geometry(profile.model_dump())
+        except HTTPException as exc:
+            _fail_build_after_spawn_error(digest, exc)
+            _log_geometry_stage(
+                digest,
+                "spawn",
+                ok=False,
+                http_status=exc.status_code,
+                elapsed_ms=_elapsed_ms(spawn_started),
+                error_class=type(exc).__name__,
+                error=_sanitize_error(exc.detail),
+                modal_call_id_present=False,
+            )
+            raise
+        except Exception as exc:
+            message = _sanitize_error(exc) or "Modal geometry spawn failed."
+            _fail_build_after_spawn_error(digest, message)
+            _log_geometry_stage(
+                digest,
+                "spawn",
+                ok=False,
+                http_status=502,
+                elapsed_ms=_elapsed_ms(spawn_started),
+                error_class=type(exc).__name__,
+                error=message,
+                modal_call_id_present=False,
+            )
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "message": message,
+                    "digest": digest[:12],
+                    "retryable": True,
+                },
+            ) from exc
+
+        _log_geometry_stage(
+            digest,
+            "spawn",
+            ok=True,
+            http_status=200,
+            elapsed_ms=_elapsed_ms(spawn_started),
+            modal_call_id_present=True,
+        )
         attached = _attach_build_call(digest, call_id)
         if attached is not True:
             cancel_remote_geometry_call(call_id)
+            _log_geometry_stage(
+                digest,
+                "attach",
+                ok=False,
+                http_status=503,
+                elapsed_ms=_elapsed_ms(spawn_started),
+                modal_call_id_present=True,
+                error="attach_failed",
+            )
             raise HTTPException(
                 status_code=503,
                 detail={
@@ -359,6 +436,14 @@ def _load_or_progress_remote(
                 },
             )
 
+        _log_geometry_stage(
+            digest,
+            "attach",
+            ok=True,
+            http_status=202,
+            elapsed_ms=_elapsed_ms(spawn_started),
+            modal_call_id_present=True,
+        )
         raise GeometryPending(digest, "running")
 
 
@@ -495,6 +580,54 @@ def _transition_build(
     from drafty_api.storage import transition_geometry_build_remote
 
     return transition_geometry_build_remote(digest, from_statuses, to_status, error=error)
+
+
+def _elapsed_ms(started: float) -> int:
+    return max(0, int((time.perf_counter() - started) * 1000))
+
+
+def _sanitize_error(detail: object) -> str:
+    if isinstance(detail, dict):
+        detail = detail.get("message") or detail.get("detail") or detail
+    text = str(detail or "").replace("\n", " ").strip()
+    text = _SECRET_RE.sub("[REDACTED]", text)
+    return text[:240]
+
+
+def _log_geometry_stage(
+    digest: str,
+    stage: str,
+    *,
+    ok: bool,
+    http_status: int | None = None,
+    elapsed_ms: int | None = None,
+    modal_call_id_present: bool | None = None,
+    error_class: str | None = None,
+    error: object | None = None,
+) -> None:
+    payload = {
+        "event": "geometry_lifecycle",
+        "digest_prefix": (digest or "")[:12],
+        "stage": stage,
+        "ok": bool(ok),
+        "http_status": http_status,
+        "elapsed_ms": elapsed_ms,
+        "modal_call_id_present": modal_call_id_present,
+        "error_class": error_class,
+        "error": _sanitize_error(error) if error is not None else None,
+    }
+    _LOG.info("%s", json.dumps(payload, separators=(",", ":"), default=str))
+
+
+def _fail_build_after_spawn_error(digest: str, detail: object) -> None:
+    """Mark charged/queued builds failed when Modal never returned a call id.
+
+    Prevents indefinite CAD-pending polls that never attach a FunctionCall id and
+    never surface a terminal error to the client.
+    """
+
+    message = _sanitize_error(detail) or "Modal geometry spawn failed."
+    _transition_build(digest, ["queued", "running"], "failed", error=message)
 
 
 def _try_read(digest: str) -> dict[str, bytes] | None:
