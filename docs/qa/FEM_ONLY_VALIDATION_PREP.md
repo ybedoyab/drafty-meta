@@ -53,6 +53,10 @@ Or full production suite with Meta still disabled (CAD may skip if Modal geometr
 5. Scenario / Storage **retained** even if an assertion fails  
 6. Leftover cleanup skips retained evidence  
 
+## Retention across runs
+
+Retained scenario IDs live in `docs/qa/evidence/retained-scenarios.json` (gitignored) and are **not** scoped to `DRAFTY_QA_BUDGET_RUN_ID`. Later sessions must not auto-delete them. Production leftover cleanup also fail-closes on QA scenarios that still have linked FEM jobs unless release was recorded on this machine.
+
 ## Explicit cleanup later
 
 Only after investigation is finished:

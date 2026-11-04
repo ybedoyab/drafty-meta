@@ -9,7 +9,7 @@ import {
   qaEnv,
   redact,
 } from "./env";
-import { isScenarioRetained, mayCleanupScenario } from "./evidence";
+import { mayCleanupScenario, retainScenarioEvidence } from "./evidence";
 
 /** Known DRAFTY_QA leftover IDs from earlier local FEM iterations (pre Storage delete fix). */
 export const KNOWN_QA_LEFTOVER_IDS = [
@@ -36,6 +36,10 @@ export function trackedResources(): TrackedResource[] {
 }
 
 export function trackScenario(resource: TrackedResource): void {
+  // Keep the durable ledger in sync so afterAll / other processes honor retain.
+  if (resource.retain) {
+    retainScenarioEvidence(resource.scenarioId);
+  }
   const existing = tracked.find((item) => item.scenarioId === resource.scenarioId);
   if (existing) {
     if (resource.retain) existing.retain = true;
@@ -292,9 +296,11 @@ export async function cleanupTracked(
     }
   }
   const remaining: TrackedResource[] = [];
+  const production = Boolean(qaEnv.runProduction);
   for (const item of [...tracked].reverse()) {
-    const retain = Boolean(item.retain) || isScenarioRetained(item.scenarioId) || !mayCleanupScenario(item.scenarioId);
-    if (retain) {
+    // Single gate: mayCleanupScenario (honors ledger + DRAFTY_QA_RELEASE_RETAINED).
+    // Tracked retain always mirrors the durable ledger via trackScenario().
+    if (!mayCleanupScenario(item.scenarioId, { production })) {
       remaining.push(item);
       continue;
     }
@@ -366,9 +372,24 @@ export async function cleanupQaOwnedLeftovers(
     }
   }
 
+  const production = Boolean(qaEnv.runProduction);
+  const jobsResp = await apiJson(request, apiBase, "GET", "/api/v1/jobs", token);
+  const linkedScenarioIds = new Set<string>();
+  if (jobsResp.status === 200 && Array.isArray(jobsResp.json?.jobs)) {
+    for (const job of jobsResp.json.jobs) {
+      const sid = String(job?.scenario_id || "");
+      if (sid) linkedScenarioIds.add(sid);
+    }
+  }
+
   for (const item of byId.values()) {
-    if (!mayCleanupScenario(item.id) || isScenarioRetained(item.id)) {
-      skipped.push(`${item.id}:retained-evidence`);
+    const hasLinkedJobs = linkedScenarioIds.has(item.id);
+    if (!mayCleanupScenario(item.id, { production, hasLinkedJobs })) {
+      const reason =
+        production && hasLinkedJobs && mayCleanupScenario(item.id)
+          ? "job-linked-evidence"
+          : "retained-evidence";
+      skipped.push(`${item.id}:${reason}`);
       continue;
     }
     let result = await apiJson(request, apiBase, "DELETE", `/api/v1/scenarios/${item.id}`, token);
