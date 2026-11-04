@@ -24,6 +24,11 @@ import {
   tryConsume,
 } from "./qa/budget";
 import {
+  recordFemJobSubmitted,
+  retainScenarioEvidence,
+  updateFemEvidence,
+} from "./qa/evidence";
+import {
   accessTokenFromPage,
   apiJson,
   assertNonEmptyBinary,
@@ -380,6 +385,10 @@ test.describe("Drafty live QA", () => {
 
     const name = qaScenarioName("bracket");
     const scenarioId = await createNamedScenario(page, request, target.api, name, "primary");
+    // Production FEM evidence must survive afterAll + leftover cleanup until explicitly released.
+    const retainEvidence = target.kind === "production";
+    if (retainEvidence) retainScenarioEvidence(scenarioId);
+    trackScenario({ scenarioId, name, owner: "primary", retain: retainEvidence });
     await openScenarioFromProjects(page, name);
     await page.getByRole("button", { name: "Load Bracket Demo" }).click();
     await expect(page.getByText(/bracket-v1|Aluminum L-bracket demo/i).first()).toBeVisible({ timeout: 30_000 });
@@ -388,13 +397,27 @@ test.describe("Drafty live QA", () => {
       const { jobId, results } = await runApprovedBracketFem(page, request, target.api, {
         expectCompute: target.kind === "production" ? "modal" : "local",
         timeoutMs: target.kind === "production" ? 360_000 : 240_000,
+        onJobSubmitted: (job) => {
+          // Before poll / report downloads — survives a later report 404.
+          recordJobId(job.id);
+          recordFemJobSubmitted({
+            jobId: job.id,
+            scenarioId,
+            scenarioName: name,
+            compute: job.compute ?? (target.kind === "production" ? "modal" : "local"),
+            status: job.status,
+            retain: retainEvidence,
+          });
+          if (target.kind === "production") {
+            recordInvocationAttempt("modal_fem");
+          }
+        },
       });
-      recordJobId(jobId);
+      updateFemEvidence(jobId, { status: "completed", phase: "reports_ok" });
       if (target.kind === "production") {
-        recordInvocationAttempt("modal_fem");
         recordCompletedResponse("modal_fem");
       }
-      trackScenario({ scenarioId, name, owner: "primary" });
+      trackScenario({ scenarioId, name, owner: "primary", retain: retainEvidence });
       console.log(
         JSON.stringify({
           target: target.kind,
@@ -409,17 +432,28 @@ test.describe("Drafty live QA", () => {
           budget: budgetSnapshot(),
           accounting: budgetAccounting(),
           recorded_jobs: recordedJobIds(),
+          retain_evidence: retainEvidence,
         }),
       );
       await safeScreenshot(page, `${target.kind}-bracket-fem.png`);
     } catch (error) {
-      trackScenario({ scenarioId, name, owner: "primary" });
+      trackScenario({ scenarioId, name, owner: "primary", retain: retainEvidence });
+      const knownJobs = recordedJobIds();
+      if (knownJobs[0]) {
+        updateFemEvidence(knownJobs[0], {
+          phase: "failed",
+          error: redact(String(error)).slice(0, 500),
+          retain: retainEvidence,
+        });
+      }
       console.log(
         JSON.stringify({
           target: target.kind,
           bracket_fem: "FAILED",
           error: redact(String(error)),
-          note: "Stopped after first failed live FEM attempt; no additional paid retries.",
+          recorded_jobs: knownJobs,
+          retain_evidence: retainEvidence,
+          note: "Stopped after first failed live FEM attempt; no additional paid retries. Retained scenario/job evidence for investigation.",
           budget: budgetSnapshot(),
         }),
       );
