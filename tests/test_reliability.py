@@ -92,6 +92,58 @@ def test_preview_quota_blocks_the_second_request(tmp_path, monkeypatch):
     assert second.status_code == 429
 
 
+def test_unhandled_preview_error_keeps_cors_headers(tmp_path, monkeypatch):
+    def fail(_owner: str) -> None:
+        raise RuntimeError("provider failure")
+
+    monkeypatch.setattr("drafty_api.main.charge_preview", fail)
+    origin = "http://localhost:5173"
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.post(
+            "/api/v1/designs/preview",
+            json=cantilever_benchmark_spec().model_dump(),
+            headers={"Origin": origin},
+        )
+    assert response.status_code == 500
+    assert response.json() == {"detail": "Internal server error."}
+    assert response.headers["access-control-allow-origin"] == origin
+
+
+@pytest.mark.parametrize(
+    ("spawn_error", "get_error", "status", "detail"),
+    [
+        (LookupError("no function"), None, 502, "could not start (LookupError)"),
+        (None, ValueError("cad failed"), 502, "failed (ValueError)"),
+        (None, TimeoutError(), 504, "still building"),
+    ],
+)
+def test_remote_preview_maps_modal_failures_to_http_errors(monkeypatch, spawn_error, get_error, status, detail):
+    import sys
+    import types
+
+    from fastapi import HTTPException
+
+    from drafty_api import remote
+
+    class Call:
+        def get(self, timeout):
+            raise get_error
+
+    class Function:
+        def spawn(self, _spec):
+            if spawn_error:
+                raise spawn_error
+            return Call()
+
+    modal = types.SimpleNamespace(Function=types.SimpleNamespace(from_name=lambda *_: Function()))
+    monkeypatch.setitem(sys.modules, "modal", modal)
+    monkeypatch.setattr(remote, "_cancel_call", lambda _call: None)
+    with pytest.raises(HTTPException) as caught:
+        remote.remote_preview({})
+    assert caught.value.status_code == status
+    assert detail in caught.value.detail
+
+
 def test_report_uses_only_saved_solver_fields(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "drafty_data_dir", str(tmp_path))
     monkeypatch.setattr(settings, "drafty_spawn_local", "never")
