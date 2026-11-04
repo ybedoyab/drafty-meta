@@ -1,0 +1,28 @@
+{
+  "web": "https://drafty-web-umber.vercel.app",
+  "mergeShaHint": "d05cd76",
+  "blockedPaidPosts": 0,
+  "allowedPosts": [
+    {
+      "method": "POST",
+      "url": "https://dwwwyuybbwihpizdrhqp.supabase.co/auth/v1/token",
+      "at": "2026-11-04T21:46:47.933Z"
+    }
+  ],
+  "checks": {
+    "auth": "PASS",
+    "batch10aSoftWarnings": [
+      "Soft quality warning: Positive sampled det J does not prove positivity throughout the quadratic tetrahedron; curved mid-edge distortion can invert the map between samples.",
+      "Soft quality warning: Whole-element certification is inconclusive without a Bézier/Gmsh positivity bound; adaptive sampling can only prove invalidity, not certify validity.",
+      "Soft quality warning: Adaptive subdivision ran on 0 low-ratio element(s) (trigger ratio < 0.35); not a whole-mesh certification."
+    ],
+    "falseLowRatioWarning": "PASS",
+    "batch10aResults": "PASS",
+    "reloadPersistence": "PASS",
+    "legacyCompatibility": "PASS",
+    "previewPostsDuringPassiveNav": 0,
+    "previewSafety": "PASS"
+  },
+  "errors": [],
+  "blocked": []
+}
