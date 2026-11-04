@@ -34,6 +34,7 @@ def build_report_from_parts(
         "safety_factor_status": assessment.get("safety_factor_status", "exploratory"),
         "stress_assessment": assessment,
         "equilibrium": result.get("equilibrium"),
+        "quality_gates": result.get("quality_gates"),
         "validation_status": result.get("validation_status"),
         "benchmark": result.get("benchmark"),
         "warnings": result.get("warnings"),
@@ -43,6 +44,8 @@ def build_report_from_parts(
             "The safety factor uses exploratory governing stress and is not certified.",
             "Displayed contours are corner triangles, not a high-order stress plot.",
             "A completed solve is not by itself an accepted engineering design.",
+            "Mesh Jacobian sampling does not certify positivity of det J throughout each "
+            "quadratic tetrahedron; inconclusive certification is not a pass proof.",
         ],
     }
 
@@ -74,6 +77,32 @@ def report_text(report: dict) -> str:
     ]
     solver = report.get("solver") or {}
     lines.append(f"Solver {solver.get('version')}")
+    gates = report.get("quality_gates") or {}
+    if gates:
+        lines.append(
+            "Quality gates "
+            f"solver={gates.get('solver_completed')} "
+            f"mesh_validity={gates.get('mesh_validity')} "
+            f"mesh_quality={gates.get('mesh_quality')} "
+            f"equilibrium={gates.get('equilibrium_verified')}"
+        )
+    mesh = report.get("mesh") or {}
+    quality = mesh.get("quality") or {}
+    if quality:
+        lines.append(
+            "Mesh quality "
+            f"status={quality.get('jacobian_validation_status')} "
+            f"method={quality.get('jacobian_validation_method')} "
+            f"inverted={quality.get('inverted_elements')} "
+            f"degenerate={quality.get('degenerate_elements')} "
+            f"inconclusive={quality.get('inconclusive_elements')} "
+            f"min_J={quality.get('min_jacobian')} max_J={quality.get('max_jacobian')} "
+            f"ratio_min={quality.get('normalized_jacobian_ratio_min')}"
+        )
+        if quality.get("ige_status"):
+            lines.append(f"IGE {quality.get('ige_status')}: {quality.get('ige')}")
+        if quality.get("icn_status"):
+            lines.append(f"ICN {quality.get('icn_status')}: {quality.get('icn')}")
     for warning in report.get("warnings") or []:
         lines.append(f"Warning: {warning}")
     for limitation in report.get("limitations") or []:
