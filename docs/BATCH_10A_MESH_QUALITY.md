@@ -34,7 +34,7 @@ Mapping \(x=\sum N_i x_i\), Jacobian \(J=\partial x/\partial(\xi,\eta,\zeta)\). 
 
 ### A. Sampled numerical validation
 
-Evaluate `det J` at a fixed reference set (vertices, edge mids, face centroids, volume centroid, 4-point tet quadrature). Any non-positive sample (relative to \((10^{-8}L)^3\)) ⇒ **invalid**.
+Evaluate `det J` at a fixed reference set (vertices, edge mids, face centroids, volume centroid, 4-point tet rule of exactness degree 2). Any sample with `det J ≤ 10^{-12} · max(|J₀|, L³)` (where `J₀ = 6V` is the affine corner mapping determinant) ⇒ **invalid / numerically degenerate**.
 
 **Limitation:** positive samples do **not** prove positivity everywhere in the quadratic element.
 
@@ -52,11 +52,11 @@ Fail-closed rejection of `inconclusive` is **not** enabled: certification is inc
 
 - Empty mesh, out-of-range connectivity, duplicate corner tets
 - Non-finite / non-positive corner volumes (existing)
-- Demonstrated inverted or degenerate quadratic Jacobian (sampled or adaptive)
+- Demonstrated inverted or numerically degenerate quadratic Jacobian (sampled or adaptive), using `det J ≤ 10^{-12}·max(|J₀|, L³)` rather than `(10^{-8}L)³`
 
 **Soft warnings only:**
 
-- Sampled min/max Jacobian ratio \(< 0.10\)
+- Sampled min/max Jacobian ratio \(< 0.10\) (ordinary low quality with dets well above the relative floor)
 - IGE / ICN thresholds are not applied (metrics unavailable on the NumPy path)
 
 ## Report schema additions

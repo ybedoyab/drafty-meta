@@ -11,12 +11,15 @@ from drafty_engineering.errors import GeometryError
 from drafty_engineering.mesh import assess_mesh
 from drafty_engineering.report import build_report_from_parts, report_text, text_pdf
 from drafty_engineering.tet10_jacobian import (
+    JACOBIAN_REL_EPS,
     SAMPLE_SCHEME,
+    affine_corner_jacobian_det,
     classify_element_dets,
     corner_signed_volume,
     evaluate_tet10_elements,
     jacobian_determinants,
     reference_sample_points,
+    relative_det_tolerance,
     shape_functions,
     straight_sided_tet10,
 )
@@ -163,12 +166,60 @@ def test_evaluate_reports_inconclusive_not_certified():
     out = evaluate_tet10_elements(points, cells, run_adaptive=True)
     assert out["jacobian_validation_status"] == "sampled_ok_certification_inconclusive"
     assert out["inconclusive_elements"] == 1
-    assert "certified_valid" not in (out.get("certification_note") or "").split() or True
+    note = out.get("certification_note") or ""
+    assert "certified_valid is never claimed" in note
+    assert out["jacobian_validation_status"] != "certified_valid"
     assert out["ige_status"] == "unavailable"
     assert out["icn_status"] == "unavailable"
     assert out["ige"] is None
     assert out["icn"] is None
     assert SAMPLE_SCHEME["limitation"] in out["quality_warnings"]
+
+
+def test_relative_det_tolerance_tracks_affine_jacobian_not_raw_eps_cubed():
+    # Unit tet: J0 = 1. Floor is 1e-12, not (1e-8)^3 = 1e-24.
+    assert relative_det_tolerance(1.0, reference_det=1.0) == pytest.approx(JACOBIAN_REL_EPS)
+    assert relative_det_tolerance(1.0, reference_det=1.0) > 1e-20
+    # Uniform scale s ⇒ floor scales as s³.
+    assert relative_det_tolerance(10.0, reference_det=1e3) == pytest.approx(JACOBIAN_REL_EPS * 1e3)
+
+
+def test_near_singular_midside_is_numerically_degenerate():
+    """Edge 0–1 mid at ~[0.25, 0, 0] yields tiny positive min det J → degenerate."""
+
+    nodes = straight_sided_tet10(_unit_corners())
+    nodes[4] = np.array([0.25 + 1e-14, 0.0, 0.0])
+    assert corner_signed_volume(nodes) > 0
+    dets = jacobian_determinants(nodes, reference_sample_points())
+    assert float(dets.min()) > 0.0
+    j0 = affine_corner_jacobian_det(nodes)
+    tol = relative_det_tolerance(1.0, reference_det=j0)
+    assert float(dets.min()) <= tol
+    cls = classify_element_dets(dets, scale_m=1.0, corner_volume=corner_signed_volume(nodes))
+    assert cls["status"] == "degenerate"
+    assert cls["certification"] == "invalid"
+    points, cells = _mesh_from_nodes(nodes)
+    with pytest.raises(GeometryError, match="inverted or degenerate"):
+        assess_mesh(points, cells)
+
+
+def test_low_quality_but_clearly_positive_jacobian_is_not_degenerate():
+    """Soft ratio warning path: positive dets well above the relative floor."""
+
+    nodes = straight_sided_tet10(_unit_corners())
+    edge_mid = np.array([0.5, 0.0, 0.0])
+    opposite_face = np.array([0.0, 1.0 / 3.0, 1.0 / 3.0])
+    # alpha=0.48 → min/max ≈ 0.04 (soft warning) but ≫ 1e-12·J0.
+    nodes[4] = edge_mid + 0.48 * (opposite_face - edge_mid)
+    dets = jacobian_determinants(nodes, reference_sample_points())
+    assert float(dets.min()) > relative_det_tolerance(1.0, reference_det=affine_corner_jacobian_det(nodes))
+    points, cells = _mesh_from_nodes(nodes)
+    quality = assess_mesh(points, cells)
+    assert quality["inverted_elements"] == 0
+    assert quality["degenerate_elements"] == 0
+    assert quality["normalized_jacobian_ratio_min"] < 0.10
+    assert quality["low_jacobian_ratio_elements"] >= 1
+    assert any("0.10" in w for w in quality["quality_warnings"])
 
 
 def test_report_serializes_mesh_quality_and_pdf():

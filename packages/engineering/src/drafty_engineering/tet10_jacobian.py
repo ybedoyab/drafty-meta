@@ -78,7 +78,8 @@ _FACE_CENTS = np.array(
     dtype=float,
 )
 _VOLUME_CENT = np.array([[0.25, 0.25, 0.25]], dtype=float)
-# 4-point degree-3 tet rule (positive weights).
+# 4-point tetrahedral rule with barycentric (a,b,b,b)/(b,a,b,b)/… .
+# Polynomial degree of exactness is 2 (not 3); kept as a quality sample set.
 _A, _B = 0.5854101966249685, 0.1381966011250105
 _QUAD4 = np.array(
     [
@@ -230,15 +231,41 @@ def characteristic_scale_m(nodes: np.ndarray) -> float:
     return max(scale, 1e-18)
 
 
-def relative_det_tolerance(scale_m: float) -> float:
-    """Absolute det floor ~ (ε * L)^3 so checks are scale-aware."""
-
-    return (1e-8 * scale_m) ** 3
+# Relative floor vs the affine corner mapping determinant J0.
+# float64 eps ≈ 2e-16; a 3×3 det from coordinate products needs a few digits of
+# margin. 1e-12 ≈ 5e3·eps distinguishes FP-near-singular maps from ordinary
+# low-but-positive quality without using an absolute cutoff in raw m³.
+JACOBIAN_REL_EPS = 1e-12
 
 
 def corner_signed_volume(nodes: np.ndarray) -> float:
     a, b, c, d = nodes[0], nodes[1], nodes[2], nodes[3]
     return float(np.dot(b - a, np.cross(c - a, d - a)) / 6.0)
+
+
+def affine_corner_jacobian_det(nodes: np.ndarray) -> float:
+    """Affine corner mapping det J0 = 6 V for the Drafty reference tet."""
+
+    return 6.0 * corner_signed_volume(nodes)
+
+
+def relative_det_tolerance(
+    scale_m: float,
+    reference_det: float | None = None,
+) -> float:
+    """Scale-aware absolute floor for det J (same units as det J).
+
+    Primary measure: ``JACOBIAN_REL_EPS * max(|J0|, L³)`` where J0 is the affine
+    corner Jacobian determinant (6 × signed corner volume). Both |J0| and L³
+    scale as length³, so the floor tracks geometry under uniform scaling.
+
+    The old ``(1e-8·L)³ = 1e-24·L³`` floor sat far below float64 noise relative
+    to typical det J ~ L³ and could not classify near-singular positive samples.
+    """
+
+    char = float(scale_m) ** 3
+    ref = abs(float(reference_det)) if reference_det is not None else 0.0
+    return JACOBIAN_REL_EPS * max(ref, char)
 
 
 def classify_element_dets(
@@ -249,7 +276,10 @@ def classify_element_dets(
 ) -> dict[str, Any]:
     """Classify one element from sampled determinants."""
 
-    tol = relative_det_tolerance(scale_m)
+    # J0 shares units with sampled det J; volume uses J0/6.
+    j0 = 6.0 * float(corner_volume)
+    tol = relative_det_tolerance(scale_m, reference_det=j0)
+    vol_tol = tol / 6.0
     finite = np.isfinite(dets)
     if not finite.all():
         return {
@@ -262,7 +292,7 @@ def classify_element_dets(
 
     # Orientation: expect det sign to match corner volume sign for Drafty ordering.
     # If corner volume is negative, treat as orientation mismatch (invalid for solver path).
-    if abs(corner_volume) <= tol:
+    if abs(corner_volume) <= vol_tol:
         return {
             "status": "degenerate",
             "reason": "degenerate_corner_volume",
@@ -279,11 +309,16 @@ def classify_element_dets(
             "max_det": float(dets.max()),
         }
 
-    # Hard fail: any sample with det <= tol (degenerate) or opposite sign.
+    # Hard fail: any sample with det <= tol (numerically degenerate / non-positive).
     if np.any(dets <= tol):
+        reason = (
+            "numerically_degenerate_sampled_jacobian"
+            if float(dets.min()) > 0.0
+            else "nonpositive_sampled_jacobian"
+        )
         return {
-            "status": "invalid",
-            "reason": "nonpositive_sampled_jacobian",
+            "status": "degenerate" if float(dets.min()) > 0.0 else "invalid",
+            "reason": reason,
             "certification": "invalid",
             "min_det": float(dets.min()),
             "max_det": float(dets.max()),
@@ -314,7 +349,7 @@ def adaptive_search_inversion(
     """
 
     scale = characteristic_scale_m(nodes)
-    tol = relative_det_tolerance(scale)
+    tol = relative_det_tolerance(scale, reference_det=affine_corner_jacobian_det(nodes))
     # Each cell: (ξ0,η0,ζ0, size) describing a shrunk tet cornered at origin-like
     # We subdivide by midpoints of a general reference tet with vertices v0..v3.
     cells = [(_VERTICES.copy(), 0)]
@@ -420,13 +455,17 @@ def evaluate_tet10_elements(
             axis=1,
         )
         scales = np.maximum(np.median(np.linalg.norm(edge_lens, axis=2), axis=1), 1e-18)
-        tols = (1e-8 * scales) ** 3
+        j0 = 6.0 * corner_vols
+        tols = JACOBIAN_REL_EPS * np.maximum(np.abs(j0), scales**3)
+        vol_tols = tols / 6.0
 
         finite = np.isfinite(dets).all(axis=1)
         min_d = np.min(dets, axis=1)
         max_d = np.max(dets, axis=1)
         abs_corner = np.abs(corner_vols)
-        degenerate_mask = finite & (abs_corner <= tols)
+        degenerate_mask = finite & (
+            (abs_corner <= vol_tols) | ((min_d > 0.0) & (min_d <= tols) & (corner_vols > vol_tols))
+        )
         reversed_mask = finite & (~degenerate_mask) & (corner_vols < 0)
         nonpos_mask = finite & (~degenerate_mask) & (~reversed_mask) & (min_d <= tols)
         invalid_mask = (~finite) | reversed_mask | nonpos_mask
@@ -514,7 +553,10 @@ def evaluate_tet10_elements(
             "certified_valid is never claimed by the NumPy path; "
             "inconclusive means no inversion was demonstrated."
         ),
-        "tolerance_note": "det J compared to (1e-8 * characteristic_edge_length)^3",
+        "tolerance_note": (
+            f"det J compared to {JACOBIAN_REL_EPS:g} * max(|J0|, L^3) where "
+            "J0 = 6 * signed corner volume (affine mapping determinant)"
+        ),
     }
 
 
