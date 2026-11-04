@@ -77,6 +77,7 @@ class Part(BaseModel):
             "analysis": list(self.analysis),
             "exports": list(self.exports),
             "where": "scenario" if self.in_scenario else "studio",
+            "studio_kind": self.studio_kind,
             "methods": list(self.methods),
             "limits": list(self.limits),
             "inputs": [item.model_dump() for item in self.inputs],
@@ -231,13 +232,35 @@ def _studio_part(part_id: str, name: str, description: str, geometry: tuple[Part
                 choices=tuple(sorted(MATERIALS)),
             ),
             PartInput(name="load_magnitude", label="Force or pressure", unit="N or Pa", group="Materials and loads"),
+            PartInput(
+                name="load_mode",
+                label="Load type",
+                kind="choice",
+                group="Materials and loads",
+                required=False,
+                choices=("force", "pressure"),
+            ),
+            PartInput(
+                name="displacement_limit_m",
+                label="Displacement limit",
+                unit="m",
+                display_unit="mm",
+                display_scale=1000.0,
+                group="Materials and loads",
+                required=False,
+            ),
+            PartInput(name="support_face", label="Fixed face", kind="face", group="Faces", choices=_FACE_CHOICES),
+            PartInput(name="load_face", label="Load face", kind="face", group="Faces", choices=_FACE_CHOICES),
         ),
         analysis=("calculix",),
         exports=("STEP", "GLB", "VTU", "JSON report"),
-        in_scenario=False,
+        in_scenario=True,
         studio_kind=part_id,
         keywords=keywords,
-        methods=("CalculiX solid FEM in Studio",),
+        tools=("create_supported_cad", "run_supported_simulation"),
+        proposal=f"parametric {name}, pending approval",
+        methods=("parametric model in the CAD schema", "CalculiX solid FEM after approval"),
+        limits=("classroom beam-element solver",),
     )
 
 
@@ -251,14 +274,14 @@ _STUDIO_PARTS = (
         "rectangular cantilever beam",
         "A solid rectangular bar fixed at one end. Studio's benchmark part.",
         (_mm("beam.length_m", "Length"), _mm("beam.width_m", "Width"), _mm("beam.height_m", "Height")),
-        ("cantilever",),
+        ("cantilever beam", "cantilever"),
     ),
     _studio_part(
         "plate",
         "rectangular plate",
         "A flat rectangular plate fixed on one edge.",
         (_mm("plate.length_m", "Length"), _mm("plate.width_m", "Width"), _mm("plate.thickness_m", "Thickness")),
-        ("plate",),
+        ("rectangular plate", "plate"),
     ),
     _studio_part(
         "perforated_plate",
@@ -273,11 +296,44 @@ _STUDIO_PARTS = (
             PartInput(name="holes.count_y", label="Holes along width", unit="count"),
             _mm("holes.margin_m", "Hole margin"),
         ),
-        ("perforated plate", "plate with holes"),
+        ("perforated plate", "plate with holes", "perforated"),
     ),
 )
 
-PARTS: dict[str, Part] = {part.id: part for part in (_IBEAM, _BRACKET, _REVOLVED, *_STUDIO_PARTS)}
+_SKETCH = Part(
+    id="sketch_prism",
+    name="sketch piece",
+    description=(
+        "A closed outline drawn in Studio's Draw tool, sized in millimetres, extruded through its depth "
+        "and fused onto a face of a parametric part, or standing alone as the whole part."
+    ),
+    domain="mechanical",
+    inputs=(
+        _mm("additions.width_m", "Sketch width"),
+        _mm("additions.height_m", "Sketch height"),
+        _mm("additions.depth_m", "Sketch depth"),
+        PartInput(
+            name="material_id",
+            label="Material",
+            kind="choice",
+            group="Materials and loads",
+            choices=tuple(sorted(MATERIALS)),
+        ),
+        PartInput(name="support_face", label="Fixed face", kind="face", group="Faces", choices=_FACE_CHOICES),
+        PartInput(name="load_face", label="Load face", kind="face", group="Faces", choices=_FACE_CHOICES),
+    ),
+    analysis=("calculix",),
+    exports=("STEP", "GLB", "VTU", "JSON report"),
+    in_scenario=False,
+    studio_kind="sketch_prism",
+    keywords=("sketch piece", "drawn piece"),
+    tools=("create_supported_cad", "run_supported_simulation"),
+    proposal="drawn sketch piece, pending approval",
+    methods=("sketched profile extruded in the CAD schema", "CalculiX solid FEM after approval"),
+    limits=("creation in the scenario chat: draw it in Studio",),
+)
+
+PARTS: dict[str, Part] = {part.id: part for part in (_IBEAM, _BRACKET, _REVOLVED, *_STUDIO_PARTS, _SKETCH)}
 
 
 def get_part(part_id: str | None) -> Part | None:
@@ -347,6 +403,8 @@ def supported_parts_sentence() -> str:
 
     chat = _join([_with_analysis(part) for part in scenario_parts()])
     studio = _join([part.phrase for part in studio_parts()])
+    if not studio:
+        return f"In this chat Drafty can model {chat}. The mechanical parts continue in Studio after approval."
     return f"In this chat Drafty can model {chat}. Studio also builds {studio}."
 
 

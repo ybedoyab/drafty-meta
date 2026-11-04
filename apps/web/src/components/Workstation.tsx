@@ -1,8 +1,9 @@
-import { Check, ChevronLeft, ChevronRight, CircleAlert } from "lucide-react";
+import { Box, Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, CircleAlert, Magnet, MousePointer2, PenTool, Pencil, Redo2, RotateCcw, RotateCw, Rows3, Scaling, Trash2, Undo2 } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link, useSearchParams } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { Suspense, useEffect, useMemo, useState } from "react";
-import { Viewport, type CameraView, type Shade } from "@/components/Viewport";
+import { Viewport, type CameraView, type DraftSketch, type EditMode, type PartTransform, type Shade } from "@/components/Viewport";
+import { DrawTool } from "@/components/DrawTool";
 import { GridControl } from "@/components/GridControl";
 import { Button } from "@/components/ui/button";
 import {
@@ -20,6 +21,7 @@ import {
   openArtifact,
   interpret,
   previewSpec,
+  returnStudioSpec,
   uploadReference,
   type Job,
   type SimulationResult,
@@ -32,7 +34,9 @@ import {
   benchmarkForm,
   formIssues,
   formToSpec,
+  isSpecChanged,
   formatEngineering,
+  withGeometry,
   mmFromMeters,
   mpaFromPascals,
   specToForm,
@@ -40,7 +44,10 @@ import {
   type DesignSpec,
   type PartKind,
 } from "@/lib/design";
+import { canRedo, canUndo, createHistory, historyShortcut, recordHistory, redoHistory, undoHistory, type History } from "@/lib/history";
 import { takeStudioSpec } from "@/lib/scenario";
+import { axisSizesMm, hasVisualEdits, rotateForm, scaleForm } from "@/lib/transform";
+import { clampOffsets, draftPlacementM, ellipseProfile, type SketchAdditionForm } from "@/lib/sketch";
 import { SiteHeader } from "@/components/SiteHeader";
 
 const STAGES = ["queued", "geometry", "meshing", "solving", "postprocessing", "completed"] as const;
@@ -60,7 +67,31 @@ export function Workstation() {
   const queryClient = useQueryClient();
   const [params] = useSearchParams();
   const scenarioId = params.get("scenario");
-  const [form, setForm] = useState<DesignForm>(benchmarkForm);
+  const navigate = useNavigate();
+  const [returning, setReturning] = useState(false);
+  const [formHistory, setFormHistory] = useState<History<DesignForm>>(() => createHistory(benchmarkForm));
+  const form = formHistory.present;
+
+  // Every edit through setForm records an undo stage. loadForm replaces the
+  // part outright (a scenario or example load), so it starts a fresh history.
+  function setForm(next: DesignForm | ((current: DesignForm) => DesignForm)) {
+    setFormHistory((current) =>
+      recordHistory(current, typeof next === "function" ? next(current.present) : next),
+    );
+  }
+
+  function loadForm(next: DesignForm) {
+    setFormHistory(createHistory(next));
+  }
+  const [baselineForm, setBaselineForm] = useState<DesignForm>(benchmarkForm);
+  const [bottomPanel, setBottomPanel] = useState<"edit" | "jobs">("edit");
+  const [editMode, setEditMode] = useState<EditMode>("select");
+  const [partSelected, setPartSelected] = useState(false);
+  const [snapScaleToGrid, setSnapScaleToGrid] = useState(true);
+  const [drawOpen, setDrawOpen] = useState(false);
+  const [sketchDraft, setSketchDraft] = useState<{ addition: SketchAdditionForm; standalone: boolean } | null>(null);
+  const [bottomCollapsed, setBottomCollapsed] = useState(false);
+  const [specApplied, setSpecApplied] = useState(false);
   const [compute, setCompute] = useState<"local" | "modal">("local");
   const [displacementLimitM, setDisplacementLimitM] = useState<number | null>(null);
 
@@ -68,7 +99,19 @@ export function Workstation() {
     if (!scenarioId) {
       const pending = takeStudioSpec(localStorage);
       if (pending && typeof pending === "object") {
-        setForm((current) => specToForm(pending as DesignSpec, current));
+        setSpecApplied(true);
+        setBaselineForm(specToForm(pending as DesignSpec, benchmarkForm));
+        loadForm(specToForm(pending as DesignSpec, benchmarkForm));
+        void previewSpec(formToSpec(specToForm(pending as DesignSpec, benchmarkForm)))
+          .then((url) => {
+            setPreviewUrl((current) => {
+              if (current) URL.revokeObjectURL(current);
+              return url;
+            });
+          })
+          .catch((error: unknown) =>
+            setFormError(error instanceof Error ? error.message : "The preview could not be built."),
+          );
       }
       return;
     }
@@ -76,7 +119,23 @@ export function Workstation() {
     getScenario(scenarioId)
       .then((scenario) => {
         if (cancel || scenario.studio_approval !== "confirmed" || !scenario.studio_spec) return;
-        setForm((current) => specToForm(scenario.studio_spec as unknown as DesignSpec, current));
+        setSpecApplied(true);
+        setBaselineForm(specToForm(scenario.studio_spec as unknown as DesignSpec, benchmarkForm));
+        loadForm(specToForm(scenario.studio_spec as unknown as DesignSpec, benchmarkForm));
+        void previewSpec(formToSpec(specToForm(scenario.studio_spec as unknown as DesignSpec, benchmarkForm)))
+          .then((url) => {
+            if (cancel) {
+              URL.revokeObjectURL(url);
+              return;
+            }
+            setPreviewUrl((current) => {
+              if (current) URL.revokeObjectURL(current);
+              return url;
+            });
+          })
+          .catch((error: unknown) => {
+            if (!cancel) setFormError(error instanceof Error ? error.message : "The preview could not be built.");
+          });
         const limit = scenario.inputs.displacement_limit_m;
         if (typeof limit === "number") setDisplacementLimitM(limit);
       })
@@ -167,10 +226,10 @@ export function Workstation() {
   }, [results.data]);
 
   const preview = useMutation({
-    mutationFn: async () => {
-      const issues = formIssues(form);
+    mutationFn: async (target: DesignForm) => {
+      const issues = formIssues(target);
       if (issues.length) throw new Error(issues.join(" "));
-      return previewSpec(formToSpec(form));
+      return previewSpec(formToSpec(target));
     },
     onSuccess: (url) => {
       setPreviewUrl((current) => {
@@ -215,7 +274,8 @@ export function Workstation() {
   });
 
   async function loadExample() {
-    setForm(benchmarkForm);
+    loadForm(benchmarkForm);
+    setBaselineForm(benchmarkForm);
     setFormError(null);
     setExampleBusy(true);
     try {
@@ -229,6 +289,148 @@ export function Workstation() {
     } finally {
       setExampleBusy(false);
     }
+  }
+
+  // Close the circle: send the current (maybe edited) spec back so the
+  // scenario's inputs, study, and AI context follow what Studio holds. An
+  // unchanged part returns without touching the stored session.
+  async function returnToScenario() {
+    if (!scenarioId || returning) return;
+    const issues = formIssues(form);
+    if (issues.length) {
+      setFormError(issues.join(" "));
+      return;
+    }
+    setReturning(true);
+    setFormError(null);
+    try {
+      await returnStudioSpec(scenarioId, formToSpec(form));
+      navigate(`/scenario/${scenarioId}`);
+    } catch (error) {
+      setFormError(error instanceof Error ? error.message : "The part could not be returned to the scenario.");
+      setReturning(false);
+    }
+  }
+
+  function resetPart() {
+    const restored = withGeometry(form, baselineForm);
+    setForm(restored);
+    setFormError(null);
+    setShade("geometry");
+    preview.mutate(restored);
+  }
+
+  // Undo and redo restore a whole stage, then rebuild the solid from it like
+  // any other edit. A restored sketch-only part with its piece removed has no
+  // solid to build, so the stale preview is dropped instead.
+  function restoreForm(restored: DesignForm) {
+    setFormError(null);
+    setShade("geometry");
+    if (restored.kind === "sketch_prism" && restored.additions.length === 0) {
+      setPreviewUrl((current) => {
+        if (current) URL.revokeObjectURL(current);
+        return null;
+      });
+      return;
+    }
+    preview.mutate(restored);
+  }
+
+  function undoForm() {
+    const next = undoHistory(formHistory);
+    if (next === formHistory) return;
+    setFormHistory(next);
+    restoreForm(next.present);
+  }
+
+  function redoForm() {
+    const next = redoHistory(formHistory);
+    if (next === formHistory) return;
+    setFormHistory(next);
+    restoreForm(next.present);
+  }
+
+  function handlePartTransform(transform: PartTransform) {
+    if (transform.type === "scale") {
+      const next = scaleForm(form, transform.factors, snapScaleToGrid ? gridStepMm : 0);
+      if (axisSizesMm(next).every((size, index) => size === axisSizesMm(form)[index])) return;
+      setForm(next);
+      setFormError(null);
+      setShade("geometry");
+      preview.mutate(next);
+      return;
+    }
+    const rotated = rotateForm(form, transform.matrix);
+    if (!rotated) {
+      setFormError(
+        form.kind === "l_bracket"
+          ? "An L-bracket cannot be rotated into the same kind of part. Change its leg dimensions instead."
+          : "That rotation cannot be written as this kind of part. Holes must stay through the thickness.",
+      );
+      return;
+    }
+    setForm(rotated);
+    setFormError(null);
+    setShade("geometry");
+    preview.mutate(rotated);
+  }
+
+  function confirmSketchDraft() {
+    if (!sketchDraft) return;
+    const { addition, standalone } = sketchDraft;
+    const next: DesignForm = standalone
+      ? {
+          ...form,
+          kind: "sketch_prism",
+          name: form.name.trim() && form.name !== benchmarkForm.name ? form.name : "sketch-part",
+          additions: [addition],
+          support: "ymin",
+          loadSurface: "ymax",
+        }
+      : { ...form, additions: [...form.additions, addition] };
+    const issues = formIssues(next);
+    if (issues.length) {
+      setFormError(issues.join(" "));
+      return;
+    }
+    setSketchDraft(null);
+    setForm(next);
+    setFormError(null);
+    setShade("geometry");
+    preview.mutate(next);
+  }
+
+  function removeAddition(id: string) {
+    const next = { ...form, additions: form.additions.filter((addition) => addition.id !== id) };
+    if (next.kind === "sketch_prism") next.kind = "plate";
+    setForm(next);
+    setFormError(null);
+    setShade("geometry");
+    if (form.kind === "sketch_prism") {
+      setPreviewUrl((current) => {
+        if (current) URL.revokeObjectURL(current);
+        return null;
+      });
+    } else {
+      preview.mutate(next);
+    }
+  }
+
+  function handleDraftMove(deltaM: [number, number, number]) {
+    setSketchDraft((current) => {
+      if (!current) return current;
+      const placement = draftPlacementM(
+        current.standalone ? { ...form, kind: "sketch_prism", additions: [current.addition] } : form,
+        current.addition,
+      );
+      const dot = (axis: [number, number, number]) => deltaM[0] * axis[0] + deltaM[1] * axis[1] + deltaM[2] * axis[2];
+      const moved = {
+        ...current.addition,
+        offsetUMm: current.addition.offsetUMm + dot(placement.uAxis) * 1000,
+        offsetWMm: current.addition.offsetWMm + dot(placement.wAxis) * 1000,
+      };
+      return { ...current, addition: current.standalone ? moved : clampOffsets(form, moved) };
+    });
   }
 
   async function ask() {
@@ -255,6 +457,17 @@ export function Workstation() {
     }
   }
 
+  const draftSketchValue: DraftSketch | null = sketchDraft
+    ? {
+        ...draftPlacementM(
+          sketchDraft.standalone ? { ...form, kind: "sketch_prism", additions: [sketchDraft.addition] } : form,
+          sketchDraft.addition,
+        ),
+        // An ellipse piece is a true ellipse in CAD; draw the ghost just as smooth.
+        profile: sketchDraft.addition.shape === "ellipse" ? ellipseProfile(64) : sketchDraft.addition.profile,
+        label: sketchDraft.addition.label,
+      }
+    : null;
   const current = job.data;
   const result = results.data;
   const selectedMaterial = materials.data?.find((item) => item.id === form.materialId);
@@ -271,12 +484,20 @@ export function Workstation() {
       }
       return Math.hypot(max[0] - min[0], max[1] - min[1], max[2] - min[2]) / 2 || 0.15;
     }
-    return Math.hypot(form.lengthMm, form.widthMm, form.heightMm) / 2000 || 0.15;
-  }, [result, form.lengthMm, form.widthMm, form.heightMm]);
-  const partHalfHeightM = ((form.kind === "cantilever_beam" ? form.heightMm : form.thicknessMm) / 1000) / 2;
+    if (sketchDraft?.standalone && !previewUrl) {
+      const addition = sketchDraft.addition;
+      return Math.hypot(addition.widthMm, addition.depthMm, addition.heightMm) / 2000 || 0.15;
+    }
+    const [sizeX, sizeY, sizeZ] = axisSizesMm(form);
+    return Math.hypot(sizeX, sizeY, sizeZ) / 2000 || 0.15;
+  }, [result, form, sketchDraft, previewUrl]);
+  const partHalfHeightM = ((form.kind === "sketch_prism" ? (form.additions[0]?.heightMm ?? form.heightMm) : form.kind === "cantilever_beam" ? form.heightMm : form.thicknessMm) / 1000) / 2;
   const loadAxis = loadDirection([form.directionX, form.directionY, form.directionZ]).axisLabel;
   const loadLabel =
     form.loadMode === "pressure" ? `Pressure ${form.magnitude} MPa ${loadAxis}` : `${form.magnitude} N ${loadAxis}`;
+  const fromScenario = Boolean(scenarioId) || specApplied;
+  const geometryChanged = hasVisualEdits(form, baselineForm);
+  const specChanged = specApplied && isSpecChanged(form, baselineForm);
   // Left defines the model, right runs and reads it. Each side paginates independently.
   const designIssues = formIssues(form);
   const designSteps: StudioStep[] = [
@@ -300,19 +521,43 @@ export function Workstation() {
   function goDesignRelative(offset: number) { const next = designSteps[designIndex + offset]; if (next) goDesign(next.id); }
   function goRunRelative(offset: number) { const next = runSteps[runIndex + offset]; if (next) goRun(next.id); }
   useEffect(() => { if (followRunGuide) setRunStep(suggestedRunStep); }, [followRunGuide, suggestedRunStep]);
+  useEffect(() => {
+    function onKey(event: KeyboardEvent) {
+      const target = event.target as HTMLElement | null;
+      const inField =
+        Boolean(target) &&
+        (["INPUT", "SELECT", "TEXTAREA"].includes(target!.tagName) || target!.isContentEditable);
+      const shortcut = historyShortcut(event);
+      if (shortcut && !inField && !drawOpen) {
+        // Keep the browser from treating the chord as its own undo/redo.
+        event.preventDefault();
+        if (shortcut === "undo") undoForm();
+        else redoForm();
+        return;
+      }
+      // Inside a field the chord stays with the field's own text undo.
+      if (inField) return;
+      if (event.key === "1") setEditMode("select");
+      else if (event.key === "2") setEditMode("scale");
+      else if (event.key === "3") setEditMode("rotate");
+      else if (event.key === "4") setDrawOpen(true);
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [formHistory, drawOpen]);
 
   return (
     <div
-      className={`grid h-full grid-cols-[360px_minmax(0,1fr)_320px] bg-slate-100 text-gray-900 ${logOpen ? "grid-rows-[auto_minmax(0,1fr)_220px]" : "grid-rows-[auto_minmax(0,1fr)_132px]"}`}
+      className={`grid h-full grid-cols-[360px_minmax(0,1fr)_320px] bg-slate-100 text-gray-900 ${bottomCollapsed ? "grid-rows-[auto_minmax(0,1fr)_38px]" : bottomPanel === "edit" ? (sketchDraft ? "grid-rows-[auto_minmax(0,1fr)_308px]" : "grid-rows-[auto_minmax(0,1fr)_196px]") : logOpen ? "grid-rows-[auto_minmax(0,1fr)_220px]" : "grid-rows-[auto_minmax(0,1fr)_132px]"}`}
     >
       <SiteHeader
         className="col-span-3"
         trailing={
           <>
             {scenarioId && (
-              <Link to={`/scenario/${scenarioId}`} className="rounded-md px-3 py-1.5 text-sm font-medium text-gray-600 hover:bg-blue-50 hover:text-blue-800">
-                Back to scenario
-              </Link>
+              specApplied ? <button type="button" onClick={() => void returnToScenario()} disabled={returning} className="rounded-md bg-blue-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-800 disabled:opacity-60">
+                {returning ? "Returning…" : specChanged ? "Return edited part to scenario" : "Return to scenario"}
+              </button> : <Link to={`/scenario/${scenarioId}`} className="rounded-md px-3 py-1.5 text-sm font-medium text-gray-600 hover:bg-blue-50 hover:text-blue-800">Back to scenario</Link>
             )}
             <p className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-gray-600">
               {health.data
@@ -330,6 +575,8 @@ export function Workstation() {
         <h2 className="text-sm font-semibold">Part</h2>
         <p className="mt-1 text-sm text-gray-600">{designSteps[0].hint}</p>
         <div className="mt-3">
+        {!fromScenario && (
+        <>
         <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-blue-800">Start here</p>
         <button
           type="button"
@@ -345,6 +592,8 @@ export function Workstation() {
             300 × 20 × 12 mm steel beam, fixed at one end, 100 N downward at the free end. No AI key required.
           </p>
         </button>
+        </>
+        )}
         <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-blue-800">Part details</p>
         <div className="grid grid-cols-2 gap-2">
           <label className="field col-span-2">
@@ -361,6 +610,7 @@ export function Workstation() {
               <option value="plate">Plate</option>
               <option value="l_bracket">L-bracket</option>
               <option value="perforated_plate">Perforated plate</option>
+              <option value="sketch_prism">Sketch part (from Draw)</option>
             </select>
           </label>
           <NumberField label="Length mm" value={form.lengthMm} onChange={(lengthMm) => setForm({ ...form, lengthMm })} />
@@ -480,7 +730,7 @@ export function Workstation() {
           <NumberField label="Dir Z" value={form.directionZ} onChange={(directionZ) => setForm({ ...form, directionZ })} />
         </div>
         <div className="mt-3 flex gap-2">
-          <Button variant="primary" onClick={() => preview.mutate()} disabled={preview.isPending}>
+          <Button variant="primary" onClick={() => preview.mutate(form)} disabled={preview.isPending}>
             {preview.isPending ? "Building solid" : "Preview solid"}
           </Button>
         </div>
@@ -559,6 +809,12 @@ export function Workstation() {
             gridVisible={gridVisible}
             gridStepM={gridStepMeters(gridStepMm)}
             floorOffset={partHalfHeightM}
+            editMode={editMode}
+            partSelected={partSelected}
+            onPartSelectedChange={setPartSelected}
+            onPartTransform={handlePartTransform}
+            draftSketch={draftSketchValue}
+            onDraftMove={handleDraftMove}
           />
         </Suspense>
         <div className="pointer-events-none absolute left-3 top-3 rounded-lg border border-gray-200 bg-white/90 px-3 py-1 text-xs text-gray-500 shadow-sm">
@@ -601,7 +857,7 @@ export function Workstation() {
             {stageFull ? "Exit full view" : "Full view"}
           </button>
         </div>
-        {!previewUrl && !result && !activeId && (
+        {!previewUrl && !result && !activeId && !sketchDraft && (
           <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
             <div className="rounded-2xl border border-blue-100 bg-white px-8 py-6 text-center shadow-lg">
               <p className="text-lg font-semibold text-gray-900">Ready to generate?</p>
@@ -834,14 +1090,223 @@ export function Workstation() {
         <StepFooter steps={runSteps} activeIndex={runIndex} label="Run" onRelative={goRunRelative} onSelect={goRun} />
       </aside>
 
-      <section className={`col-span-3 border-t border-gray-200 bg-white ${logOpen ? "grid grid-cols-[minmax(0,1fr)_360px]" : ""}`}>
+      <section className={bottomPanel === "edit" ? "col-span-3 flex min-h-0 flex-col border-t border-gray-200 bg-white" : `col-span-3 border-t border-gray-200 bg-white ${logOpen ? "grid grid-cols-[minmax(0,1fr)_360px]" : ""}`}>
         <div className="overflow-auto">
           <div className="flex items-center justify-between px-3 py-1">
-            <p className="text-xs font-medium text-gray-500">Jobs</p>
-            <button type="button" className="text-xs text-blue-800" onClick={() => setLogOpen((value) => !value)}>
+            <div className="flex items-center gap-1" role="tablist" aria-label="Bottom panel"><button type="button" role="tab" aria-selected={bottomPanel === "edit"} onClick={() => { setBottomPanel("edit"); setBottomCollapsed(false); }} className={bottomPanel === "edit" ? "inline-flex items-center gap-1.5 rounded-full bg-slate-900 px-3 py-1 text-xs font-medium text-white" : "inline-flex items-center gap-1.5 rounded-full border border-slate-200 px-3 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50"}><Pencil className="h-3.5 w-3.5" aria-hidden /> Edition tools</button><button type="button" role="tab" aria-selected={bottomPanel === "jobs"} onClick={() => { setBottomPanel("jobs"); setBottomCollapsed(false); }} className={bottomPanel === "jobs" ? "inline-flex items-center gap-1.5 rounded-full bg-slate-900 px-3 py-1 text-xs font-medium text-white" : "inline-flex items-center gap-1.5 rounded-full border border-slate-200 px-3 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50"}><Rows3 className="h-3.5 w-3.5" aria-hidden /> Jobs queue{(jobs.data ?? []).length > 0 && <span className={bottomPanel === "jobs" ? "rounded-full bg-white/20 px-1.5 text-[10px]" : "rounded-full bg-slate-100 px-1.5 text-[10px] text-slate-600"}>{(jobs.data ?? []).length}</span>}</button></div>
+            <button type="button" className={bottomPanel === "edit" ? "hidden" : "text-xs text-blue-800"} onClick={() => setLogOpen((value) => !value)}>
               {logOpen ? "Hide solver log" : "Solver log"}
             </button>
+            <button
+              type="button"
+              aria-expanded={!bottomCollapsed}
+              aria-label={bottomCollapsed ? "Show the bottom panel" : "Hide the bottom panel"}
+              title={bottomCollapsed ? "Show the bottom panel" : "Hide the bottom panel"}
+              onClick={() => setBottomCollapsed((value) => !value)}
+              className="inline-flex shrink-0 items-center gap-1 rounded-full border border-slate-200 px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50"
+            >
+              {bottomCollapsed ? <ChevronUp className="h-3.5 w-3.5" aria-hidden /> : <ChevronDown className="h-3.5 w-3.5" aria-hidden />}
+              {bottomCollapsed ? "Show" : "Hide"}
+            </button>
           </div>
+          {!bottomCollapsed && bottomPanel === "edit" && (
+            <div className="flex-1 overflow-x-auto px-3 py-2">
+              <div className="flex min-w-max items-stretch">
+                <div className="flex flex-col">
+                  <div className="flex gap-1.5 px-1" role="group" aria-label="Edit mode">
+                    {(
+                      [
+                        ["select", MousePointer2, "Select", "1"],
+                        ["scale", Scaling, "Scale", "2"],
+                        ["rotate", RotateCw, "Rotate", "3"],
+                      ] as const
+                    ).map(([mode, Icon, label, shortcut]) => (
+                      <button
+                        key={mode}
+                        type="button"
+                        aria-pressed={editMode === mode}
+                        title={`${label} (${shortcut})`}
+                        onClick={() => setEditMode(mode)}
+                        className={
+                          editMode === mode
+                            ? "flex h-[76px] w-[80px] flex-col items-center justify-center gap-1 rounded-lg bg-slate-900 text-white shadow-sm"
+                            : "flex h-[76px] w-[80px] flex-col items-center justify-center gap-1 rounded-lg border border-slate-200 bg-white text-slate-700 hover:border-slate-300 hover:bg-slate-50"
+                        }
+                      >
+                        <Icon className="h-7 w-7" aria-hidden />
+                        <span className="text-xs font-semibold">{label}</span>
+                        <span className={editMode === mode ? "text-[10px] text-slate-300" : "text-[10px] text-slate-400"}>{shortcut}</span>
+                      </button>
+                    ))}
+                  </div>
+                  <p className="mt-1.5 text-center text-[10px] font-semibold uppercase tracking-widest text-slate-400">Transform</p>
+                </div>
+                <div className="mx-3 w-px shrink-0 bg-slate-200" aria-hidden />
+                <div className="flex flex-col">
+                  <div className="flex gap-1.5 px-1">
+                    <button
+                      type="button"
+                      aria-pressed={snapScaleToGrid}
+                      title="Snap scaled dimensions to the grid step"
+                      onClick={() => setSnapScaleToGrid((value) => !value)}
+                      className={
+                        snapScaleToGrid
+                          ? "flex h-[76px] w-[80px] flex-col items-center justify-center gap-1 rounded-lg bg-slate-900 text-white shadow-sm"
+                          : "flex h-[76px] w-[80px] flex-col items-center justify-center gap-1 rounded-lg border border-slate-200 bg-white text-slate-700 hover:border-slate-300 hover:bg-slate-50"
+                      }
+                    >
+                      <Magnet className="h-7 w-7" aria-hidden />
+                      <span className="text-xs font-semibold">Snap</span>
+                      <span className={snapScaleToGrid ? "text-[10px] text-slate-300" : "text-[10px] text-slate-400"}>{gridStepMm} mm grid</span>
+                    </button>
+                  </div>
+                  <p className="mt-1.5 text-center text-[10px] font-semibold uppercase tracking-widest text-slate-400">Precision</p>
+                </div>
+                <div className="mx-3 w-px shrink-0 bg-slate-200" aria-hidden />
+                <div className="flex flex-col">
+                  <div className="flex gap-1.5 px-1">
+                    <button
+                      type="button"
+                      title="Draw a sketch piece to add to this part (4)"
+                      onClick={() => setDrawOpen(true)}
+                      className="flex h-[76px] w-[80px] flex-col items-center justify-center gap-1 rounded-lg border border-slate-200 bg-white text-slate-700 hover:border-slate-300 hover:bg-slate-50"
+                    >
+                      <PenTool className="h-7 w-7" aria-hidden />
+                      <span className="text-xs font-semibold">Draw</span>
+                      <span className="text-[10px] text-slate-400">add a piece · 4</span>
+                    </button>
+                  </div>
+                  <p className="mt-1.5 text-center text-[10px] font-semibold uppercase tracking-widest text-slate-400">Add</p>
+                </div>
+                <div className="mx-3 w-px shrink-0 bg-slate-200" aria-hidden />
+                <div className="flex min-w-[230px] flex-col justify-center px-1">
+                  <p className="text-sm font-semibold text-gray-900">
+                    {
+                      {
+                        cantilever_beam: "Cantilever beam",
+                        plate: "Plate",
+                        l_bracket: "L-bracket",
+                        perforated_plate: "Perforated plate",
+                        sketch_prism: "Sketch part",
+                      }[form.kind]
+                    }
+                  </p>
+                  <p className="mt-0.5 font-mono text-xs text-gray-600">
+                    {axisSizesMm(form).map((size) => formatEngineering(size)).join(" x ")} mm
+                  </p>
+                  <p className="mt-0.5 text-xs text-gray-500">
+                    {selectedMaterial?.name ?? form.materialId} - {partSelected ? "part selected" : "no part selected"}
+                  </p>
+                  {geometryChanged && (
+                    <span className="mt-1.5 w-fit rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-medium text-amber-800">
+                      {fromScenario ? "Modified from the proposed part" : "Modified from the loaded part"}
+                    </span>
+                  )}
+                  <p className="mt-1.5 text-center text-[10px] font-semibold uppercase tracking-widest text-slate-400">Part</p>
+                </div>
+                <div className="flex-1" />
+                <div className="flex flex-col">
+                  <div className="flex gap-1.5 px-1" role="group" aria-label="History">
+                    <button
+                      type="button"
+                      disabled={!canUndo(formHistory)}
+                      title="Undo the last edit (Ctrl+Z)"
+                      onClick={undoForm}
+                      className="flex h-[76px] w-[80px] flex-col items-center justify-center gap-1 rounded-lg border border-slate-200 bg-white text-slate-700 hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      <Undo2 className="h-7 w-7" aria-hidden />
+                      <span className="text-xs font-semibold">Undo</span>
+                      <span className="text-[10px] text-slate-400">Ctrl+Z</span>
+                    </button>
+                    <button
+                      type="button"
+                      disabled={!canRedo(formHistory)}
+                      title="Redo the undone edit (Ctrl+Y or Ctrl+Shift+Z)"
+                      onClick={redoForm}
+                      className="flex h-[76px] w-[80px] flex-col items-center justify-center gap-1 rounded-lg border border-slate-200 bg-white text-slate-700 hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      <Redo2 className="h-7 w-7" aria-hidden />
+                      <span className="text-xs font-semibold">Redo</span>
+                      <span className="text-[10px] text-slate-400">Ctrl+Y</span>
+                    </button>
+                  </div>
+                  <p className="mt-1.5 text-center text-[10px] font-semibold uppercase tracking-widest text-slate-400">History</p>
+                </div>
+                <div className="mx-3 w-px shrink-0 bg-slate-200" aria-hidden />
+                <div className="flex flex-col">
+                  <div className="flex gap-1.5 px-1">
+                    <button
+                      type="button"
+                      disabled={!geometryChanged}
+                      title="Restore the part as loaded and rebuild it"
+                      onClick={resetPart}
+                      className="flex h-[76px] w-[80px] flex-col items-center justify-center gap-1 rounded-lg border border-slate-200 bg-white text-slate-700 hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      <RotateCcw className="h-7 w-7" aria-hidden />
+                      <span className="text-xs font-semibold">Reset</span>
+                      <span className="text-[10px] text-slate-400">as loaded</span>
+                    </button>
+                    <button
+                      type="button"
+                      disabled={preview.isPending}
+                      title="Rebuild the solid from the edited part"
+                      onClick={() => preview.mutate(form)}
+                      className="flex h-[76px] w-[80px] flex-col items-center justify-center gap-1 rounded-lg bg-blue-700 text-white shadow-sm hover:bg-blue-800 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      <Box className="h-7 w-7" aria-hidden />
+                      <span className="text-xs font-semibold">{preview.isPending ? "Building" : "Preview"}</span>
+                      <span className="text-[10px] text-blue-200">rebuild solid</span>
+                    </button>
+                  </div>
+                  <p className="mt-1.5 text-center text-[10px] font-semibold uppercase tracking-widest text-slate-400">Apply</p>
+                </div>
+              </div>
+              <p className="mt-1 text-[11px] leading-4 text-gray-500">
+                Click the part in the viewport to select it, then drag the gizmo handles. Scale writes the dragged size back into
+                the dimensions; Rotate turns in 90-degree steps and remaps the support and load faces. Ctrl+Z steps back through
+                your edits and Ctrl+Y steps forward again.
+                {form.kind === "l_bracket" && " Rotating an L-bracket cannot be written as the same kind of part, so Rotate does not apply to it."}
+                {form.kind === "perforated_plate" && " Holes stay through the thickness, so tipping a perforated plate on its edge is not offered."}
+                {form.kind === "sketch_prism" && " This part is one drawn piece. Hold and load it on its back and front faces, or draw a new piece to change its outline."}
+              </p>
+              {sketchDraft && (
+                <div className="mt-2 flex flex-wrap items-end gap-2 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2">
+                  <p className="text-sm font-semibold text-blue-900">
+                    Placing: {sketchDraft.addition.label}
+                    <span className="block text-xs font-normal text-blue-800">
+                      {sketchDraft.standalone ? "Sketch-only part. " : `On ${sketchDraft.addition.face}. `}
+                      Drag the blue piece in the viewport, or type its offsets. It stays flat on its face.
+                    </span>
+                  </p>
+                  <label className="field">
+                    <span>Across mm</span>
+                    <input type="number" value={Math.round(sketchDraft.addition.offsetUMm * 10) / 10} onChange={(event) => setSketchDraft((current) => current && { ...current, addition: current.standalone ? { ...current.addition, offsetUMm: Number(event.target.value) } : clampOffsets(form, { ...current.addition, offsetUMm: Number(event.target.value) }) })} />
+                  </label>
+                  <label className="field">
+                    <span>Along mm</span>
+                    <input type="number" value={Math.round(sketchDraft.addition.offsetWMm * 10) / 10} onChange={(event) => setSketchDraft((current) => current && { ...current, addition: current.standalone ? { ...current.addition, offsetWMm: Number(event.target.value) } : clampOffsets(form, { ...current.addition, offsetWMm: Number(event.target.value) }) })} />
+                  </label>
+                  <Button type="button" variant="primary" onClick={confirmSketchDraft}>Add this piece</Button>
+                  <Button type="button" onClick={() => setSketchDraft(null)}>Discard</Button>
+                </div>
+              )}
+              {form.additions.length > 0 && (
+                <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                  <span className="text-[11px] font-semibold uppercase tracking-widest text-slate-400">Sketch pieces</span>
+                  {form.additions.map((addition) => (
+                    <span key={addition.id} className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs text-slate-700">
+                      {addition.label} · {addition.face} · {formatEngineering(addition.widthMm)} × {formatEngineering(addition.heightMm)} × {formatEngineering(addition.depthMm)} mm
+                      <button type="button" aria-label={`Remove ${addition.label}`} title={`Remove ${addition.label}`} onClick={() => removeAddition(addition.id)} className="text-slate-400 hover:text-red-600">
+                        <Trash2 className="h-3.5 w-3.5" aria-hidden />
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
+              {formError && <p className="mt-1 text-[11px] leading-4 text-amber-700">{formError}</p>}
+            </div>
+          )}
+          {!bottomCollapsed && bottomPanel === "jobs" && (
           <table className="w-full text-left font-mono text-xs">
             <thead className="text-gray-500">
               <tr>
@@ -874,13 +1339,28 @@ export function Workstation() {
               ))}
             </tbody>
           </table>
+          )}
         </div>
-        {logOpen && (
+        {!bottomCollapsed && bottomPanel === "jobs" && logOpen && (
           <pre className="overflow-auto border-l border-gray-200 bg-slate-50 p-3 font-mono text-[11px] leading-4 text-gray-600">
             {log.data?.solver || log.data?.worker || "Solver log appears after the job starts."}
           </pre>
         )}
       </section>
+      {drawOpen && (
+        <DrawTool
+          form={form}
+          hasPart={Boolean(previewUrl || result)}
+          gridStepMm={gridStepMm}
+          onClose={() => setDrawOpen(false)}
+          onDraft={(addition, standalone) => {
+            setSketchDraft({ addition, standalone });
+            setDrawOpen(false);
+            setBottomPanel("edit");
+            setBottomCollapsed(false);
+          }}
+        />
+      )}
     </div>
   );
 }

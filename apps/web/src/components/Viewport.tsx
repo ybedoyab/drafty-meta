@@ -1,6 +1,6 @@
-import { Center, GizmoHelper, GizmoViewport, Grid, Html, OrbitControls, useGLTF } from "@react-three/drei";
-import { Canvas, useThree } from "@react-three/fiber";
-import { Suspense, useEffect, useMemo } from "react";
+import { Center, GizmoHelper, GizmoViewport, Grid, Helper, Html, OrbitControls, TransformControls, useGLTF } from "@react-three/drei";
+import { Canvas, useThree, type ThreeEvent } from "@react-three/fiber";
+import { Suspense, useEffect, useMemo, useState, type ReactNode } from "react";
 import * as THREE from "three";
 import { turbo } from "@/lib/colormap";
 import { gridPlaneDistance } from "@/lib/grid";
@@ -9,7 +9,22 @@ import type { SurfaceResult } from "@/lib/api";
 import { useTheme } from "@/lib/theme";
 
 export type Shade = "von_mises" | "displacement" | "geometry";
+export type EditMode = "select" | "scale" | "rotate";
+export type PartTransform =
+  | { type: "scale"; factors: [number, number, number] }
+  | { type: "rotate"; matrix: [[number, number, number], [number, number, number], [number, number, number]] };
 export type CameraView = "iso" | "front" | "top" | "right";
+export interface DraftSketch {
+  profile: { u: number; v: number }[];
+  origin: [number, number, number];
+  uAxis: [number, number, number];
+  vAxis: [number, number, number];
+  wAxis: [number, number, number];
+  widthM: number;
+  heightM: number;
+  depthM: number;
+  label: string;
+}
 
 export function Viewport({
   previewUrl,
@@ -30,6 +45,12 @@ export function Viewport({
   zUp = false,
   gridVisible = true,
   gridStepM = 0.01,
+  editMode,
+  partSelected = false,
+  onPartSelectedChange,
+  onPartTransform,
+  draftSketch,
+  onDraftMove,
   floorOffset,
 }: {
   previewUrl: string | null;
@@ -54,15 +75,22 @@ export function Viewport({
   gridStepM?: number;
   /** Distance from the part center to its lowest face, in meters. Falls back to the surface bbox. */
   floorOffset?: number;
+  editMode?: EditMode;
+  partSelected?: boolean;
+  onPartSelectedChange?: (selected: boolean) => void;
+  onPartTransform?: (transform: PartTransform) => void;
+  draftSketch?: DraftSketch | null;
+  onDraftMove?: (deltaM: [number, number, number]) => void;
 }) {
   const dark = useTheme() === "dark";
   return (
-    <Canvas key={orthographic ? "ortho" : "persp"} orthographic={orthographic} camera={{ position: [0.45, -0.35, 0.28], fov: 35, zoom: orthographic ? 400 : 1, up: zUp ? [0, 0, 1] : [0, 1, 0] }}>
+    <Canvas key={orthographic ? "ortho" : "persp"} orthographic={orthographic} camera={{ position: [0.45, -0.35, 0.28], fov: 35, zoom: orthographic ? 400 : 1, up: zUp ? [0, 0, 1] : [0, 1, 0] }} onPointerMissed={() => { if (editMode) onPartSelectedChange?.(false); }}>
       <color attach="background" args={[dark ? "#0f172a" : "#f8fafc"]} />
       <ambientLight intensity={0.85} />
       <directionalLight position={[1, -1, 2]} intensity={1.2} />
       <Center>
         <Suspense fallback={null}>
+          <EditablePart editMode={editMode} selected={partSelected} onSelectedChange={onPartSelectedChange} onTransform={onPartTransform} active={Boolean(surface || previewUrl)}>
           {surface ? (
             <StressMesh
               surface={surface}
@@ -75,6 +103,8 @@ export function Viewport({
           ) : previewUrl ? (
             <Preview key={previewUrl} url={previewUrl} />
           ) : null}
+          </EditablePart>
+          {draftSketch && <DraftPrism draft={draftSketch} onMove={onDraftMove} />}
           {surface && (
             <Markers
               surface={surface}
@@ -103,6 +133,112 @@ export function Viewport({
       </GizmoHelper>
       <axesHelper args={[0.08]} />
     </Canvas>
+  );
+}
+
+function DraftPrism({ draft, onMove }: { draft: DraftSketch; onMove?: (deltaM: [number, number, number]) => void }) {
+  const [node, setNode] = useState<THREE.Group | null>(null);
+  const geometry = useMemo(() => {
+    const shape = new THREE.Shape();
+    draft.profile.forEach((point, index) => {
+      const x = (point.u - 0.5) * draft.widthM;
+      const y = point.v * draft.heightM;
+      if (index === 0) shape.moveTo(x, y);
+      else shape.lineTo(x, y);
+    });
+    shape.closePath();
+    const extruded = new THREE.ExtrudeGeometry(shape, { depth: draft.depthM, bevelEnabled: false });
+    const matrix = new THREE.Matrix4().makeBasis(
+      new THREE.Vector3(...draft.uAxis),
+      new THREE.Vector3(...draft.vAxis),
+      new THREE.Vector3(...draft.wAxis),
+    );
+    matrix.setPosition(new THREE.Vector3(...draft.origin));
+    extruded.applyMatrix4(matrix);
+    return extruded;
+  }, [draft]);
+  useEffect(() => () => geometry.dispose(), [geometry]);
+  const labelPosition: [number, number, number] = [0, 1, 2].map(
+    (axis) => draft.origin[axis] + draft.vAxis[axis] * draft.heightM * 0.5 + draft.wAxis[axis] * draft.depthM * 0.5,
+  ) as [number, number, number];
+  function finishMove() {
+    if (!node) return;
+    const delta: [number, number, number] = [node.position.x, node.position.y, node.position.z];
+    node.position.set(0, 0, 0);
+    if (delta.some((value) => Math.abs(value) > 1e-6)) onMove?.(delta);
+  }
+  return (
+    <>
+      <group ref={setNode}>
+        <mesh geometry={geometry}>
+          <meshStandardMaterial color="#2563eb" transparent opacity={0.55} side={THREE.DoubleSide} />
+        </mesh>
+        <Html position={labelPosition} center sprite zIndexRange={[20, 0]}>
+          <div className="pointer-events-none whitespace-nowrap rounded bg-blue-700 px-1.5 py-0.5 text-[11px] font-medium text-white shadow">
+            {draft.label} — drag to place
+          </div>
+        </Html>
+      </group>
+      {node && <TransformControls object={node} mode="translate" onMouseUp={finishMove} />}
+    </>
+  );
+}
+
+function EditablePart({
+  editMode,
+  selected,
+  onSelectedChange,
+  onTransform,
+  active,
+  children,
+}: {
+  editMode?: EditMode;
+  selected: boolean;
+  onSelectedChange?: (selected: boolean) => void;
+  onTransform?: (transform: PartTransform) => void;
+  active: boolean;
+  children: ReactNode;
+}) {
+  const [partNode, setPartNode] = useState<THREE.Group | null>(null);
+  function finishTransform() {
+    const part = partNode;
+    if (!part || !editMode || editMode === "select") return;
+    if (editMode === "scale") {
+      const factors: [number, number, number] = [part.scale.x, part.scale.y, part.scale.z];
+      part.scale.set(1, 1, 1);
+      if (factors.some((factor) => Math.abs(factor - 1) > 0.001)) onTransform?.({ type: "scale", factors });
+      return;
+    }
+    const elements = new THREE.Matrix4().makeRotationFromQuaternion(part.quaternion).elements;
+    const rounded = (value: number) => Math.max(-1, Math.min(1, Math.round(value)));
+    const matrix: [[number, number, number], [number, number, number], [number, number, number]] = [
+      [rounded(elements[0]), rounded(elements[4]), rounded(elements[8])],
+      [rounded(elements[1]), rounded(elements[5]), rounded(elements[9])],
+      [rounded(elements[2]), rounded(elements[6]), rounded(elements[10])],
+    ];
+    part.quaternion.identity();
+    part.rotation.set(0, 0, 0);
+    if (matrix.flat().some((value, index) => value !== [1, 0, 0, 0, 1, 0, 0, 0, 1][index])) {
+      onTransform?.({ type: "rotate", matrix });
+    }
+  }
+  return (
+    <>
+      <group
+        ref={setPartNode}
+        onClick={(event: ThreeEvent<MouseEvent>) => {
+          if (!editMode) return;
+          event.stopPropagation();
+          onSelectedChange?.(true);
+        }}
+      >
+        {children}
+        {selected && editMode && <Helper type={THREE.BoxHelper} args={["#2563eb"]} />}
+      </group>
+      {editMode && editMode !== "select" && selected && active && (
+        <TransformControls object={partNode ?? undefined} mode={editMode} rotationSnap={Math.PI / 2} onMouseUp={finishTransform} />
+      )}
+    </>
   );
 }
 

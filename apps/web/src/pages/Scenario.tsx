@@ -1,4 +1,4 @@
-import { Box, Check, ChevronLeft, ChevronRight, CircleAlert, GraduationCap, PanelRightClose, PanelRightOpen, Pencil } from "lucide-react";
+import { ArrowRight, Box, Check, ChevronLeft, ChevronRight, CircleAlert, GraduationCap, PanelRightClose, PanelRightOpen, Pencil, X } from "lucide-react";
 import { Grid, OrbitControls } from "@react-three/drei";
 import { Canvas } from "@react-three/fiber";
 import { useQueryClient } from "@tanstack/react-query";
@@ -28,6 +28,7 @@ import {
   getScenario,
   renameScenario,
   loadDemo,
+  previewSpec,
   scenarioEvidenceUrl,
   scenarioGeometryUrl,
   segmentScenario,
@@ -62,6 +63,7 @@ import {
   type PartSummary,
   type ScenarioForm,
 } from "@/lib/scenario";
+import { benchmarkForm, formToSpec, specToForm, type DesignSpec } from "@/lib/design";
 import { DEFAULT_GRID_STEP_MM, gridPlaneDistance, gridStepMeters } from "@/lib/grid";
 
 const IBEAM = "simply_supported_ibeam";
@@ -122,6 +124,8 @@ export function Scenario() {
   const [linkedJobs, setLinkedJobs] = useState<Awaited<ReturnType<typeof getJob>>[]>([]);
   const [geometryUrl, setGeometryUrl] = useState<string | null>(null);
   const [geometryError, setGeometryError] = useState<string | null>(null);
+  const [studioPreviewUrl, setStudioPreviewUrl] = useState<string | null>(null);
+  const [studioPreviewError, setStudioPreviewError] = useState<string | null>(null);
   const turnAbort = useRef<AbortController | null>(null);
   const navigate = useNavigate();
   const { scenarioId } = useParams();
@@ -245,6 +249,30 @@ export function Scenario() {
     };
     // The preview depends only on the stored profile, not on every session field.
   }, [session?.id, geometryKey]);
+
+  const studioSpecKey = session?.studio_spec ? JSON.stringify(session.studio_spec) : "";
+  useEffect(() => {
+    setStudioPreviewUrl(null);
+    setStudioPreviewError(null);
+    if (!session?.studio_spec || !studioSpecKey) return;
+    let cancel = false;
+    let created: string | null = null;
+    previewSpec(formToSpec(specToForm(session.studio_spec as unknown as DesignSpec, benchmarkForm)))
+      .then((url) => {
+        if (cancel) URL.revokeObjectURL(url);
+        else {
+          created = url;
+          setStudioPreviewUrl(url);
+        }
+      })
+      .catch((reason) => {
+        if (!cancel) setStudioPreviewError(reason instanceof Error ? reason.message : "The preview could not be built.");
+      });
+    return () => {
+      cancel = true;
+      if (created) URL.revokeObjectURL(created);
+    };
+  }, [session?.id, studioSpecKey]);
 
   async function downloadGeometry(name: string) {
     if (!session?.geometry_spec) return;
@@ -513,12 +541,12 @@ export function Scenario() {
   const inputFields = formPart ? formFields(formPart) : [];
   const filledInputs = inputFields.filter((field) => (form[field.name] ?? "").trim() !== "").length;
   const evidenceCount = session?.evidence.length ?? 0;
-  const hasModelStep = isBeamForm || Boolean(session?.geometry_spec);
+  const hasModelStep = isBeamForm || Boolean(session?.geometry_spec) || Boolean(session?.studio_spec);
   const inspectorSteps: InspectorStep[] = [
     // Missing items are shown inside Inputs, where they can be fixed.
     ...(formPart ? [{ id: "inputs", label: "Inputs", hint: "The numbers and choices Drafty is using, one group at a time.", status: filledInputs >= inputFields.length ? "done" : "attention", badge: `${filledInputs}/${inputFields.length}` } satisfies InspectorStep] : []),
     { id: "evidence", label: "Evidence", hint: "Photos or drawings that support the description. They are not measured drawings.", status: evidenceCount > 0 ? "done" : "todo", badge: evidenceCount > 0 ? String(evidenceCount) : undefined },
-    ...(hasModelStep ? [{ id: "model", label: isBeamForm ? "Load path" : "Model", hint: isBeamForm ? "How the load travels to the supports, before any result is trusted." : "The geometry built from your description.", status: session?.analysis || session?.geometry_spec ? "done" : "todo" } satisfies InspectorStep] : []),
+    ...(hasModelStep ? [{ id: "model", label: isBeamForm ? "Load path" : "Model", hint: isBeamForm ? "How the load travels to the supports, before any result is trusted." : "The geometry built from your description.", status: session?.analysis || session?.geometry_spec || session?.studio_spec ? "done" : "todo" } satisfies InspectorStep] : []),
     { id: "basis", label: "Basis", hint: "Assumptions and sources behind the numbers, kept separate from the numbers.", status: (session?.assumptions.length ?? 0) + (session?.sources.length ?? 0) > 0 ? "done" : "todo" },
     { id: "results", label: "Results", hint: "Run the check, review the result, and decide what happens next.", status: session?.analysis || session?.studio_spec || linkedJobs.length > 0 ? "done" : domain === "mechanical" ? "attention" : "todo" },
   ];
@@ -808,6 +836,14 @@ export function Scenario() {
               onDownload={(name) => void downloadGeometry(name)}
             />
           )}
+          {activeStep === "model" && session?.studio_spec && !session?.geometry_spec && (
+            <StudioPreviewPanel
+              spec={session.studio_spec as unknown as DesignSpec}
+              previewUrl={studioPreviewUrl}
+              error={studioPreviewError}
+              description={inspectorSteps.find((step) => step.id === "model")?.hint}
+            />
+          )}
           {activeStep === "evidence" && (
           <Panel title="Evidence" description={inspectorSteps.find((step) => step.id === "evidence")?.hint}>
             <div
@@ -957,19 +993,25 @@ export function Scenario() {
           <Panel title="Results" description={inspectorSteps.find((step) => step.id === "results")?.hint}>
             {domain === "mechanical" && session?.studio_spec && (
               <div className="space-y-2 text-sm">
-                <p>Parametric L-bracket, CAD schema. Simulator: CalculiX solid FEM, not started.</p>
+                <p>Parametric {formPart?.name ?? "part"}, CAD schema. Simulator: CalculiX solid FEM, not started.</p>
                 <p>
                   Fixed face {session.inputs.support_face || "unset"}, load face {session.inputs.load_face || "unset"}.
-                  These faces were confirmed here. This is not a minimum-mass result.
+                  These faces were confirmed here. This is not a minimum-mass result.{Boolean(session.studio_spec.studio_edited) ? " This part was edited in Studio and returned, so the inputs and context follow that edit." : ""}
                 </p>
                 {session.studio_approval === "rejected" ? (
                   <p>This proposal was rejected. Revise the description and send again. CalculiX has not started.</p>
                 ) : (
-                  <div className="flex flex-wrap gap-2">
-                    <Button type="button" disabled={busy} onClick={() => void approve()}>
+                  <div className="mt-1 flex flex-col gap-2 border-t border-slate-200 pt-3">
+                    <p className="text-sm font-semibold text-slate-950">Ready for Studio?</p>
+                    <p className="text-sm text-slate-600">
+                      Approve opens Studio with this exact spec. Reject keeps you here to revise the description.
+                    </p>
+                    <Button type="button" variant="primary" disabled={busy} onClick={() => void approve()} className="w-full px-5 py-3.5 text-base font-semibold">
                       Approve and open Studio
+                      <ArrowRight className="ml-2 h-5 w-5" aria-hidden />
                     </Button>
-                    <Button type="button" disabled={busy} onClick={() => void reject()}>
+                    <Button type="button" disabled={busy} onClick={() => void reject()} className="w-full border-red-300 px-5 py-3 text-base font-semibold text-red-700 hover:border-red-400 hover:bg-red-50">
+                      <X className="mr-2 h-5 w-5" aria-hidden />
                       Reject proposal
                     </Button>
                   </div>
@@ -1030,7 +1072,7 @@ export function Scenario() {
               </div>
             )}
             {domain === "mechanical" && !session?.studio_spec && !(session?.missing.length === 1 && session.missing.includes("fixed face and load face")) && (
-              <p className="text-sm">The bracket is missing geometry or a force. No mesh was created.</p>
+              <p className="text-sm">The part is missing geometry or a load. No mesh was created.</p>
             )}
             {linkedJobs.length > 0 && (
               <ul className="mt-3 space-y-2 text-sm">
@@ -1139,6 +1181,66 @@ function PartField({ field, value, onChange }: { field: PartInput; value: string
   return <Field label={fieldLabel(field)} value={value} onChange={onChange} />;
 }
 
+function StudioPreviewPanel({
+  spec,
+  previewUrl,
+  error,
+  description,
+}: {
+  spec: DesignSpec;
+  previewUrl: string | null;
+  error: string | null;
+  description?: string;
+}) {
+  const [gridVisible, setGridVisible] = useState(true);
+  const [gridStepMm, setGridStepMm] = useState<number>(DEFAULT_GRID_STEP_MM);
+  const dims = spec.beam
+    ? [spec.beam.length_m, spec.beam.width_m, spec.beam.height_m]
+    : spec.plate
+      ? [spec.plate.length_m, spec.plate.width_m, spec.plate.thickness_m]
+      : spec.bracket
+        ? [spec.bracket.leg_x_m, spec.bracket.leg_z_m, spec.bracket.width_m]
+        : [0.1];
+  const halfHeight = spec.beam ? spec.beam.height_m / 2 : spec.plate ? spec.plate.thickness_m / 2 : spec.bracket ? spec.bracket.thickness_m / 2 : 0;
+  return (
+    <Panel title="Model" description={description}>
+      <div className="relative h-64 rounded border border-slate-200">
+        <div className="absolute left-2 top-2 z-10">
+          <GridControl visible={gridVisible} stepMm={gridStepMm} onVisibleChange={setGridVisible} onStepChange={setGridStepMm} />
+        </div>
+        <Suspense fallback={null}>
+          <Viewport
+            previewUrl={previewUrl}
+            surface={null}
+            scale={1}
+            wireframe={false}
+            shade="geometry"
+            orthographic={false}
+            cameraView="iso"
+            cameraNonce={0}
+            contourMin={null}
+            contourMax={null}
+            support=""
+            loadSurface=""
+            direction={[0, 0, -1]}
+            loadLabel=""
+            fitRadius={Math.hypot(...dims) / 2 || 0.15}
+            gridVisible={gridVisible}
+            gridStepM={gridStepMeters(gridStepMm)}
+            floorOffset={halfHeight}
+          />
+        </Suspense>
+        {!previewUrl && (
+          <p className="absolute inset-x-0 top-1/2 text-center text-sm text-slate-500">{error ?? "Building the preview."}</p>
+        )}
+      </div>
+      <p className="mt-2 text-sm text-slate-600">
+        Geometry preview of the proposed part. It is not a solved model. Approve it in the Results step to open Studio and run the analysis there.
+      </p>
+    </Panel>
+  );
+}
+
 function GeometryPanel({
   spec,
   previewUrl,
@@ -1222,7 +1324,7 @@ function SupportedParts({ parts, requested }: { parts: PartSummary[]; requested:
         {parts.map((part) => (
           <li key={part.id}>
             <span className="font-medium">{part.name}</span>
-            <span className="text-slate-500"> · {part.where === "scenario" ? "this chat" : "Studio"}</span>
+            <span className="text-slate-500"> · {part.studio_kind ? "this chat → Studio" : part.where === "scenario" ? "this chat" : "Studio"}</span>
             <span className="block text-slate-600">{part.description}</span>
             <span className="block text-xs text-slate-500">
               {part.analysis.map((item) => ANALYSIS_LABEL[item] ?? item).join(", ")}. Exports {part.exports.join(", ")}.

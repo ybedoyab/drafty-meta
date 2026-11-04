@@ -32,9 +32,16 @@ from drafty_engineering.artifacts import MAX_ARTIFACT_BYTES
 from drafty_engineering.beam_fem import analyze_simply_supported_udl
 from drafty_engineering.catalog import PARTS, catalog_view, get_part, scenario_parts
 from drafty_engineering.demos import bracket_record, classroom_record
-from drafty_engineering.plan import build_scenario, evaluate_bracket, proposed_bracket_spec, workflow_stage
+from drafty_engineering.plan import (
+    apply_studio_spec,
+    build_scenario,
+    describe_studio_changes,
+    evaluate_mechanical,
+    proposed_studio_spec,
+    workflow_stage,
+)
 from drafty_engineering.scenario import classroom_kwargs, evaluate_classroom
-from drafty_engineering.spec import RevolvedProfile
+from drafty_engineering.spec import DesignSpec, RevolvedProfile
 
 router = APIRouter()
 MAX_IMAGES = 8
@@ -446,14 +453,96 @@ def approve_model(scenario_id: str, request: Request) -> dict:
     if not session.get("studio_spec"):
         raise HTTPException(status_code=422, detail="There is no CAD model to approve.")
     session["studio_approval"] = "confirmed"
+    session["version"] = int(session.get("version") or 1) + 1
+    session["updated_at"] = datetime.now(UTC).isoformat()
+    _write(session, snapshot=True)
+    return _public(session)
+
+
+class StudioReturnBody(BaseModel):
+    spec: dict[str, Any]
+
+
+@router.post("/api/v1/scenarios/{scenario_id}/studio-return")
+def return_from_studio(scenario_id: str, body: StudioReturnBody, request: Request) -> dict:
+    """Studio -> scenario: store the (maybe edited) part and refresh the AI context.
+
+    The spec is the source of truth for what was edited. Scenario inputs are
+    rebuilt from it, the study and engineering record are recomputed, and the
+    Meta conversation is reset so the next turn reads the new values instead
+    of continuing a conversation about the old part. An unchanged spec is a
+    no-op: the session is returned as stored.
+    """
+
+    session = read_scenario(scenario_id, current_owner(request))
+    if session.get("inputs", {}).get("domain") != "mechanical" or not session.get("studio_spec"):
+        raise HTTPException(status_code=422, detail="There is no Studio part to return to this scenario.")
+    try:
+        design = DesignSpec.model_validate(body.spec)
+    except ValidationError as exc:
+        detail = "; ".join(str(item.get("msg") or item) for item in exc.errors()[:3])
+        raise HTTPException(status_code=422, detail=f"The edited part is not valid: {detail}") from exc
+    returned = design.model_dump()
+    previous = {key: value for key, value in session["studio_spec"].items() if key != "approval"}
+    changes = describe_studio_changes(previous, returned)
+    if not changes:
+        return _public(session)
+    inputs = apply_studio_spec(dict(session.get("inputs") or {}), returned)
+    if inputs is None:  # The spec validated above, so this only guards the mapping itself.
+        raise HTTPException(status_code=422, detail="The edited part could not be mapped back to the scenario.")
+    study = evaluate_mechanical(inputs)
+    session["inputs"] = inputs
+    session["studio_spec"] = {**returned, "approval": "confirmed", "studio_edited": True}
+    session["studio_approval"] = "confirmed"
+    session["missing"] = study["missing"]
+    session["assumptions"] = study["assumptions"]
+    session["verification"] = study["verification"]
+    session["model_proposal"] = {
+        "family": f"parametric {design.kind}, edited in Studio",
+        "ready_for_3d_simulation": False,
+        "ready_for_beam_elements": False,
+        "reason": study["reason"],
+    }
+    session["engineering"] = build_scenario(
+        description="Part edited in Studio",
+        inputs=inputs,
+        study=study,
+        sources=list(session.get("sources") or []),
+        evidence_count=len(session.get("evidence") or []),
+        analysis=None,
+        comparison=None,
+    ).model_dump()
+    session["workflow"] = workflow_stage(
+        domain="mechanical",
+        missing=study["missing"],
+        searched=False,
+        has_model=True,
+        has_analysis=False,
+        has_comparison=False,
+    )
+    session["phase"] = "asking" if study["missing"] else "building-model"
+    session["tool_trace"] = [
+        {
+            "tool": "create_supported_cad",
+            "status": "updated",
+            "detail": "The part was edited in Studio and returned. CalculiX has not started from this return.",
+            "authorization": "user",
+            "output": {"changes": changes, "started": False},
+        }
+    ]
+    # The old Meta conversation discussed the previous part. Drop its chain so
+    # the next turn starts fresh with the updated inputs in the prompt.
+    session["previous_response_id"] = None
+    session["context_reset"] = True
     messages = list(session.get("messages") or [])
-    messages.append({"role": "user", "text": "The CAD model was approved for Studio."})
+    messages.append({"role": "user", "text": "Returned from Studio with the edited part."})
     messages.append(
         {
             "role": "assistant",
             "text": (
-                "The L-bracket was handed to Studio. CalculiX has not started. "
-                "Run the solid solve there if the faces and the force are the ones you want."
+                f"The scenario now uses the part as edited in Studio: {'; '.join(changes)}. "
+                "That replaces the earlier proposal, and the saved context was refreshed so the next "
+                "reply uses these values. Returning it started no solver; run the analysis in Studio."
             ),
         }
     )
@@ -472,17 +561,17 @@ def confirm_faces(scenario_id: str, body: FaceBody, request: Request) -> dict:
     if support not in _FACES or load_face not in _FACES or support == load_face:
         raise HTTPException(status_code=422, detail="Choose two different bounding-box faces.")
     if session.get("inputs", {}).get("domain") != "mechanical":
-        raise HTTPException(status_code=422, detail="Faces apply to a mechanical bracket, not the classroom beam.")
+        raise HTTPException(status_code=422, detail="Faces apply to a mechanical part, not the classroom beam.")
     inputs = dict(session["inputs"])
     inputs["support_face"] = support
     inputs["load_face"] = load_face
-    spec = proposed_bracket_spec(inputs)
+    spec = proposed_studio_spec(inputs)
     if spec is None:
         raise HTTPException(
             status_code=422,
-            detail="The bracket still lacks a dimension, a force, or a library material.",
+            detail="The part still lacks a dimension, a load, or a library material.",
         )
-    study = evaluate_bracket(inputs)
+    study = evaluate_mechanical(inputs)
     session["inputs"] = inputs
     session["studio_spec"] = {**spec, "approval": "pending"}
     session["studio_approval"] = "pending"
@@ -490,13 +579,13 @@ def confirm_faces(scenario_id: str, body: FaceBody, request: Request) -> dict:
     session["assumptions"] = study["assumptions"]
     session["verification"] = study["verification"]
     session["model_proposal"] = {
-        "family": "parametric L-bracket, pending approval",
+        "family": f"parametric {spec['kind']}, pending approval",
         "ready_for_3d_simulation": False,
         "ready_for_beam_elements": False,
         "reason": study["reason"],
     }
     engineering = build_scenario(
-        description="Confirmed bracket faces",
+        description="Confirmed part faces",
         inputs=inputs,
         study=study,
         sources=list(session.get("sources") or []),

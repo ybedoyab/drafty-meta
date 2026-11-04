@@ -1,22 +1,32 @@
 # Drafty
 
-Drafty is an engineering workstation for parametric solids and static finite element analysis. You enter dimensions, a material, a support, and a load. The API builds a CadQuery solid, meshes the STEP file with Gmsh, solves it with CalculiX, and returns the solver's displacements and stresses to the 3D view.
+Drafty is an engineering workstation that turns a described or typed part into a real solid, meshes it, and solves it with finite element analysis. You can start from a conversation or work manually — both paths meet on the same parametric part, the same solver, and the same results.
 
-Natural-language design stays off until `MODEL_API_KEY` is set. Supabase Auth turns on with `DRAFTY_AUTH_MODE=supabase` and a publishable key. `SUPABASE_SECRET_KEY` is the server service credential and is not copied into a second variable; it is required for private artifact upload. Modal Cloud CalculiX stays off until `modal setup` creates a local profile or `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET` are set on the server. `DRAFTY_ENV=production` refuses to start while authentication is disabled. The manual Studio and the classroom demo do not need Meta or Modal.
+Engineering design usually splits into two disconnected steps: figuring out *what* to build (loads, dimensions, materials, assumptions) and *running the numbers* (CAD, mesh, solver). Drafty connects them in one loop:
 
-## Layout
+1. **Start with meta AI** — describe the problem in the scenario assistant. Drafty asks for what is missing, keeps assumptions and sources visible, and proposes a part.
+2. **Approve and open Studio** — nothing is solved from the chat alone. You approve the proposed part, then edit and run it in the manual Studio.
+3. **Edit and solve** — change dimensions, material, support, and load, or sketch extra pieces. Run the solve and read the displacements and stresses.
+4. **Return to the scenario** — send the part back, edited or not. The scenario updates its inputs and context, so the conversation continues about the part as it actually is now.
 
-- `apps/web` — React workstation
-- `apps/api` — FastAPI. Simulation requests return a job id immediately
-- `packages/engineering` — geometry, meshing, CalculiX, and the beam benchmark
-- `packages/ai` — Meta Model API tool calls
-- `infra/docker` — CalculiX image and the API/web images
-- `infra/modal` — remote solver function
-- `supabase/migrations` — Postgres schema and private artifact bucket
+You can also skip the conversation entirely: **Open Studio** works on its own, with no AI key required.
 
-## Run it locally
+## How Meta AI is used in this field
 
-From the repository root, with Python 3.12, [uv](https://docs.astral.sh/uv/), Node 22, and Docker:
+Meta AI (Muse Spark 1.3 by default, Muse Wonder 1.0 for harder turns) acts as the *front door*, never as the calculator:
+
+- It interprets your description, classifies which supported part you mean, and asks for the missing physical inputs.
+- It can search published references for loads and material data. Checked references, retrieved pages, and model citations are kept in separate source classes.
+- With a photo or drawing attached, SAM 3.1 segmentation can outline what is visible. An image is evidence, never a measurement.
+- The server — not the model — computes every number, builds the geometry, and chooses the solver. The model never invents stresses, displacements, or safety factors, and a part reaches the solver only after your approval.
+
+Without `MODEL_API_KEY`, Drafty still works: the assistant becomes a labeled guided template with built-in demos, and Studio is fully usable.
+
+## Run it
+
+You need Python 3.12 with [uv](https://docs.astral.sh/uv/), Node, and Docker (for the CalculiX solver image).
+
+From the repository root:
 
 ```powershell
 uv sync --extra dev
@@ -25,7 +35,7 @@ Copy-Item .env.example .env
 uv run drafty-api
 ```
 
-In another terminal:
+In other terminal:
 
 ```powershell
 cd apps/web
@@ -33,73 +43,24 @@ npm install
 npm run dev
 ```
 
-Open http://localhost:5173. The homepage offers **Start with AI** (`/scenario/new`) and **Open Studio** (`/studio`). The scenario assistant keeps a server-side session. Without `MODEL_API_KEY` it is a labeled guided template: it asks for missing data, cites the checked NSR-10 classroom minimum only after Colombia is confirmed, and calculates the line load in Python. A confirmed simply supported I-beam can then run Euler-Bernoulli beam elements. Those results are checked against the closed form and are not a certification. The same beam is not sent to the CalculiX solid solver or to the cantilever example. With a key, the turn uses the Responses API (`muse-spark-1.3` by default, optional `muse-wonder-1.0`) with `web_search` at low search context, `previous_response_id`, and `text.format` JSON. The server classifies the request and runs one allowlisted tool. A classroom floor stays on the beam-element path. An L-bracket is handed to Studio and CalculiX only after approval. `url_citation` annotations, retrieved pages, and the checked NSR-10 reference stay in separate source classes. A session stops after 8 model turns or 6000 output tokens. CI does not call the live API. SAM 3.1 can segment a stored image when the key is present; a mask is not a dimension.
-
-Docker Compose publishes the web app on port 15173 and the API on port 18080.
-
-The cantilever benchmark is the default Studio form. Run analysis and wait for the status to move from queued through geometry, meshing, solving, and postprocessing. The numbers come from `model.dat` and `model.frd`.
-
-```powershell
-uv run drafty-benchmark
-uv run pytest
-uv run ruff check packages apps tests
-```
-
-`drafty-benchmark` runs the textbook cantilever at two mesh sizes and writes `benchmark.json`.
-
-The API image already contains CalculiX, so Compose does not need the separate solver image:
+Or with Docker Compose (web on port 15173, API on port 18080):
 
 ```powershell
 docker compose up --build
 ```
 
-## Environment
+## Main features
 
-Copy `.env.example` to `.env`. Leave unknown values blank.
+- **Scenario assistant** — chat that collects inputs, shows assumptions, sources, and missing data, and proposes a part for your approval.
+- **AI ↔ Studio round trip** — approve a part into Studio, edit it there, and return it; the scenario context follows the edited part.
+- **Studio editing** — dimension and material fields, scale and rotate viewport tools with grid snapping, a sketch tool for adding pieces, and undo/redo history.
+- **Real solves** — CadQuery solids meshed with Gmsh and solved with CalculiX, locally or on Modal; results are compared against beam theory where that check applies.
+- **Thickness optimization** — repeated real solves that keep the lightest design meeting your safety factor and displacement limit.
 
-| Variable | Role |
-| --- | --- |
-| `MODEL_API_KEY` | Meta Model API key, server side only |
-| `MODEL_API_BASE` | `https://api.meta.ai/v1` |
-| `MODEL_PRIMARY` | `muse-spark-1.3` |
-| `MODEL_REASONING` | `muse-wonder-1.0` |
-| `DRAFTY_COMPUTE` | `local` or `modal` |
-| `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET` | Used only when compute is `modal` |
-| `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` | Optional job and artifact sync |
-| `SUPABASE_JWT_SECRET` | Optional HS256 check. Otherwise the Supabase JWKS is used |
-| `DRAFTY_AUTH_MODE` | `disabled` until you want JWT checks |
-| `CCX_BIN`, `CCX_DOCKER_IMAGE`, `DRAFTY_USE_DOCKER_CCX` | Local `ccx` or the `drafty-ccx` image |
-| `VITE_API_URL` | API origin for the web app |
+## More documentation
 
-Chat uses `POST https://api.meta.ai/v1/chat/completions` with tool calls. The model can only call `ask_clarification` and `propose_design`. Built-in `web_search` is rejected on that endpoint. A proposal fills the form; it does not start a solve and it does not run generated code. `drafty_ai.responses` calls `POST /responses` with `web_search` (`search_context_size` low), `include: ["web_search_call.results"]`, reasoning effort `minimal`, and structured `text.format`, and only when `MODEL_API_KEY` is set. The classroom template does not call it and does not invent citations. Reference images are stored and are not measured for dimensions. A simply supported classroom beam uses `drafty_engineering.beam_fem`, not a CalculiX job.
+- [Technical notes](docs/TECHNICAL.md) — solver pipeline, environment variables, Meta integration details, and deployment.
+- [Scenario workstation](docs/SCENARIO_UX_ARCHITECTURE.md) — how the scenario assistant behaves with and without a Meta key.
+- [References](docs/REFERENCES.md) and [Provenance](docs/PROVENANCE.md) — where the engineering references and bundled material come from.
 
-Modal deploy, after the tokens exist:
-
-```powershell
-uv sync --extra modal
-modal deploy infra/modal/app.py
-```
-
-Apply `supabase/migrations/0001_init.sql` in the Supabase SQL editor before enabling cloud sync. Set `DRAFTY_AUTH_MODE=supabase` when the project should require a user token.
-
-## Analysis path
-
-1. Validate the typed specification. One encastre support, one load, a known material, and explicit dimensions are required.
-2. Build the solid in CadQuery and write STEP.
-3. Mesh that STEP file with Gmsh. Quadratic tetrahedra are the default.
-4. Check that the fixed and loaded faces match the requested surfaces.
-5. Write a CalculiX `.inp` and run `ccx` in its own process, with a timeout.
-6. Read nodal displacements and integration-point stresses from the solver files.
-7. Report von Mises, displacement, and factor of safety. A job is not marked completed without those files.
-
-The cantilever check compares free-end deflection with Euler-Bernoulli bending plus rectangular Timoshenko shear, and midspan outer-fiber stress with beam theory. The acceptance bands are 8% on deflection and 20% on that sampled stress. Peak stress on the fixed face is reported separately because a fully fixed face can create a constraint singularity.
-
-Internal units are meters, newtons, and pascals. The interface shows millimeters, newtons, and megapascals.
-
-## Studio 3D view
-
-The viewport draws a measured reference grid under the part so heights and extents read against a known scale. The grid button at the top-left of the view toggles it and opens a popup where one square equals 1 mm, 5 mm, 1 cm, 5 cm, or 10 cm. The scenario geometry preview has the same grid.
-
-## Optimization
-
-After a solve, a thickness study can run up to six more real analyses. Each iteration is kept. The lightest design that meets the factor of safety and optional displacement limit is marked accepted. If `MODEL_API_KEY` is set, Muse Spark may propose the next thickness inside the bounds. The solver result decides whether that thickness is feasible. Without the key, the loop uses bisection.
+Drafty reports are preliminary engineering checks. They are not a certification.

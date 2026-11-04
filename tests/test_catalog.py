@@ -72,7 +72,7 @@ def test_instructions_list_the_registry_and_forbid_promises():
         assert part.id in INSTRUCTIONS
 
 
-@pytest.mark.parametrize("noun", ["coffee mug", "perforated plate", ""])
+@pytest.mark.parametrize("noun", ["coffee mug", "chess knight", ""])
 def test_an_unsupported_reply_points_to_the_capabilities_page(noun):
     sentence = unsupported_sentence(noun)
     assert sentence.endswith(f"The Capabilities page ({CAPABILITIES_PATH}) lists what Drafty can and cannot do.")
@@ -256,13 +256,15 @@ def test_a_fresh_scenario_shows_the_default_form_and_a_bracket_shows_its_own():
     assert not IBEAM_FIELDS & names
 
 
-def test_studio_only_parts_point_to_studio():
+def test_studio_parts_are_proposed_in_chat_for_studio():
     result = advance_scenario(
         {"inputs": blank_inputs(), "messages": [], "evidence": []},
         "Design a perforated plate with six holes.",
     )
     text = result["messages"][-1]["text"]
-    assert "Drafty builds a perforated plate in Studio, not in this chat." in text
+    assert "perforated plate" in text
+    assert "not in this chat" not in text
+    assert result["engineering"]["physical_system"] == "perforated_plate"
     assert result["studio_spec"] is None
 
 

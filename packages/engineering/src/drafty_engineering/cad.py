@@ -8,12 +8,78 @@ import trimesh
 
 from drafty_engineering.errors import GeometryError
 from drafty_engineering.geometry_math import envelope
-from drafty_engineering.spec import DesignSpec, RevolvedProfile, hole_centers
+from drafty_engineering.spec import (
+    FACE_FRAME,
+    DesignSpec,
+    RevolvedProfile,
+    SketchAddition,
+    addition_profile_points_3d,
+    base_bounds,
+    hole_centers,
+)
 
 REVOLVED_EXPORTS = ("model.step", "model.stl", "preview.glb")
 
 
+def build_sketch_prism(
+    addition: SketchAddition,
+    base: tuple[float, float, float, float, float, float],
+) -> cq.Workplane:
+    """Extrude the sketch profile along its third axis as a CadQuery solid."""
+
+    u_axis, v_axis, w_axis, sign = FACE_FRAME[addition.face]
+    points = addition_profile_points_3d(addition, base, 0.0)
+    direction = [0.0, 0.0, 0.0]
+    direction[w_axis] = addition.depth_m
+    if addition.shape == "ellipse":
+        wire = _ellipse_wire(addition, points, u_axis, w_axis)
+        solid = cq.Solid.extrudeLinear(wire, [], cq.Vector(*direction))
+        return cq.Workplane("XY").newObject([solid])
+    wire = cq.Wire.makePolygon([cq.Vector(*point) for point in points] + [cq.Vector(*points[0])])
+    solid = cq.Solid.extrudeLinear(wire, [], cq.Vector(*direction))
+    return cq.Workplane("XY").newObject([solid])
+
+
+def _ellipse_wire(
+    addition: SketchAddition,
+    points: list[tuple[float, float, float]],
+    u_axis: int,
+    w_axis: int,
+) -> cq.Wire:
+    """A true ellipse wire in the profile plane, centred on the stored outline."""
+
+    # The box midpoint, not the average of points, so the ellipse matches the
+    # outline the user saw. A full ellipse is symmetric, so only its centre,
+    # radii, and plane matter here.
+    centre = [
+        (min(point[axis] for point in points) + max(point[axis] for point in points)) / 2.0
+        for axis in range(3)
+    ]
+    u_dir = [0.0, 0.0, 0.0]
+    u_dir[u_axis] = 1.0
+    normal = [0.0, 0.0, 0.0]
+    normal[w_axis] = 1.0
+    return cq.Wire.makeEllipse(
+        addition.width_m / 2.0,
+        addition.height_m / 2.0,
+        cq.Vector(*centre),
+        cq.Vector(*normal),
+        cq.Vector(*u_dir),
+    )
+
+
 def build_solid(spec: DesignSpec) -> cq.Workplane:
+    if spec.kind == "sketch_prism" and spec.additions:
+        return build_sketch_prism(spec.additions[0], base_bounds(spec) or (0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
+    solid = _build_base_solid(spec)
+    base = base_bounds(spec)
+    if base is not None:
+        for addition in spec.additions:
+            solid = solid.union(build_sketch_prism(addition, base))
+    return solid
+
+
+def _build_base_solid(spec: DesignSpec) -> cq.Workplane:
     if spec.kind == "cantilever_beam" and spec.beam:
         beam = spec.beam
         return (

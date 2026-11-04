@@ -26,9 +26,10 @@ from drafty_engineering.plan import (
     ambiguous_study,
     build_scenario,
     classify_request,
-    evaluate_bracket,
+    evaluate_mechanical,
     neutral_study,
-    proposed_bracket_spec,
+    proposed_studio_spec,
+    reconcile_studio_spec,
     unsupported_study,
     workflow_stage,
 )
@@ -208,7 +209,10 @@ def absorb_message(inputs: dict, message: str) -> dict:
         if dead:
             found["dead_n_per_m2"] = float(dead.group(1)) * 1000.0
     if found.get("domain") == "mechanical":
-        _absorb_bracket(found, message)
+        if found.get("physical_system") == "l_bracket":
+            _absorb_bracket(found, message)
+        else:
+            _absorb_studio_part(found, message)
     if found.get("domain") == "geometry":
         _absorb_revolved(found, message)
     return found
@@ -259,6 +263,81 @@ def _absorb_bracket(found: dict, message: str) -> None:
         found["load_face"] = load_face.group(1).lower()
 
 
+_DIM = r"(\d+(?:\.\d+)?)\s*(mm|cm|m)\b"
+_STUDIO_DIM_FIELDS = {
+    "cantilever_beam": (
+        ("beam.length_m", "length", "long"),
+        ("beam.width_m", "width", "wide"),
+        ("beam.height_m", "height", "tall"),
+    ),
+    "plate": (
+        ("plate.length_m", "length", "long"),
+        ("plate.width_m", "width", "wide"),
+        ("plate.thickness_m", "thickness", "thick"),
+    ),
+    "perforated_plate": (
+        ("plate.length_m", "length", "long"),
+        ("plate.width_m", "width", "wide"),
+        ("plate.thickness_m", "thickness", "thick"),
+        ("holes.radius_m", "hole radius", ""),
+        ("holes.margin_m", "hole margin", ""),
+    ),
+}
+
+
+def _to_meters(value: str, unit: str) -> float:
+    return float(value) * {"mm": 0.001, "cm": 0.01, "m": 1.0}[unit.lower()]
+
+
+def _absorb_studio_part(found: dict, message: str) -> None:
+    """Fill a Studio part's fields from words. Existing values win; faces use the shared patterns."""
+
+    system = str(found.get("physical_system") or "")
+    for key, word, suffix in _STUDIO_DIM_FIELDS.get(system, ()):
+        if found.get(key) is not None:
+            continue
+        match = re.search(rf"\b{word}\b\s*(?:of\s+|is\s+|:|=)?\s*{_DIM}", message, re.I) or (
+            re.search(rf"{_DIM}\s*(?:{suffix})\b", message, re.I) if suffix else None
+        )
+        if match:
+            found[key] = _to_meters(match.group(1), match.group(2))
+    if system == "perforated_plate":
+        grid = re.search(r"(\d+)\s*(?:x|by)\s*(\d+)\s*holes?\b", message, re.I)
+        if grid:
+            if found.get("holes.count_x") is None:
+                found["holes.count_x"] = int(grid.group(1))
+            if found.get("holes.count_y") is None:
+                found["holes.count_y"] = int(grid.group(2))
+    pressure = re.search(r"\bpressure\s+(?:of\s+)?(\d+(?:\.\d+)?)\s*(mpa|kpa|pa)\b", message, re.I)
+    if pressure and found.get("load_magnitude") is None:
+        factor = {"mpa": 1e6, "kpa": 1e3, "pa": 1.0}[pressure.group(2).lower()]
+        found["load_magnitude"] = float(pressure.group(1)) * factor
+        found["load_mode"] = "pressure"
+    else:
+        force = _FORCE.search(message)
+        if force and found.get("load_magnitude") is None:
+            value = float(force.group(1))
+            found["load_magnitude"] = value * 1000.0 if force.group(2).lower() == "kn" else value
+            found["load_mode"] = "force"
+    if not found.get("material_id"):
+        if re.search(r"\baluminum|aluminium|aluminio\b", message, re.I):
+            found["material_id"] = "aluminum_6061_t6"
+        elif re.search(r"\bstainless\b", message, re.I):
+            found["material_id"] = "stainless_316"
+        elif re.search(r"\btitanium\b", message, re.I):
+            found["material_id"] = "titanium_ti6al4v"
+        elif re.search(r"\babs\b", message, re.I):
+            found["material_id"] = "abs"
+        elif re.search(r"\bsteel\b", message, re.I):
+            found["material_id"] = "steel_s235"
+    support = _SUPPORT_FACE.search(message)
+    if support and not str(found.get("support_face") or "").strip():
+        found["support_face"] = support.group(1).lower()
+    load_face = _LOAD_FACE.search(message)
+    if load_face and not str(found.get("load_face") or "").strip():
+        found["load_face"] = load_face.group(1).lower()
+
+
 def advance_scenario(
     state: dict,
     message: str,
@@ -272,7 +351,7 @@ def advance_scenario(
     system = str(inputs.get("physical_system") or "unknown")
     requested_part = str(inputs.get("requested_part") or "")
     if domain == "mechanical":
-        study = evaluate_bracket(inputs)
+        study = evaluate_mechanical(inputs)
     elif domain == "structural":
         study = evaluate_classroom(**classroom_kwargs(inputs))
     elif domain == "geometry":
@@ -394,7 +473,9 @@ def advance_scenario(
         )
     )
     sources = _merge_sources(study["sources"], state.get("sources") or [], search_sources)
-    studio_spec = proposed_bracket_spec(inputs) if domain == "mechanical" else None
+    studio_spec = proposed_studio_spec(inputs) if domain == "mechanical" else None
+    if domain == "mechanical":
+        studio_spec = reconcile_studio_spec(studio_spec, state.get("studio_spec"), inputs)
     if studio_spec:
         studio_spec = {**studio_spec, "approval": "pending"}
     geometry_spec = proposed_geometry_spec(inputs) if domain == "geometry" else None
@@ -652,6 +733,15 @@ def _known_numbers(inputs: dict, study: dict) -> set[str]:
         "bracket_width_m",
         "overall_height_m",
         "base_diameter_m",
+        "beam.length_m",
+        "beam.width_m",
+        "beam.height_m",
+        "plate.length_m",
+        "plate.width_m",
+        "plate.thickness_m",
+        "holes.radius_m",
+        "holes.margin_m",
+        "load_magnitude",
     ):
         if inputs.get(key) is not None:
             values.append(float(inputs[key]))
@@ -759,7 +849,8 @@ def _strip_promises(message: str) -> tuple[str, list[dict]]:
 
 def _summary(domain: str, study: dict, inputs: dict, image_count: int, images_sent: bool) -> str:
     if domain == "mechanical":
-        parts = ["This is a mechanical L-bracket, not the classroom beam."]
+        part = get_part(str(inputs.get("physical_system") or ""))
+        parts = [f"This is {part.phrase if part is not None else 'a mechanical part'}, not the classroom beam."]
         if image_count:
             sent = "sent to the vision model" if images_sent else "not sent to a vision model"
             parts.append(f"{image_count} image(s) are stored and were {sent}. They were not measured.")
