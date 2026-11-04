@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import threading
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,7 @@ from drafty_api.geometry_cache import (
     GENERATOR_REVISION,
     GEOMETRY_NAMES,
     MANIFEST_NAME,
+    GeometryPending,
     build_manifest,
     load_or_build_geometry,
     profile_digest,
@@ -456,31 +458,157 @@ def test_purge_remote_job_keeps_row_when_storage_delete_fails(monkeypatch):
     assert row_deleted["ok"] is True
 
 
+class _FakeGeometryBuilds:
+    """In-memory stand-in for migration 0008/0009 geometry_build RPCs."""
+
+    def __init__(self) -> None:
+        self.rows: dict[str, dict] = {}
+        self.lock = threading.Lock()
+
+    def get(self, digest: str) -> dict | None:
+        with self.lock:
+            row = self.rows.get(digest)
+            return dict(row) if row else None
+
+    def claim_start(
+        self,
+        digest: str,
+        owner: str,
+        profile: dict | None = None,
+        stale_after_seconds: int = 600,
+        resume_after_seconds: int = 45,
+    ) -> dict:
+        del stale_after_seconds
+        with self.lock:
+            row = self.rows.get(digest)
+            now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            if row is None:
+                row = {
+                    "digest": digest,
+                    "owner_id": owner,
+                    "status": "queued",
+                    "modal_call_id": None,
+                    "profile": profile or {},
+                    "error": None,
+                    "charged": False,
+                    "created_at": now,
+                    "updated_at": now,
+                }
+                self.rows[digest] = row
+                return {"claimed": True, **row}
+            if row["status"] == "completed":
+                return {"claimed": False, **row}
+            if row["status"] in {"queued", "running"} and row.get("modal_call_id"):
+                return {"claimed": False, **row}
+            if row["status"] == "queued" and not row.get("modal_call_id"):
+                updated = str(row.get("updated_at") or "")
+                # Mirror SQL resume_after: only resume when the row looks abandoned.
+                resume_ready = bool(row.pop("_force_resume", False))
+                if not resume_ready and updated.endswith("Z"):
+                    try:
+                        age = time.time() - time.mktime(time.strptime(updated, "%Y-%m-%dT%H:%M:%SZ"))
+                        resume_ready = age > resume_after_seconds
+                    except ValueError:
+                        resume_ready = True
+                if not resume_ready:
+                    return {"claimed": False, **row}
+                row["owner_id"] = owner
+                row["profile"] = profile or row.get("profile") or {}
+                row["error"] = None
+                row["updated_at"] = now
+                return {"claimed": True, **row}
+            row.update(
+                {
+                    "owner_id": owner,
+                    "status": "queued",
+                    "modal_call_id": None,
+                    "profile": profile or {},
+                    "error": None,
+                    "charged": False,
+                    "updated_at": now,
+                }
+            )
+            return {"claimed": True, **row}
+
+    def mark_charged(self, digest: str) -> bool:
+        with self.lock:
+            row = self.rows.get(digest)
+            if not row or row["status"] != "queued":
+                return False
+            row["charged"] = True
+            row["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            return True
+
+    def attach(self, digest: str, call_id: str) -> bool:
+        with self.lock:
+            row = self.rows.get(digest)
+            if not row:
+                return False
+            if row.get("modal_call_id"):
+                return row["modal_call_id"] == call_id and row["status"] in {"queued", "running"}
+            if row["status"] != "queued":
+                return False
+            row["status"] = "running"
+            row["modal_call_id"] = call_id
+            row["error"] = None
+            row["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            return True
+
+    def transition(self, digest: str, from_statuses: list[str], to_status: str, error: str | None = None) -> bool:
+        with self.lock:
+            row = self.rows.get(digest)
+            if not row or row["status"] not in from_statuses:
+                return False
+            row["status"] = to_status
+            row["error"] = error if to_status == "failed" else None
+            row["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            return True
+
+
+def _install_fake_builds(monkeypatch, store: _FakeGeometryBuilds) -> None:
+    monkeypatch.setattr("drafty_api.geometry_cache._remote_build_row", store.get)
+    monkeypatch.setattr("drafty_api.geometry_cache._claim_build_start", store.claim_start)
+    monkeypatch.setattr("drafty_api.geometry_cache._mark_build_charged", store.mark_charged)
+    monkeypatch.setattr("drafty_api.geometry_cache._attach_build_call", store.attach)
+    monkeypatch.setattr("drafty_api.geometry_cache._transition_build", store.transition)
+
+
 def test_geometry_lock_contention_returns_retryable_without_modal(tmp_path, monkeypatch):
-    from drafty_api.geometry_cache import load_or_build_geometry
+    from drafty_api.geometry_cache import GeometryPending, load_or_build_geometry
 
     monkeypatch.setattr(settings, "drafty_data_dir", str(tmp_path))
     monkeypatch.setattr(settings, "drafty_env", "production")
     monkeypatch.setattr(settings, "supabase_url", "https://example.supabase.co")
     monkeypatch.setattr(settings, "supabase_secret_key", "service-role")
     profile = _profile()
+    digest = profile_digest(profile)
+    store = _FakeGeometryBuilds()
+    fresh = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    store.rows[digest] = {
+        "digest": digest,
+        "owner_id": "other",
+        "status": "running",
+        "modal_call_id": "fc-other",
+        "profile": {},
+        "error": None,
+        "charged": True,
+        "created_at": fresh,
+        "updated_at": fresh,
+    }
     modal_calls = {"n": 0}
 
-    def _remote(_profile):
+    def _spawn(_profile):
         modal_calls["n"] += 1
-        raise AssertionError("Modal must not start when another instance holds the lock")
+        raise AssertionError("Modal must not start when another instance owns the build")
 
     monkeypatch.setattr("drafty_api.geometry_cache.read_remote_cache", lambda *_a, **_k: None)
-    monkeypatch.setattr("drafty_api.geometry_cache._claim_remote_lock", lambda *_a, **_k: False)
-    monkeypatch.setattr("drafty_api.geometry_cache._wait_for_cache", lambda *_a, **_k: None)
-    monkeypatch.setattr("drafty_api.remote.remote_geometry", _remote)
+    monkeypatch.setattr("drafty_api.remote.spawn_remote_geometry", _spawn)
+    monkeypatch.setattr("drafty_api.remote.poll_remote_geometry", lambda *_a, **_k: None)
+    _install_fake_builds(monkeypatch, store)
 
-    with pytest.raises(HTTPException) as exc:
+    with pytest.raises(GeometryPending) as pending:
         load_or_build_geometry(profile, "owner-lock")
-    assert exc.value.status_code == 503
-    detail = exc.value.detail
-    assert isinstance(detail, dict)
-    assert detail.get("retryable") is True
+    assert pending.value.status == "running"
     assert modal_calls["n"] == 0
 
 
@@ -493,8 +621,252 @@ def test_geometry_lock_backend_unavailable_fails_closed(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "supabase_secret_key", "service-role")
     profile = _profile()
     monkeypatch.setattr("drafty_api.geometry_cache.read_remote_cache", lambda *_a, **_k: None)
-    monkeypatch.setattr("drafty_api.geometry_cache._claim_remote_lock", lambda *_a, **_k: None)
+    monkeypatch.setattr("drafty_api.geometry_cache._remote_build_row", lambda *_a, **_k: None)
+    monkeypatch.setattr("drafty_api.geometry_cache._claim_build_start", lambda *_a, **_k: None)
     with pytest.raises(HTTPException) as exc:
         load_or_build_geometry(profile, "owner-lock")
     assert exc.value.status_code == 503
     assert "unavailable" in str(exc.value.detail).lower()
+
+
+def test_production_geometry_miss_spawns_async_without_sync_wait(tmp_path, monkeypatch):
+    """Quota charges once, Modal is spawned, and the HTTP path stays pending (no cancel)."""
+
+    monkeypatch.setattr(settings, "drafty_data_dir", str(tmp_path))
+    monkeypatch.setattr(settings, "drafty_env", "production")
+    monkeypatch.setattr(settings, "supabase_url", "https://example.supabase.co")
+    monkeypatch.setattr(settings, "supabase_secret_key", "service-role")
+    profile = _profile()
+    digest = profile_digest(profile)
+    store = _FakeGeometryBuilds()
+    charges = {"n": 0}
+    spawns = {"n": 0, "id": "fc-geometry-1"}
+    polls = {"n": 0}
+
+    monkeypatch.setattr("drafty_api.geometry_cache.read_remote_cache", lambda *_a, **_k: None)
+
+    def _charge(_owner: str) -> None:
+        charges["n"] += 1
+
+    def _spawn(_profile: dict) -> str:
+        spawns["n"] += 1
+        return str(spawns["id"])
+
+    def _poll(_call_id: str, timeout: float = 0):
+        polls["n"] += 1
+        if polls["n"] == 1:
+            return None
+        return _fake_files(digest)
+
+    monkeypatch.setattr("drafty_api.jobs.charge_preview", _charge)
+    monkeypatch.setattr("drafty_api.remote.spawn_remote_geometry", _spawn)
+    monkeypatch.setattr("drafty_api.remote.poll_remote_geometry", _poll)
+    monkeypatch.setattr("drafty_api.geometry_cache.write_remote_cache", lambda *_a, **_k: None)
+    _install_fake_builds(monkeypatch, store)
+
+    with pytest.raises(GeometryPending) as pending:
+        load_or_build_geometry(profile, "owner-async")
+    assert pending.value.digest == digest
+    assert pending.value.status == "running"
+    assert charges["n"] == 1
+    assert spawns["n"] == 1
+    assert store.rows[digest]["modal_call_id"] == "fc-geometry-1"
+    assert store.rows[digest]["charged"] is True
+
+    with pytest.raises(GeometryPending):
+        load_or_build_geometry(profile, "owner-async")
+    assert charges["n"] == 1
+    assert spawns["n"] == 1
+    assert polls["n"] == 1
+
+    files, hit = load_or_build_geometry(profile, "owner-async")
+    assert hit is False
+    assert files["preview.glb"].startswith(digest.encode())
+    assert store.rows[digest]["status"] == "completed"
+    assert charges["n"] == 1
+    assert spawns["n"] == 1
+    assert polls["n"] == 2
+    assert read_local_cache(digest) is not None
+
+
+def test_geometry_charge_persists_before_spawn_and_survives_attach_failure(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "drafty_data_dir", str(tmp_path))
+    monkeypatch.setattr(settings, "drafty_env", "production")
+    monkeypatch.setattr(settings, "supabase_url", "https://example.supabase.co")
+    monkeypatch.setattr(settings, "supabase_secret_key", "service-role")
+    profile = _profile()
+    digest = profile_digest(profile)
+    store = _FakeGeometryBuilds()
+    charges = {"n": 0}
+    spawns: list[str] = []
+    cancels: list[str] = []
+
+    def _charge(_owner: str) -> None:
+        charges["n"] += 1
+
+    def _spawn(_profile: dict) -> str:
+        call_id = f"fc-{len(spawns) + 1}"
+        spawns.append(call_id)
+        return call_id
+
+    monkeypatch.setattr("drafty_api.geometry_cache.read_remote_cache", lambda *_a, **_k: None)
+    monkeypatch.setattr("drafty_api.jobs.charge_preview", _charge)
+    monkeypatch.setattr("drafty_api.remote.spawn_remote_geometry", _spawn)
+    monkeypatch.setattr("drafty_api.remote.cancel_remote_geometry_call", lambda call_id: cancels.append(call_id))
+    _install_fake_builds(monkeypatch, store)
+    monkeypatch.setattr("drafty_api.geometry_cache._attach_build_call", lambda *_a, **_k: False)
+
+    with pytest.raises(HTTPException) as exc:
+        load_or_build_geometry(profile, "owner-partial")
+    assert exc.value.status_code == 503
+    assert charges["n"] == 1
+    assert spawns == ["fc-1"]
+    assert cancels == ["fc-1"]
+    assert store.rows[digest]["charged"] is True
+    assert store.rows[digest]["status"] == "queued"
+    assert store.rows[digest]["modal_call_id"] is None
+
+    # Resume after the crash-window grace: already charged, spawn again, no second charge.
+    store.rows[digest]["_force_resume"] = True
+    monkeypatch.setattr("drafty_api.geometry_cache._attach_build_call", store.attach)
+    with pytest.raises(GeometryPending):
+        load_or_build_geometry(profile, "owner-partial")
+    assert charges["n"] == 1
+    assert spawns == ["fc-1", "fc-2"]
+    assert store.rows[digest]["modal_call_id"] == "fc-2"
+    assert store.rows[digest]["status"] == "running"
+
+
+def test_concurrent_geometry_pollers_do_not_overwrite_terminal_state(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "drafty_data_dir", str(tmp_path))
+    monkeypatch.setattr(settings, "drafty_env", "production")
+    monkeypatch.setattr(settings, "supabase_url", "https://example.supabase.co")
+    monkeypatch.setattr(settings, "supabase_secret_key", "service-role")
+    profile = _profile()
+    digest = profile_digest(profile)
+    store = _FakeGeometryBuilds()
+    now = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    store.rows[digest] = {
+        "digest": digest,
+        "owner_id": "owner",
+        "status": "running",
+        "modal_call_id": "fc-shared",
+        "profile": {},
+        "error": None,
+        "charged": True,
+        "created_at": now,
+        "updated_at": now,
+    }
+    barrier = threading.Barrier(2)
+    results: list[object] = []
+
+    def _poll(_call_id: str, timeout: float = 0):
+        barrier.wait(timeout=5)
+        return _fake_files(digest)
+
+    monkeypatch.setattr("drafty_api.geometry_cache.read_remote_cache", lambda *_a, **_k: None)
+    monkeypatch.setattr("drafty_api.remote.poll_remote_geometry", _poll)
+    monkeypatch.setattr("drafty_api.geometry_cache.write_remote_cache", lambda *_a, **_k: None)
+    _install_fake_builds(monkeypatch, store)
+
+    def _worker() -> None:
+        try:
+            results.append(load_or_build_geometry(profile, "owner"))
+        except Exception as exc:  # noqa: BLE001 - collect either outcome
+            results.append(exc)
+
+    threads = [threading.Thread(target=_worker) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+    assert len(results) == 2
+    assert store.rows[digest]["status"] == "completed"
+    assert store.rows[digest]["error"] is None
+    assert all(
+        (isinstance(item, tuple) and item[0]["preview.glb"].startswith(digest.encode()))
+        or isinstance(item, GeometryPending)
+        for item in results
+    )
+    assert any(isinstance(item, tuple) for item in results)
+
+
+def test_geometry_spawn_failure_marks_build_failed_without_call_id(tmp_path, monkeypatch):
+    """Charged+queued must not linger when Modal never returns a FunctionCall id."""
+
+    monkeypatch.setattr(settings, "drafty_data_dir", str(tmp_path))
+    monkeypatch.setattr(settings, "drafty_env", "production")
+    monkeypatch.setattr(settings, "supabase_url", "https://example.supabase.co")
+    monkeypatch.setattr(settings, "supabase_secret_key", "service-role")
+    profile = _profile()
+    digest = profile_digest(profile)
+    store = _FakeGeometryBuilds()
+    charges = {"n": 0}
+
+    def _charge(_owner: str) -> None:
+        charges["n"] += 1
+
+    def _spawn(_profile: dict) -> str:
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "Modal function 'generate_revolved' was not found on app "
+                "'drafty-engineering'. Redeploy the Modal app, then retry."
+            ),
+        )
+
+    monkeypatch.setattr("drafty_api.geometry_cache.read_remote_cache", lambda *_a, **_k: None)
+    monkeypatch.setattr("drafty_api.jobs.charge_preview", _charge)
+    monkeypatch.setattr("drafty_api.remote.spawn_remote_geometry", _spawn)
+    _install_fake_builds(monkeypatch, store)
+
+    with pytest.raises(HTTPException) as exc:
+        load_or_build_geometry(profile, "owner-spawn-fail")
+    assert exc.value.status_code == 502
+    assert "generate_revolved" in str(exc.value.detail).lower()
+    assert charges["n"] == 1
+    assert store.rows[digest]["charged"] is True
+    assert store.rows[digest]["status"] == "failed"
+    assert store.rows[digest]["modal_call_id"] is None
+    assert "generate_revolved" in str(store.rows[digest]["error"]).lower()
+
+
+def test_stale_geometry_build_fails_without_new_modal_spawn(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "drafty_data_dir", str(tmp_path))
+    monkeypatch.setattr(settings, "drafty_env", "production")
+    monkeypatch.setattr(settings, "supabase_url", "https://example.supabase.co")
+    monkeypatch.setattr(settings, "supabase_secret_key", "service-role")
+    profile = _profile()
+    digest = profile_digest(profile)
+    store = _FakeGeometryBuilds()
+    store.rows[digest] = {
+        "digest": digest,
+        "owner_id": "owner",
+        "status": "running",
+        "modal_call_id": "fc-stale",
+        "profile": {},
+        "error": None,
+        "charged": True,
+        "created_at": "2026-11-04T00:00:00+00:00",
+        "updated_at": "2026-11-04T00:00:00+00:00",
+    }
+    spawns = {"n": 0}
+
+    monkeypatch.setattr("drafty_api.geometry_cache.read_remote_cache", lambda *_a, **_k: None)
+    monkeypatch.setattr("drafty_api.geometry_cache.GEOMETRY_BUILD_STALE_AFTER_S", 60)
+    monkeypatch.setattr(
+        "drafty_api.remote.spawn_remote_geometry",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("no spawn")),
+    )
+    monkeypatch.setattr(
+        "drafty_api.remote.poll_remote_geometry",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("no poll on stale")),
+    )
+    _install_fake_builds(monkeypatch, store)
+
+    with pytest.raises(HTTPException) as exc:
+        load_or_build_geometry(profile, "owner")
+    assert exc.value.status_code == 503
+    assert "timed out" in str(exc.value.detail).lower()
+    assert store.rows[digest]["status"] == "failed"
+    assert spawns["n"] == 0

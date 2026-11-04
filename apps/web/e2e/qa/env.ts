@@ -55,11 +55,33 @@ export const qaEnv = {
   runLiveModal: flag("DRAFTY_QA_RUN_LIVE_MODAL"),
   runLiveMeta: flag("DRAFTY_QA_RUN_LIVE_META"),
   runProduction: flag("DRAFTY_QA_RUN_PRODUCTION"),
+  /** When set, paid production tests require this git SHA (or prefix) to be deployed. */
+  requireProdCommit: (process.env.DRAFTY_QA_REQUIRE_PROD_COMMIT || "").trim(),
   localWeb: (process.env.DRAFTY_QA_LOCAL_WEB || "http://127.0.0.1:5173").trim(),
   localApi: (process.env.DRAFTY_QA_LOCAL_API || "http://127.0.0.1:8000").trim(),
   productionWeb: (process.env.DRAFTY_QA_PRODUCTION_WEB || "https://drafty-web-umber.vercel.app").trim(),
   productionApi: (process.env.DRAFTY_QA_PRODUCTION_API || "https://drafty-api.vercel.app").trim(),
 };
+
+/**
+ * Paid Modal/Meta must not run against production until the Storage cleanup fix
+ * (and the rest of the QA branch) is actually deployed. Branch HEAD alone is not proof.
+ */
+export function productionPaidQaAuthorized(): { ok: boolean; reason: string } {
+  if (!qaEnv.runProduction) return { ok: false, reason: "DRAFTY_QA_RUN_PRODUCTION is false." };
+  if (!qaEnv.runLiveModal && !qaEnv.runLiveMeta) {
+    return { ok: false, reason: "Neither DRAFTY_QA_RUN_LIVE_MODAL nor DRAFTY_QA_RUN_LIVE_META is true." };
+  }
+  if (!qaEnv.requireProdCommit) {
+    return {
+      ok: false,
+      reason:
+        "Set DRAFTY_QA_REQUIRE_PROD_COMMIT to the deployed production git SHA before paid cloud QA. " +
+        "Do not assume a QA-branch fix is live on Vercel production before merge+deploy.",
+    };
+  }
+  return { ok: true, reason: "flags+commit gate set" };
+}
 
 export function hasPrimaryCredentials(): boolean {
   return requiredPresent("DRAFTY_QA_EMAIL", "DRAFTY_QA_PASSWORD");

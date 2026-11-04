@@ -166,23 +166,39 @@ export function Scenario() {
   // (shareInFlight absorbs StrictMode's double effect run), then replaces
   // itself with that scenario's route. A named scenario that cannot be
   // loaded is an error, never a silent replacement scenario.
+  //
+  // Create must not adopt before navigate: adopting enables Send while the
+  // route is still "/scenario/new", so a fast first turn is aborted when the
+  // open-route effect runs and calls turnAbort.abort().
+  //
+  // Keep the typed draft across create→open: App mounts one Scenario for both
+  // "/scenario/new" and "/scenario/:id". Only clear draft on a fresh New Problem
+  // or when switching between two open scenario ids.
   useEffect(() => {
     let cancel = false;
-    turnAbort.current?.abort();
-    openIdRef.current = entry.kind === "open" ? entry.id : null;
+    const previousOpenId = openIdRef.current;
+    const nextOpenId = entry.kind === "open" ? entry.id : null;
+    const switchingOpenScenarios =
+      previousOpenId !== null && nextOpenId !== null && previousOpenId !== nextOpenId;
+    if (previousOpenId !== nextOpenId) turnAbort.current?.abort();
+    openIdRef.current = nextOpenId;
     setSession(null);
     setForm(emptyForm());
     setEditingProjectName(false);
     setProjectNameError(null);
-    setDraft("");
+    if (entry.kind === "create" || switchingOpenScenarios) setDraft("");
     setError(null);
     const load =
       entry.kind === "open" ? getScenario(entry.id) : shareInFlight(creationSlot.current, createScenario);
     load
       .then((next) => {
         if (cancel) return;
+        if (entry.kind === "create") {
+          rememberScenarioId(localStorage, next.id);
+          navigate(scenarioPath(next.id), { replace: true });
+          return;
+        }
         adopt(next);
-        if (entry.kind === "create") navigate(scenarioPath(next.id), { replace: true });
       })
       .catch((reason) => {
         if (!cancel) setError(reason instanceof Error ? reason.message : "The scenario service is unavailable.");

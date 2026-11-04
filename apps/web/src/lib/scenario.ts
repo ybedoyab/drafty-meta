@@ -174,7 +174,10 @@ export function scenarioPath(id: string): string {
 }
 
 export function scenarioEntry(routeId: string | null | undefined): ScenarioEntry {
-  return routeId ? { kind: "open", id: routeId } : { kind: "create" };
+  // "/scenario/new" and "/scenario/:scenarioId" share one Scenario mount so a
+  // typed draft survives create→open navigation. Treat the literal "new" as create.
+  if (!routeId || routeId === "new") return { kind: "create" };
+  return { kind: "open", id: routeId };
 }
 
 /** Run factory once while its promise is in flight; later calls start fresh. */

@@ -118,9 +118,17 @@ def mirror_scenario(session: dict, access_token: str | None, snapshot: bool = Fa
         response = client.post(f"{base}/rest/v1/scenarios?on_conflict=id", headers=headers, json=row)
         response.raise_for_status()
         if snapshot:
+            # Inserts only. Prefer: resolution=merge-duplicates requires UPDATE, which
+            # authenticated lacks on scenario_versions (INSERT alone is granted).
+            version_headers = {
+                "apikey": settings.supabase_publishable_key,
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json",
+                "Prefer": "return=minimal",
+            }
             version = client.post(
                 f"{base}/rest/v1/scenario_versions",
-                headers=headers,
+                headers=version_headers,
                 json={
                     "scenario_id": session["id"],
                     "owner_id": session["owner_id"],
@@ -247,7 +255,20 @@ def delete_private_object(object_path: str) -> bool:
         headers={"apikey": key, "Authorization": f"Bearer {key}"},
         timeout=30,
     )
-    return response.status_code < 400 or response.status_code == 404
+    if response.status_code < 400 or response.status_code == 404:
+        return True
+    # Supabase Storage often wraps not-found as HTTP 400 with statusCode "404".
+    try:
+        payload = response.json()
+    except json.JSONDecodeError:
+        payload = {}
+    if not isinstance(payload, dict):
+        return False
+    return str(payload.get("statusCode") or "") == "404" or payload.get("error") in {
+        "not_found",
+        "NotFound",
+        "NoSuchKey",
+    }
 
 
 def download_private_object(object_path: str) -> bytes | None:
@@ -371,6 +392,120 @@ def release_geometry_build_lock_remote(digest: str, owner_id: str) -> None:
         "release_geometry_build_lock",
         {"p_digest": digest, "p_owner_id": owner_id},
     )
+
+
+def get_geometry_build_remote(digest: str) -> dict | None:
+    """Return the durable geometry build row, or None when missing/unavailable."""
+
+    result = call_service_rpc("get_geometry_build", {"p_digest": digest})
+    if not isinstance(result, dict):
+        return None
+    return result
+
+
+def claim_geometry_build_start_remote(
+    digest: str,
+    owner_id: str,
+    profile: dict | None = None,
+    stale_after_seconds: int = 600,
+    resume_after_seconds: int = 45,
+) -> dict | None:
+    """Claim or observe a geometry build attempt. None when the RPC backend is unavailable."""
+
+    result = call_service_rpc(
+        "claim_geometry_build_start",
+        {
+            "p_digest": digest,
+            "p_owner_id": owner_id,
+            "p_profile": profile or {},
+            "p_stale_after_seconds": int(stale_after_seconds),
+            "p_resume_after_seconds": int(resume_after_seconds),
+        },
+    )
+    if not isinstance(result, dict):
+        return None
+    return result
+
+
+def mark_geometry_build_charged_remote(digest: str) -> bool | None:
+    """Persist the charge bit before Modal spawn. None when unavailable."""
+
+    result = call_service_rpc("mark_geometry_build_charged", {"p_digest": digest})
+    if result is None:
+        return None
+    return bool(result)
+
+
+def attach_geometry_build_call_remote(digest: str, call_id: str) -> bool | None:
+    """Bind a Modal call id onto a queued build. None when unavailable."""
+
+    result = call_service_rpc(
+        "attach_geometry_build_call",
+        {"p_digest": digest, "p_call_id": call_id},
+    )
+    if result is None:
+        return None
+    return bool(result)
+
+
+def transition_geometry_build_remote(
+    digest: str,
+    from_statuses: list[str],
+    to_status: str,
+    error: str | None = None,
+) -> bool | None:
+    """Conditional status transition. None when unavailable; False when not applicable."""
+
+    result = call_service_rpc(
+        "transition_geometry_build",
+        {
+            "p_digest": digest,
+            "p_from_statuses": from_statuses,
+            "p_to_status": to_status,
+            "p_error": error,
+        },
+    )
+    if result is None:
+        return None
+    return bool(result)
+
+
+def upsert_geometry_build_remote(
+    digest: str,
+    owner_id: str,
+    status: str,
+    *,
+    modal_call_id: str | None = None,
+    profile: dict | None = None,
+    error: str | None = None,
+    charged: bool = False,
+) -> bool:
+    """Legacy unconditional upsert from migration 0008. Prefer conditional RPCs."""
+
+    if not settings.supabase_configured:
+        return False
+    try:
+        response = httpx.post(
+            f"{settings.supabase_url.rstrip('/')}/rest/v1/rpc/upsert_geometry_build",
+            headers={
+                "apikey": settings.supabase_secret,
+                "Authorization": f"Bearer {settings.supabase_secret}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "p_digest": digest,
+                "p_owner_id": owner_id,
+                "p_status": status,
+                "p_modal_call_id": modal_call_id,
+                "p_profile": profile or {},
+                "p_error": error,
+                "p_charged": charged,
+            },
+            timeout=30,
+        )
+    except httpx.HTTPError:
+        return False
+    return response.status_code < 400
 
 
 def _upload(client: httpx.Client, base: str, key: str, job_id: str, name: str, path: Path) -> None:

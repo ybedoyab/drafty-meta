@@ -175,6 +175,10 @@ def purge_remote_job(job_id: str, owner_id: str) -> dict:
             except Exception as exc:
                 report["errors"].append(f"cancel:{type(exc).__name__}")
     artifact_rows = _select("artifacts", {"job_id": f"eq.{job_id}", "select": "name,storage_path"})
+    # Local-only jobs never wrote remote storage or a jobs row — skip speculative deletes.
+    if not rows and not artifact_rows:
+        report["row_deleted"] = True
+        return report
     paths: list[str] = []
     for item in artifact_rows:
         storage_path = str(item.get("storage_path") or "").lstrip("/")
@@ -302,24 +306,80 @@ def remote_preview(spec: dict) -> bytes:
     return bytes(payload)
 
 
-def remote_geometry(profile: dict) -> dict[str, bytes]:
-    """STEP, STL, and the GLB preview for a revolved profile, built on Modal."""
+def spawn_remote_geometry(profile: dict) -> str:
+    """Start Modal generate_revolved without waiting. Returns the FunctionCall id."""
 
     import modal
 
-    call = modal.Function.from_name("drafty-engineering", "generate_revolved").spawn(profile)
     try:
-        payload = call.get(timeout=50)
-    except TimeoutError as exc:
-        _cancel_call(call)
+        call = modal.Function.from_name("drafty-engineering", "generate_revolved").spawn(profile)
+    except Exception as exc:
+        # Map provider lookup / auth failures to an actionable HTTP error without
+        # leaking tokens. Callers must mark the durable build failed when this raises
+        # after a preview charge so CAD does not stay pending forever.
+        name = type(exc).__name__
+        detail = str(exc).replace("\n", " ").strip()[:240]
+        if "not found" in detail.lower() or name.endswith("NotFoundError"):
+            raise HTTPException(
+                status_code=502,
+                detail=(
+                    "Modal function 'generate_revolved' was not found on app "
+                    "'drafty-engineering'. Redeploy the Modal app, then retry."
+                ),
+            ) from exc
         raise HTTPException(
-            status_code=504,
-            detail="The geometry is still building on Modal. Try again in a moment.",
+            status_code=502,
+            detail=f"Modal geometry spawn failed ({name}).",
         ) from exc
+    call_id = getattr(call, "object_id", None) or getattr(call, "call_id", None)
+    if not call_id:
+        raise HTTPException(status_code=502, detail="Modal did not return a geometry call id.")
+    return str(call_id)
+
+
+def poll_remote_geometry(call_id: str, timeout: float = 0) -> dict[str, bytes] | None:
+    """Collect geometry bytes when ready. None means still running. Does not cancel."""
+
+    import modal
+
+    call = modal.FunctionCall.from_id(str(call_id))
+    try:
+        payload = call.get(timeout=timeout)
+    except TimeoutError:
+        return None
     names = ("model.step", "model.stl", "preview.glb")
     if not isinstance(payload, dict) or any(not isinstance(payload.get(name), (bytes, bytearray)) for name in names):
         raise HTTPException(status_code=502, detail="Modal did not return the geometry files.")
     return {name: bytes(payload[name]) for name in names}
+
+
+def cancel_remote_geometry_call(call_id: str) -> None:
+    """Best-effort cancel when a call id could not be durably attached."""
+
+    import modal
+
+    try:
+        call = modal.FunctionCall.from_id(str(call_id))
+    except Exception:
+        return
+    _cancel_call(call)
+
+
+def remote_geometry(profile: dict) -> dict[str, bytes]:
+    """STEP, STL, and the GLB preview for a revolved profile, built on Modal.
+
+    Prefer spawn_remote_geometry + poll_remote_geometry for production HTTP handlers so
+    serverless request limits do not cancel long CadQuery builds.
+    """
+
+    call_id = spawn_remote_geometry(profile)
+    files = poll_remote_geometry(call_id, timeout=50)
+    if files is None:
+        raise HTTPException(
+            status_code=504,
+            detail="The geometry is still building on Modal. Try again in a moment.",
+        )
+    return files
 
 
 _PROVIDER_CACHE: dict = {"at": 0.0, "value": None}

@@ -1,138 +1,218 @@
 # Drafty Engineering — Automated End-to-End QA Report
 
-**Tested baseline commit:** `c55173e2beeafef67dad197cc29544c46c08f8a9` (`main` after PR #1 merge)  
-**QA harness branch:** `qa/e2e-live-harness`  
-**Report date:** 2026-11-03  
+**Latest authorized production QA:** `prod-qa-0578799-20261104032051`  
+**Expected / verified production SHA:** `05787990cdeb663f0d55801a94ed46df8d7f04c3`  
 **Batch 10A:** not started  
 
-## Endpoints
+Historical archives (immutable; do not overwrite):
 
-| Target | Web | API |
-|---|---|---|
-| Local | http://127.0.0.1:5173 | http://127.0.0.1:8000 |
-| Production | https://drafty-web-umber.vercel.app | https://drafty-api.vercel.app |
+- `docs/qa/archive/PRODUCTION_QA_REPORT_prod-qa-64578bd-20261104005258.md`
+- `docs/qa/archive/drafty-qa-paid-budget_prod-qa-64578bd-20261104005258.json`
+- `docs/qa/archive/drafty-qa-paid-budget_prod-qa-0578799-20261104032051.json`
 
-## Environment capabilities (observed)
+---
 
-| Capability | Local | Production |
-|---|---|---|
-| `DRAFTY_AUTH_MODE` | `supabase` (forced for QA; process env had been `disabled`) | `supabase` |
-| Supabase API / auth | reachable / configured | reachable / configured |
-| Meta configured | true (reachable false in health probe) | true |
-| Modal configured / available | false / false | true / true |
-| Local CalculiX (`ccx` / `drafty-ccx`) | **unavailable** (Docker Desktop engine error; no `ccx` on PATH) | N/A (expected missing on Vercel; compute=`modal`) |
-| `DRAFTY_QA_RUN_LIVE_META` | false | false |
-| `DRAFTY_QA_RUN_LIVE_MODAL` | false | false |
-| `DRAFTY_QA_RUN_PRODUCTION` | true | true |
+## Production QA session `prod-qa-0578799-20261104032051` (2026-11-04)
 
-## Regression suite (non-live)
+**Authorization:** single controlled production run only. Executed once. No retry / no budget reset / no new run id.
+
+### Preflight
 
 | Check | Result |
 |---|---|
-| Ruff | PASS |
-| Pytest non-FEM | PASS (191) |
-| Pytest postgres concurrency | NOT RUN locally (disposable Postgres not restarted this session); covered in CI on `main` |
-| Pytest FEM / CalculiX | BLOCKED — local solver unavailable |
-| Vitest | PASS (23) |
-| TypeScript + production build | PASS |
-| Existing Playwright (`scenario` / `bracket-fem`) under local `auth=supabase` | BLOCKED — deterministic suite expects unauthenticated local mode (`AI not connected` / open `/scenario/new`). CI behavior preserved (auth disabled). |
+| Web deployment `8AeLjnpcr1vfygpernXrjLeftr2c` | Ready / Latest / Production / **Current** — commit `05787990…` — alias `drafty-web-umber.vercel.app` |
+| API deployment `Bz6wyJJqNT8YQWENe2GQL4rU2z4x` | Ready / Latest / Production / **Current** — commit `05787990…` — alias `drafty-api.vercel.app` |
+| `DRAFTY_QA_REQUIRE_PROD_COMMIT` | `05787990cdeb663f0d55801a94ed46df8d7f04c3` |
+| `DRAFTY_QA_BUDGET_RUN_ID` | `prod-qa-0578799-20261104032051` |
+| Live flags at start | `RUN_PRODUCTION=true`, `RUN_LIVE_MODAL=true`, `RUN_LIVE_META=true` |
+| Concurrent paid QA | none |
+| Prior archives preserved | yes |
 
-## Live QA suite (`apps/web/e2e/qa-live.spec.ts`)
+### Invocation
 
-Credentials loaded from repository-root `.env` via `e2e/qa/env.ts`. Passwords / JWTs / service-role secrets are not logged.
+```text
+cd apps/web
+npm run test:qa-production
+# playwright … --project=qa-production --workers=1 --retries=0
+```
 
-### Local (`--project=qa-local`)
+Exit code: **1** (fail-stop after geometry failure; remaining tests skipped).
 
-| Case | Status | Notes |
+### Per-test results
+
+| # | Test | Status | Notes |
+|---|---|---|---|
+| 1 | cleanup verified DRAFTY_QA leftover scenarios only | **PASS** | no failed deletes; known leftover IDs already-gone |
+| 2 | health and homepage are reachable | **PASS** | health 200; `auth=supabase`, `compute=modal`, `modal=true`, `meta=true`; paid gate ok |
+| 3 | auth persistence, rename, reload, and sign-in cycle | **PASS** | |
+| 4 | cross-user isolation via authenticated API | **PASS** | |
+| 5 | Staunton pawn geometry-only CAD + downloads + cache headers | **FAIL** | Timed out 180s waiting for `/geometry/` GET **200**. UI left **CAD pending**. |
+| 6 | classroom demo Euler-Bernoulli analysis and span compare | **DID NOT RUN** | skipped after serial failure |
+| 7 | aluminum bracket path (Modal CalculiX FEM) | **DID NOT RUN** | skipped — no FEM job |
+| 8 | mocked microphone UI | **DID NOT RUN** | skipped |
+| 9 | scenario deletion cleanup policy | **DID NOT RUN** | skipped |
+| 10 | optional single Meta turn | **DID NOT RUN** | skipped — no Meta request |
+
+`afterAll` cleanup: **deleted 2** QA-tracked scenarios. Post-run `scenarios` query for `DRAFTY_QA_%`: **empty**.
+
+### Paid operations
+
+| Kind | Authorized | Reservation | Invocation attempt | Completed response | Provider IDs |
+|---|---|---|---|---|---|
+| Modal geometry | 1 | **1** | **1** | **0** | `modal_call_id` **null** (never attached) |
+| Modal CalculiX FEM | 1 | 0 | 0 | 0 | no job id |
+| Meta AI turn | 1 | 0 | 0 | 0 | none |
+
+**Billing:** unknown (`billing: {}`, no measured cost fields).
+
+### End-of-session budget file
+
+```json
+{
+  "used": { "modal_geometry": 1, "modal_fem": 0, "meta": 0 },
+  "reservations": { "modal_geometry": 1, "modal_fem": 0, "meta": 0 },
+  "invocation_attempts": { "modal_geometry": 1, "modal_fem": 0, "meta": 0 },
+  "completed_responses": { "modal_geometry": 0, "modal_fem": 0, "meta": 0 },
+  "billing": {},
+  "jobIds": [],
+  "runId": "prod-qa-0578799-20261104032051"
+}
+```
+
+### Confirmed cause (geometry FAIL)
+
+Supabase evidence after the timeout (no additional paid spawn attempted by QA):
+
+| Fact | Value |
+|---|---|
+| `geometry_builds.digest` | `53d01db00c88f42539c2697e82581376d53e36431830216357ea9a50486afcb0` |
+| `status` | **`queued`** |
+| `charged` | **`true`** |
+| `modal_call_id` | **`null`** |
+| `error` | null |
+| `created_at` / `updated_at` | `2026-11-04 08:29:00.144+00` / `08:29:00.331+00` |
+| Profile | `staunton-pawn` (unique height from QA) |
+| `preview_charges` | id **4**, owner QA, `charged_at` `2026-11-04 08:29:00.232+00` |
+
+### Post-mortem from Vercel runtime logs (authenticated browser)
+
+Request: `GET /api/v1/scenarios/653b731d-…/geometry/preview.glb`  
+Deployment: `dpl_Bz6wyJJqNT8YQWENe2GQL4rU2z4x` · region `gru1` · request id `l4ttc-1793780939373-2fc8dad26626`
+
+Observed stage order at **03:29:00 local / 08:29:00 UTC**:
+
+1. storage miss `geometry/53d01db0…/manifest.json` → **400**
+2. `claim_geometry_build_start` → **200**
+3. `charge_preview_quota` → **200**
+4. `mark_geometry_build_charged` → **200**
+5. **No** `attach_geometry_build_call` RPC
+
+Exception (ASGI traceback on the geometry path):
+
+```text
+File ".../geometry_cache.py", line 349, in _load_or_progress_remote
+  call_id = spawn_remote_geometry(profile.model_dump())
+File ".../remote.py", line 314, in spawn_remote_geometry
+  call = modal.Function.from_name("drafty-engineering", "generate_revolved").spawn(profile)
+modal.exception.NotFoundError: Lookup failed for Function 'generate_revolved'
+  from the 'drafty-engineering' app: Function 'generate_revolved' not found
+  on App 'drafty-engineering' in environment 'main'.
+```
+
+**Root cause:** spawn failed **before** returning a Modal call id (`NotFoundError`). Attachment never ran. Because the exception was uncaught, the durable row stayed `charged=true` / `queued` / `modal_call_id=null`, so later polls returned **202 GeometryPending** during the resume grace window and the UI stayed on **CAD pending / Building the preview** instead of a terminal error.
+
+**Modal dashboard:** Cursor browser hit Modal login — function inventory for `drafty-engineering` could **not** be independently confirmed in-dashboard. Repo source still defines `@app.function … def generate_revolved` in `infra/modal/app.py`; production Modal env `main` does not currently expose that function to the API tokens in use.
+
+**Conclusion:** Not an attach-after-success bug. Charge succeeded; Modal lookup for `generate_revolved` failed; fail-open left an indefinitely pending charged job. FEM and Meta were not attempted (fail-stop).
+
+### Post-run controls
+
+- `DRAFTY_QA_RUN_LIVE_MODAL=false`
+- `DRAFTY_QA_RUN_LIVE_META=false`
+- Session budget archived at `docs/qa/archive/drafty-qa-paid-budget_prod-qa-0578799-20261104032051.json`
+- Batch 10A **not** started
+
+### Ready for Batch 10A?
+
+**No.** Geometry paid path still fails on production under the authorized budget; investigate charge→spawn/attach without starting another paid session until authorized.
+
+---
+
+## Historical — prior paid session `prod-qa-64578bd-20261104005258`
+
+**Production merge commit (prior paid QA):** `64578bd7203a86c156a600d28d4be2e3b43f3d04`  
+**Investigation tip (this branch):** see open PR for `fix/prod-qa-geometry-approve-budget`  
+
+### Deploy verification (2026-11-04, prior session)
+
+| Check | Result |
+|---|---|
+| `origin/main` tip (at paid QA) | `64578bd7203a86c156a600d28d4be2e3b43f3d04` |
+| GitHub Actions `ci` on that commit | **PASS** — python, api-bundle, web, e2e all green ([run 41780854121](https://github.com/ybedoyab/drafty-meta/actions/runs/41780854121)) |
+| GitHub commit status `Vercel – drafty-web` | **success** |
+| GitHub commit status `Vercel – drafty-api` | **success** |
+| Production health (`drafty-api.vercel.app`) | **200** — `auth=supabase`, `compute=modal`, `modal_available=true`, `meta=true` |
+| Exact SHA on production aliases via Vercel MCP/CLI | **Not independently readable** from this agent account (`ybedoyabs-projects` unauthorized) |
+
+### Production QA session results (prior paid run)
+
+Invocation: `npm run test:qa-production` under budget run id `prod-qa-64578bd-20261104005258`.
+
+| Step | Status | Notes |
 |---|---|---|
-| Health + homepage (desktop/mobile) | PASS | auth=supabase, solver unavailable, modal=false, meta=true |
-| Sign-in, create/rename `DRAFTY_QA_*`, reload, sign-out/in | PASS | Authenticated API GET confirmed ownership |
-| Cross-user isolation (API 401/403/404) | PASS | Secondary account cannot GET/rename/DELETE primary scenario |
-| Staunton pawn geometry + STEP/STL + cache header | PASS | Second fetch `x-drafty-geometry-cache=hit`; first also `hit` (local shared digest). No FEM started |
-| Classroom Euler–Bernoulli + 5 m compare | PASS | 3D FEM disabled; beam-element results shown |
-| Aluminum bracket real CalculiX | SKIP | Local CalculiX unavailable |
-| Mocked MediaRecorder mic UI | SKIP | Control not visible / not claimed as live ASR |
-| Deletion cleanup policy | PASS | `cleanup.geometry_cache=retained`; retry → 404/503 |
-| Live Meta (one paid turn) | SKIP | `DRAFTY_QA_RUN_LIVE_META=false` |
-| Cleanup teardown | PASS | 5 QA scenarios deleted |
+| Leftover `DRAFTY_QA_*` cleanup | **PASS** | Storage nested-404 delete live |
+| Health + homepage / auth / isolation / classroom / delete | **PASS** | |
+| One Modal pawn geometry miss → hit | **FAIL** | Budget slot consumed. Timed out 180s waiting for `/geometry/` GET 200. Scenario stuck `CAD pending`. |
+| One Modal CalculiX FEM + artifacts | **FAIL (pre-solve)** | Budget slot consumed before solve. Failed waiting for **Approve and open Studio** after Confirm faces (30s). |
+| ≤1 Meta turn | **NOT COMPLETED** | Budget reservation burned then harness skipped (`AI not connected` path). |
+| Cost | **NOT MEASURED** | `jobIds: []` |
 
-**Local summary:** 6 PASS · 3 SKIP · 0 FAIL  
+### Budget file (end of prior paid session)
 
-### Production (`--project=qa-production`)
+```json
+{
+  "used": { "modal_geometry": 1, "modal_fem": 1, "meta": 1 },
+  "jobIds": [],
+  "runId": "prod-qa-64578bd-20261104005258"
+}
+```
 
-| Case | Status | Notes |
-|---|---|---|
-| Health + homepage | PASS | compute=modal, modal=true, solver unavailable (expected), meta=true |
-| Auth persistence / rename / reload | PASS | |
-| Cross-user isolation | PASS | After signOut hardening |
-| Pawn geometry / Modal cache | SKIP | Would require Modal spend; `DRAFTY_QA_RUN_LIVE_MODAL=false` |
-| Classroom beam analysis | PASS | |
-| Bracket Modal FEM | SKIP | `DRAFTY_QA_RUN_LIVE_MODAL=false` |
-| Mocked mic UI | SKIP | |
-| Deletion cleanup | PASS | |
-| Live Meta | SKIP | flag false |
-| Cleanup teardown | PASS | 4 QA resources deleted |
+---
 
-**Production summary:** 5 PASS · 4 SKIP · 0 FAIL  
+## Investigation (branch `fix/prod-qa-geometry-approve-budget`)
 
-## Invocation / cost accounting
+No live Modal or Meta calls were made during this investigation.
 
-| Resource | Count | Cost |
-|---|---|---|
-| Paid Meta requests | 0 | NOT MEASURED / not invoked |
-| Paid Modal geometry builds | 0 (prod skipped by flag) | NOT MEASURED |
-| Paid Modal CalculiX solves | 0 | NOT MEASURED |
-| Paid Modal optimization | 0 | NOT MEASURED |
+### Confirmed root causes (pre-merge)
 
-Live transcription: **NOT TESTED** (mock MediaRecorder only).
+#### 1. CAD pending / preview quota without artifacts
 
-## Screenshots
+**Evidence (not speculation):**
 
-Under `docs/qa/screenshots/` (password fields cleared before capture):
+| Fact | Source |
+|---|---|
+| Preview charge at `2026-11-04T05:53:56.321871+00:00` | Supabase `preview_charges` id=3 for QA owner |
+| Zero objects under `artifacts/geometry/` after that charge | Supabase Storage list |
+| Empty `geometry_build_locks` after the window | Supabase table |
+| Production handler charged **then** waited on Modal with `call.get(timeout=50)` and **cancelled** the call on timeout | `geometry_cache.load_or_build_geometry` + `remote.remote_geometry` on `64578bd` |
+| Function `maxDuration` 60s; Modal `generate_revolved` timeout 180s | `vercel.json`, `infra/modal/app.py` |
+| QA waited 180s for a geometry GET **200** and never saw cache headers | prior `PRODUCTION_QA_REPORT` / Playwright waiter |
 
-- `local-homepage.png`, `local-homepage-mobile.png`
-- `local-projects-after-relogin.png`, `local-pawn-geometry.png`, `local-classroom-beam.png`
-- `production-homepage.png`, `production-homepage-mobile.png`
-- `production-projects-after-relogin.png`, `production-classroom-beam.png`
+**Conclusion (then):** Synchronous HTTP waiting for Modal inside a short-lived serverless request was the reliability failure mode.
 
-## Browser / API errors
+**Fix shipped in PR #4:** Durable async geometry builds — claim → charge → spawn → attach call id, return **202** while pending, poll without cancelling, publish digest cache atomically when ready. Frontend polls 202 with a bounded backoff (≤180s). Migrations `0008` + `0009` applied on Supabase.
 
-- No unexpected 500s on exercised authenticated CRUD paths.
-- Production `/api/v1/health` correctly reports local CalculiX missing while Modal is available.
-- Local process env initially forced `DRAFTY_AUTH_MODE=disabled` over `.env`; QA restarted with explicit `supabase`.
+#### 2. Bracket Approve missing before CalculiX
 
-## Defects
+Prefer upsert on `scenario_versions` required UPDATE; authenticated only had INSERT → 503. Fixed with `Prefer: return=minimal` for version inserts.
 
-| ID | Sev | Finding |
-|---|---|---|
-| D1 | P1 | `dev.ps1` aborted startup when Docker engine returned HTTP 500 on `docker image inspect` (`$ErrorActionPreference=Stop`). **Fixed** with try/catch so API/web still start. |
-| D2 | P2 | Host/shell `DRAFTY_AUTH_MODE=disabled` overrides `.env` because dotenv loads with `override=False`. Documented; QA forced `supabase` for the live run. |
-| D3 | P2 | Deterministic Playwright suite is incompatible with local `auth=supabase` without a login fixture (expected; CI remains auth-disabled). |
+#### 3. Meta QA budget accounting
 
-## Cleanup
+Reserve only after AI-connected check; layered counters for reservations / invocation_attempts / completed_responses.
 
-- Only `DRAFTY_QA_*` scenarios created by this run were deleted.
-- Shared geometry cache retained per API cleanup policy.
-- No unrelated projects or Storage prefixes were wiped.
+### Remaining limitations (updated after `prod-qa-0578799-20261104032051`)
 
-## Ready for Batch 10A?
-
-**Not yet.** Auth, project CRUD, isolation, classroom beam analysis, local pawn geometry/cache, and production smoke are proven. Remaining before Batch 10A:
-
-1. Restore local CalculiX (Docker Desktop or `ccx` on PATH) and run real FEM benchmarks + bracket E2E.
-2. With explicit authorization, set `DRAFTY_QA_RUN_LIVE_MODAL=true` for **one** production geometry + **one** CalculiX solve (no optimization loops).
-3. Optionally `DRAFTY_QA_RUN_LIVE_META=true` for **one** Meta turn.
-4. Keep CI deterministic suite on auth-disabled runners.
-
-## Implemented vs proven
-
-| Area | Implemented in product | Proven end-to-end in this QA |
-|---|---|---|
-| Supabase auth + projects | yes | yes (local + production) |
-| Cross-user isolation | yes | yes (API-level) |
-| Pawn CAD + cache | yes | yes locally; production Modal path skipped by flag |
-| Classroom beam analysis | yes | yes (local + production) |
-| CalculiX FEM | yes | **not proven** here (no local solver; Modal flag off) |
-| Meta AI | yes | **not proven** (flag off) |
-| Modal pipeline | yes | health shows available in prod; **job not executed** |
-| Scenario delete / geometry retain | yes | yes |
+- Async path is deployed, but production still observed **charged + queued + `modal_call_id` null** with no completed artifacts within 180s.
+- Stale `queued`/`running` builds fail closed after ~10 minutes without auto-spawning; a later client retry may charge again for a new attempt.
+- Do not reset archived budget files to “retry” spend.
+- Batch 10A not started.
