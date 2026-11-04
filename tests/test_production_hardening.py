@@ -15,6 +15,7 @@ from drafty_api.geometry_cache import (
     GENERATOR_REVISION,
     GEOMETRY_NAMES,
     MANIFEST_NAME,
+    GeometryPending,
     build_manifest,
     load_or_build_geometry,
     profile_digest,
@@ -498,3 +499,82 @@ def test_geometry_lock_backend_unavailable_fails_closed(tmp_path, monkeypatch):
         load_or_build_geometry(profile, "owner-lock")
     assert exc.value.status_code == 503
     assert "unavailable" in str(exc.value.detail).lower()
+
+
+def test_production_geometry_miss_spawns_async_without_sync_wait(tmp_path, monkeypatch):
+    """Quota charges once, Modal is spawned, and the HTTP path stays pending (no cancel)."""
+
+    monkeypatch.setattr(settings, "drafty_data_dir", str(tmp_path))
+    monkeypatch.setattr(settings, "drafty_env", "production")
+    monkeypatch.setattr(settings, "supabase_url", "https://example.supabase.co")
+    monkeypatch.setattr(settings, "supabase_secret_key", "service-role")
+    profile = _profile()
+    digest = profile_digest(profile)
+    builds: dict[str, dict] = {}
+    charges = {"n": 0}
+    spawns = {"n": 0, "id": "fc-geometry-1"}
+    polls = {"n": 0}
+
+    monkeypatch.setattr("drafty_api.geometry_cache.read_remote_cache", lambda *_a, **_k: None)
+    monkeypatch.setattr("drafty_api.geometry_cache._claim_remote_lock", lambda *_a, **_k: True)
+    monkeypatch.setattr("drafty_api.geometry_cache._release_remote_lock", lambda *_a, **_k: None)
+
+    def _charge(_owner: str) -> None:
+        charges["n"] += 1
+
+    def _get_build(d: str) -> dict | None:
+        return builds.get(d)
+
+    def _upsert(d: str, owner: str, status: str, **kwargs) -> bool:
+        prev = builds.get(d) or {}
+        builds[d] = {
+            "digest": d,
+            "owner_id": owner,
+            "status": status,
+            "modal_call_id": kwargs.get("modal_call_id") or prev.get("modal_call_id"),
+            "profile": kwargs.get("profile") or prev.get("profile") or {},
+            "error": kwargs.get("error"),
+            "charged": bool(prev.get("charged") or kwargs.get("charged")),
+        }
+        return True
+
+    def _spawn(_profile: dict) -> str:
+        spawns["n"] += 1
+        return str(spawns["id"])
+
+    def _poll(_call_id: str, timeout: float = 0):
+        polls["n"] += 1
+        if polls["n"] == 1:
+            return None
+        return _fake_files(digest)
+
+    monkeypatch.setattr("drafty_api.jobs.charge_preview", _charge)
+    monkeypatch.setattr("drafty_api.geometry_cache._remote_build_row", _get_build)
+    monkeypatch.setattr("drafty_api.geometry_cache._upsert_remote_build", _upsert)
+    monkeypatch.setattr("drafty_api.remote.spawn_remote_geometry", _spawn)
+    monkeypatch.setattr("drafty_api.remote.poll_remote_geometry", _poll)
+    monkeypatch.setattr("drafty_api.geometry_cache.write_remote_cache", lambda *_a, **_k: None)
+
+    with pytest.raises(GeometryPending) as pending:
+        load_or_build_geometry(profile, "owner-async")
+    assert pending.value.digest == digest
+    assert pending.value.status == "running"
+    assert charges["n"] == 1
+    assert spawns["n"] == 1
+    assert builds[digest]["modal_call_id"] == "fc-geometry-1"
+    assert builds[digest]["charged"] is True
+
+    with pytest.raises(GeometryPending):
+        load_or_build_geometry(profile, "owner-async")
+    assert charges["n"] == 1
+    assert spawns["n"] == 1
+    assert polls["n"] == 1
+
+    files, hit = load_or_build_geometry(profile, "owner-async")
+    assert hit is False
+    assert files["preview.glb"].startswith(digest.encode())
+    assert builds[digest]["status"] == "completed"
+    assert charges["n"] == 1
+    assert spawns["n"] == 1
+    assert polls["n"] == 2
+    assert read_local_cache(digest) is not None

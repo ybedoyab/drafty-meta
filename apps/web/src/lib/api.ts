@@ -453,10 +453,25 @@ export async function downloadScenarioReport(id: string) {
   URL.revokeObjectURL(url);
 }
 
-/** A blob URL for one server-built geometry file: preview.glb, model.step, or model.stl. */
+/** A blob URL for one server-built geometry file: preview.glb, model.step, or model.stl.
+ *
+ * Production may return 202 while Modal builds; poll with a bounded backoff instead of
+ * holding one long serverless request open.
+ */
 export async function scenarioGeometryUrl(id: string, name: string) {
-  const response = await request(`/api/v1/scenarios/${id}/geometry/${name}`, undefined, false);
-  return URL.createObjectURL(await response.blob());
+  const path = `/api/v1/scenarios/${id}/geometry/${name}`;
+  const deadline = Date.now() + 180_000;
+  let delayMs = 1_500;
+  while (Date.now() < deadline) {
+    const response = await request(path, undefined, false);
+    if (response.status === 202) {
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+      delayMs = Math.min(delayMs + 500, 4_000);
+      continue;
+    }
+    return URL.createObjectURL(await response.blob());
+  }
+  throw new Error("The geometry is still building. Try again in a moment.");
 }
 
 export async function downloadScenarioGeometry(id: string, name: string, filename: string) {

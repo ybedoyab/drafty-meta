@@ -233,16 +233,25 @@ def write_remote_cache(digest: str, files: dict[str, bytes]) -> None:
         )
 
 
+class GeometryPending(Exception):
+    """Durable Modal geometry build has started or is still running."""
+
+    def __init__(self, digest: str, status: str) -> None:
+        self.digest = digest
+        self.status = status
+        super().__init__(f"Geometry build {status} for {digest}")
+
+
 def load_or_build_geometry(profile: RevolvedProfile, owner: str) -> tuple[dict[str, bytes], bool]:
     """Return geometry files and whether this call was a cache hit.
 
     Cache hits never charge preview quota and never call Modal. Misses charge once,
     build (local CadQuery or Modal), then store under the versioned content digest.
 
-    In production, a distributed per-digest lock prevents duplicate Modal builds. If
-    another instance holds the lock, this call waits briefly for the cache and then
-    returns a recoverable 503 instead of starting a second Modal job. Lock-backend
-    failures fail closed (503).
+    In production, Modal generation is durable and asynchronous: the first miss
+    charges quota, spawns Modal, persists a build row, and raises GeometryPending so
+    the HTTP handler can return 202. Later polls progress the same call_id without
+    cancelling Modal or re-charging. Digests stay immutable; locks only serialize start.
     """
 
     digest = profile_digest(profile)
@@ -250,21 +259,58 @@ def load_or_build_geometry(profile: RevolvedProfile, owner: str) -> tuple[dict[s
     if hit is not None:
         return hit, True
 
+    if settings.production:
+        return _load_or_progress_remote(profile, owner, digest)
+
     with _digest_lock(digest):
         hit = _try_read(digest)
         if hit is not None:
             return hit, True
 
-        claimed_remote = _claim_remote_lock(digest, owner)
+        from drafty_api.jobs import charge_preview
+
+        charge_preview(owner)
+        files = _export_local(profile)
+        verify_files(files, build_manifest(files, digest), digest)
+        cached = write_local_cache(digest, files)
+        return cached, False
+
+
+def _load_or_progress_remote(
+    profile: RevolvedProfile, owner: str, digest: str
+) -> tuple[dict[str, bytes], bool]:
+    """Production path: digest cache, durable Modal job, no sync wait on the request."""
+
+    progressed = _progress_existing_build(digest, owner)
+    if progressed is not None:
+        return progressed, False
+
+    with _digest_lock(digest):
+        hit = _try_read(digest)
+        if hit is not None:
+            return hit, True
+
+        progressed = _progress_existing_build(digest, owner)
+        if progressed is not None:
+            return progressed, False
+
+        build = _remote_build_row(digest)
+        if build and build.get("status") in {"queued", "running"} and build.get("modal_call_id"):
+            raise GeometryPending(digest, str(build.get("status") or "running"))
+
+        claimed_remote = _claim_remote_lock(digest, owner, ttl_seconds=45)
         if claimed_remote is None:
             raise HTTPException(
                 status_code=503,
                 detail="Geometry build lock backend is unavailable. Retry shortly.",
             )
         if claimed_remote is False:
-            waited = _wait_for_cache(digest, attempts=24, delay_s=0.25)
+            waited = _wait_for_cache(digest, attempts=8, delay_s=0.25)
             if waited is not None:
                 return waited, True
+            build = _remote_build_row(digest)
+            if build and build.get("status") in {"queued", "running"}:
+                raise GeometryPending(digest, str(build.get("status") or "running"))
             raise HTTPException(
                 status_code=503,
                 detail={
@@ -279,22 +325,123 @@ def load_or_build_geometry(profile: RevolvedProfile, owner: str) -> tuple[dict[s
             if hit is not None:
                 return hit, True
 
-            from drafty_api.jobs import charge_preview
+            already_charged = bool(build and build.get("charged"))
+            if not already_charged:
+                from drafty_api.jobs import charge_preview
 
-            charge_preview(owner)
-            if settings.production:
-                from drafty_api.remote import remote_geometry
+                charge_preview(owner)
 
-                files = remote_geometry(profile.model_dump())
-            else:
-                files = _export_local(profile)
-            verify_files(files, build_manifest(files, digest), digest)
-            cached = write_local_cache(digest, files)
-            if settings.production and settings.supabase_configured:
-                write_remote_cache(digest, cached)
-            return cached, False
+            from drafty_api.remote import spawn_remote_geometry
+
+            call_id = spawn_remote_geometry(profile.model_dump())
+            if not _upsert_remote_build(
+                digest,
+                owner,
+                "running",
+                modal_call_id=call_id,
+                profile=profile.model_dump(),
+                charged=True,
+            ):
+                raise HTTPException(
+                    status_code=503,
+                    detail="Geometry build status backend is unavailable. Retry shortly.",
+                )
         finally:
             _release_remote_lock(digest, owner)
+
+        raise GeometryPending(digest, "running")
+
+
+def _progress_existing_build(digest: str, owner: str) -> dict[str, bytes] | None:
+    build = _remote_build_row(digest)
+    if not build:
+        return None
+    status = str(build.get("status") or "")
+    call_id = build.get("modal_call_id")
+    if status == "failed":
+        # Starter overwrites a failed row after reclaiming the digest lock.
+        return None
+    if status == "completed":
+        hit = _try_read(digest)
+        if hit is not None:
+            return hit
+        return None
+    if status not in {"queued", "running"} or not call_id:
+        return None
+
+    from drafty_api.remote import poll_remote_geometry
+
+    try:
+        files = poll_remote_geometry(str(call_id), timeout=0)
+    except HTTPException as exc:
+        _upsert_remote_build(
+            digest,
+            owner,
+            "failed",
+            modal_call_id=str(call_id),
+            error=str(exc.detail),
+            charged=bool(build.get("charged")),
+        )
+        raise
+    except Exception as exc:
+        _upsert_remote_build(
+            digest,
+            owner,
+            "failed",
+            modal_call_id=str(call_id),
+            error=str(exc)[:500],
+            charged=bool(build.get("charged")),
+        )
+        raise HTTPException(status_code=502, detail="Modal geometry build failed.") from exc
+
+    if files is None:
+        raise GeometryPending(digest, status or "running")
+
+    verify_files(files, build_manifest(files, digest), digest)
+    cached = write_local_cache(digest, files)
+    if settings.supabase_configured:
+        write_remote_cache(digest, cached)
+    _upsert_remote_build(
+        digest,
+        owner,
+        "completed",
+        modal_call_id=str(call_id),
+        charged=bool(build.get("charged")),
+    )
+    return cached
+
+
+def _remote_build_row(digest: str) -> dict | None:
+    if not settings.supabase_configured:
+        return None
+    from drafty_api.storage import get_geometry_build_remote
+
+    return get_geometry_build_remote(digest)
+
+
+def _upsert_remote_build(
+    digest: str,
+    owner: str,
+    status: str,
+    *,
+    modal_call_id: str | None = None,
+    profile: dict | None = None,
+    error: str | None = None,
+    charged: bool = False,
+) -> bool:
+    if not settings.supabase_configured:
+        return False
+    from drafty_api.storage import upsert_geometry_build_remote
+
+    return upsert_geometry_build_remote(
+        digest,
+        owner,
+        status,
+        modal_call_id=modal_call_id,
+        profile=profile,
+        error=error,
+        charged=charged,
+    )
 
 
 def _try_read(digest: str) -> dict[str, bytes] | None:
@@ -318,14 +465,14 @@ def _wait_for_cache(digest: str, attempts: int, delay_s: float) -> dict[str, byt
     return None
 
 
-def _claim_remote_lock(digest: str, owner: str) -> bool | None:
+def _claim_remote_lock(digest: str, owner: str, ttl_seconds: int = 120) -> bool | None:
     """True when claimed, False when held elsewhere, None when the backend is unavailable."""
 
     if not (settings.production and settings.supabase_configured):
         return True
     from drafty_api.storage import claim_geometry_build_lock_remote
 
-    return claim_geometry_build_lock_remote(digest, owner)
+    return claim_geometry_build_lock_remote(digest, owner, ttl_seconds=ttl_seconds)
 
 
 def _release_remote_lock(digest: str, owner: str) -> None:

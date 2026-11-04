@@ -1,53 +1,34 @@
 # Drafty Engineering — Automated End-to-End QA Report
 
-**Production merge commit:** `64578bd7203a86c156a600d28d4be2e3b43f3d04`  
-**Branch:** `main` (PR #3 merged)  
-**PR:** https://github.com/ybedoyab/drafty-meta/pull/3  
+**Production merge commit (prior paid QA):** `64578bd7203a86c156a600d28d4be2e3b43f3d04`  
+**Investigation tip (this branch):** see open PR for `fix/prod-qa-geometry-approve-budget`  
 **Batch 10A:** not started  
 
 ## Deploy verification (2026-11-04)
 
 | Check | Result |
 |---|---|
-| `origin/main` tip | `64578bd7203a86c156a600d28d4be2e3b43f3d04` |
+| `origin/main` tip (at paid QA) | `64578bd7203a86c156a600d28d4be2e3b43f3d04` |
 | GitHub Actions `ci` on that commit | **PASS** — python, api-bundle, web, e2e all green ([run 41780854121](https://github.com/ybedoyab/drafty-meta/actions/runs/41780854121)) |
-| GitHub commit status `Vercel – drafty-web` | **success** — Deployment has completed (`…/drafty-web/BQAaDvA6npC24wQtoKuvEcARGAdm`) |
-| GitHub commit status `Vercel – drafty-api` | **success** — Deployment has completed (`…/drafty-api/9CGLG6qgmj9fQ2pY9ZtWSaTDg4fE`) |
+| GitHub commit status `Vercel – drafty-web` | **success** |
+| GitHub commit status `Vercel – drafty-api` | **success** |
 | Production health (`drafty-api.vercel.app`) | **200** — `auth=supabase`, `compute=modal`, `modal_available=true`, `meta=true` |
-| Storage nested-404 delete fix live | **YES** — production leftover DELETE no longer returns 503; prior leftover IDs reported `already-gone` / new QA rows deleted successfully |
-| Exact SHA on production aliases via Vercel MCP/CLI | **Not independently readable** from this agent account (team `ybedoyabs-projects` unauthorized). Verification used commit statuses + main tip identity + live cleanup behavior instead. |
-| Local rebuild asset fingerprint at `64578bd` | CSS `index-8SMhBQiK.css` matches production; JS hash differs (expected when Vercel injects `VITE_*` at build time) |
+| Exact SHA on production aliases via Vercel MCP/CLI | **Not independently readable** from this agent account (`ybedoyabs-projects` unauthorized) |
 
-## Environment flags (production QA session)
+## Production QA session results (paid run; do not re-run unpaid)
 
-| Flag | Value |
-|---|---|
-| `DRAFTY_QA_RUN_PRODUCTION` | true |
-| `DRAFTY_QA_RUN_LIVE_MODAL` | true |
-| `DRAFTY_QA_RUN_LIVE_META` | true |
-| `DRAFTY_QA_REQUIRE_PROD_COMMIT` | `64578bd7203a86c156a600d28d4be2e3b43f3d04` |
-| Budget run id | `prod-qa-64578bd-20261104005258` |
-
-## Production QA session results
-
-Invocation: `npm run test:qa-production` (`--workers=1 --retries=0`), then continued remaining tests under the **same** budget run id after the first paid failure (no budget reset; no second geometry/FEM reservation).
+Invocation: `npm run test:qa-production` under budget run id `prod-qa-64578bd-20261104005258`.
 
 | Step | Status | Notes |
 |---|---|---|
-| Leftover `DRAFTY_QA_*` cleanup | **PASS** | Prior IDs already gone; session rows deleted (including failed pawn/bracket). `failed: []` |
-| Health + homepage | **PASS** | Modal/Meta/Supabase configured on production |
-| Auth persistence / rename / reload | **PASS** | |
-| Cross-user isolation | **PASS** | |
-| Classroom demo + span compare | **PASS** | No paid Modal/Meta |
-| Scenario deletion cleanup policy | **PASS** | DELETE 200 + retained geometry cache; Storage fix live |
-| Mocked microphone UI | **SKIPPED** | Mic control not visible on production UI |
-| One Modal pawn geometry miss → hit | **FAIL** | Budget slot consumed. Timed out 180s waiting for `/geometry/` GET. Scenario stuck `CAD pending`. No cache miss/hit headers captured. **No retry** (budget policy). |
-| One Modal CalculiX FEM + artifacts | **FAIL (pre-solve)** | Budget slot consumed before solve. Failed waiting for **Approve and open Studio** after Confirm faces (30s). No Modal job id recorded. **No retry**. |
-| ≤1 Meta turn | **NOT COMPLETED** | Budget slot was consumed then harness skipped (`AI not connected` path / exhausted remaining). No successful Meta reply asserted. |
-| Remote optimization | forbidden / not run | |
-| Cost | **NOT MEASURED** | No Modal/Meta billing figures available from this environment; `jobIds: []` in budget file |
+| Leftover `DRAFTY_QA_*` cleanup | **PASS** | Storage nested-404 delete live |
+| Health + homepage / auth / isolation / classroom / delete | **PASS** | |
+| One Modal pawn geometry miss → hit | **FAIL** | Budget slot consumed. Timed out 180s waiting for `/geometry/` GET 200. Scenario stuck `CAD pending`. |
+| One Modal CalculiX FEM + artifacts | **FAIL (pre-solve)** | Budget slot consumed before solve. Failed waiting for **Approve and open Studio** after Confirm faces (30s). |
+| ≤1 Meta turn | **NOT COMPLETED** | Budget reservation burned then harness skipped (`AI not connected` path). |
+| Cost | **NOT MEASURED** | `jobIds: []` |
 
-### Budget file (end of session)
+### Budget file (end of paid session)
 
 ```json
 {
@@ -57,19 +38,93 @@ Invocation: `npm run test:qa-production` (`--workers=1 --retries=0`), then conti
 }
 ```
 
-### Paid-call interpretation
+---
 
-- Caps honored (1/1/1). Failed/skipped attempts still consumed slots by design.
-- No evidence a Modal FEM job or Meta response completed (`jobIds` empty; pawn never reached geometry GET).
-- Do **not** re-run paid Modal/Meta against production until the pawn CAD path and bracket approve gate are diagnosed; do not reset the budget file to “retry” the same spend without an explicit new authorization.
+## Investigation (branch `fix/prod-qa-geometry-approve-budget`)
 
-## Earlier local proof (unchanged)
+No live Modal or Meta calls were made during this investigation.
 
-| Area | Evidence |
+### Confirmed root causes
+
+#### 1. CAD pending / preview quota without artifacts
+
+**Evidence (not speculation):**
+
+| Fact | Source |
 |---|---|
-| Local FEM benchmarks | 9 passed |
-| Authenticated local bracket CalculiX | Job `6883389d-07cb-44d3-adc9-da5d5b9e8279` (nodes 31795, C3D10, equilibrium passed) |
+| Preview charge at `2026-11-04T05:53:56.321871+00:00` | Supabase `preview_charges` id=3 for QA owner |
+| Zero objects under `artifacts/geometry/` after that charge | Supabase Storage list |
+| Empty `geometry_build_locks` after the window | Supabase table |
+| Production handler charged **then** waited on Modal with `call.get(timeout=50)` and **cancelled** the call on timeout | `geometry_cache.load_or_build_geometry` + `remote.remote_geometry` on `64578bd` |
+| Function `maxDuration` 60s; Modal `generate_revolved` timeout 180s | `vercel.json`, `infra/modal/app.py` |
+| QA waited 180s for a geometry GET **200** and never saw cache headers | `PRODUCTION_QA_REPORT` / Playwright waiter |
+
+**Conclusion:** Synchronous HTTP waiting for Modal inside a short-lived serverless request is the reliability failure mode. Quota was charged on the miss path before artifacts could be published; the sync wait + cancel prevented durable completion. Vercel team logs for `ybedoyabs-projects` were not readable from this agent; the charge/storage/code evidence is sufficient to classify this as sync-wait reliability (not a frontend-only bug).
+
+**Fix:** Durable async geometry builds — charge + spawn Modal, persist `geometry_builds` status + `modal_call_id`, return **202** while pending, poll without cancelling, publish digest cache atomically when ready. Frontend polls 202 with a bounded backoff (≤180s). Migration `0008_geometry_builds.sql` required on Supabase before production retest.
+
+#### 2. Bracket Approve missing before CalculiX
+
+**Evidence (reproduced against live production API, no Modal/solver):**
+
+1. `POST /scenarios/demo` (bracket) → **200**, missing faces only.
+2. `POST /scenarios/{id}/faces` → **503** `"The scenario was not saved."`
+3. Remote `scenarios.state` **did** contain `studio_spec` after the 503 (main upsert succeeded).
+4. Direct `scenario_versions` INSERT with `Prefer: resolution=merge-duplicates` → **403** needing `GRANT UPDATE ON scenario_versions` (authenticated only has INSERT).
+5. Same INSERT with `Prefer: return=minimal` → **201**.
+
+**Conclusion:** `mirror_scenario(..., snapshot=True)` reused upsert Prefer headers on `scenario_versions`. Confirm faces / approve snapshot writes failed closed with 503 even though the scenario row was updated — the UI never received `studio_spec`, so **Approve and open Studio** never appeared.
+
+**Fix:** Version inserts use `Prefer: return=minimal` only. Deterministic e2e: Load Bracket Demo → Confirm faces → Approve → Open Studio.
+
+#### 3. Meta QA budget accounting
+
+**Evidence:** Production Meta test called `tryConsume("meta")` **before** checking `AI not connected`, so a skipped target still counted as a paid reservation.
+
+**Fix:** Check AI availability first; reserve only when connected. Budget file now records separately: `reservations`, `invocation_attempts`, `completed_responses`, and optional `billing` (`used` remains an alias of reservations for older readers).
+
+### Changes made
+
+- `apps/api/src/drafty_api/storage.py` — snapshot Prefer fix; geometry build RPCs
+- `apps/api/src/drafty_api/geometry_cache.py` — async durable production builds (`GeometryPending`)
+- `apps/api/src/drafty_api/remote.py` — `spawn_remote_geometry` / `poll_remote_geometry` (no cancel on poll timeout)
+- `apps/api/src/drafty_api/scenarios.py` — geometry **202** pending responses
+- `apps/web/src/lib/api.ts` — bounded 202 polling for geometry blobs
+- `apps/web/e2e/qa/budget.ts` + `qa-live.spec.ts` — Meta gate before reserve; layered counters
+- `apps/web/e2e/scenario.spec.ts` — demo → faces → Approve → Studio
+- `supabase/migrations/0008_geometry_builds.sql` — durable build rows
+- Tests for Prefer headers + async geometry spawn/poll
+
+### Regression tests run locally (no live Modal/Meta)
+
+| Check | Result |
+|---|---|
+| `pytest -m "not fem and not postgres"` | **200 passed** |
+| `pytest -m fem` | **9 passed** |
+| `pytest` auth + production hardening (incl. async geometry + Prefer) | **passed** |
+| API bundle `from app import app` | **ok** |
+| `ruff check packages apps tests` | **passed** |
+| `npm test` (Vitest) | **28 passed** |
+| `npm run build` (tsc + vite) | **passed** |
+| Playwright `e2e/scenario.spec.ts` (local API, auth disabled) | **12 passed** (includes new Approve path) |
+| GitHub Actions | Opened with this PR (do not merge/deploy automatically) |
+
+### Actual provider invocation evidence (investigation)
+
+| Provider | Invocations during investigation |
+|---|---|
+| Modal | **0** (no spawn / no paid geometry or FEM) |
+| Meta | **0** |
+| Production API (diagnostic only) | Bracket demo/faces/approve/delete against `drafty-api.vercel.app` to confirm 503 Prefer bug; no CalculiX |
+
+### Remaining limitations
+
+- Migration `0008_geometry_builds` **applied** to Supabase project `dwwwyuybbwihpizdrhqp` during investigation (DDL only; unused until API deploy).
+- Deploy API + web from this PR before retest; Prefer fix and 202 geometry path are not live until then.
+- One separately authorized, controlled production retest only — do not reset the prior budget file to “retry” spend.
+- Vercel/`ybedoyabs-projects` runtime logs remain unread from this agent account.
+- Batch 10A not started.
 
 ## Ready for Batch 10A?
 
-**No.** Production auth/isolation/cleanup look healthy after merge, but the controlled paid Modal geometry + FEM path did not complete successfully. Diagnose CAD/approve regressions on production before Batch 10A.
+**No.** Fixes are ready for review and one separately authorized production retest after merge/deploy + migration 0008.

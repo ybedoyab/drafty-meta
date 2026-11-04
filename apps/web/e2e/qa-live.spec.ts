@@ -13,8 +13,11 @@ import {
   targetFromProject,
 } from "./qa/env";
 import {
+  budgetAccounting,
   budgetRunId,
   budgetSnapshot,
+  recordCompletedResponse,
+  recordInvocationAttempt,
   recordJobId,
   recordedJobIds,
   remaining,
@@ -251,6 +254,7 @@ test.describe("Drafty live QA", () => {
     );
     if (target.kind === "production") {
       expect(tryConsume("modal_geometry"), "reserve Modal geometry budget").toBe(true);
+      recordInvocationAttempt("modal_geometry");
     }
     await page.getByRole("button", { name: "Send" }).click();
     await showInspectorStep(page, "Inputs");
@@ -266,6 +270,7 @@ test.describe("Drafty live QA", () => {
     await expect(page.getByText("Building the preview.")).toHaveCount(0, { timeout: 180_000 });
     if (target.kind === "production") {
       expect(firstCache).toBe("miss");
+      recordCompletedResponse("modal_geometry");
     }
 
     const token = await accessTokenFromPage(page);
@@ -293,6 +298,7 @@ test.describe("Drafty live QA", () => {
         digest_len: firstDigest.length,
         height_mm: heightMm,
         budget: budgetSnapshot(),
+        accounting: budgetAccounting(),
       }),
     );
     await safeScreenshot(page, `${target.kind}-pawn-geometry.png`);
@@ -358,7 +364,7 @@ test.describe("Drafty live QA", () => {
     const scenarioId = await createNamedScenario(page, request, target.api, name, "primary");
     await openScenarioFromProjects(page, name);
     await page.getByRole("button", { name: "Load Bracket Demo" }).click();
-    await expect(page.getByText(/bracket/i).first()).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByText(/bracket-v1|Aluminum L-bracket demo/i).first()).toBeVisible({ timeout: 30_000 });
 
     try {
       const { jobId, results } = await runApprovedBracketFem(page, request, target.api, {
@@ -366,6 +372,10 @@ test.describe("Drafty live QA", () => {
         timeoutMs: target.kind === "production" ? 360_000 : 240_000,
       });
       recordJobId(jobId);
+      if (target.kind === "production") {
+        recordInvocationAttempt("modal_fem");
+        recordCompletedResponse("modal_fem");
+      }
       trackScenario({ scenarioId, name, owner: "primary" });
       console.log(
         JSON.stringify({
@@ -379,6 +389,7 @@ test.describe("Drafty live QA", () => {
           validation_status: results?.validation_status,
           warnings_count: Array.isArray(results?.warnings) ? results.warnings.length : null,
           budget: budgetSnapshot(),
+          accounting: budgetAccounting(),
           recorded_jobs: recordedJobIds(),
         }),
       );
@@ -473,24 +484,34 @@ test.describe("Drafty live QA", () => {
       const gate = productionPaidQaAuthorized();
       test.skip(!gate.ok, gate.reason);
     }
-    expect(tryConsume("meta"), "reserve Meta budget").toBe(true);
     await page.goto(target.web);
     await signIn(page, "primary");
     const name = qaScenarioName("meta");
     await createNamedScenario(page, request, target.api, name, "primary");
     await openScenarioFromProjects(page, name);
     await expect(page.getByText(/Muse Spark ready|AI not connected|Meta/i).first()).toBeVisible();
+    // Availability must be checked before burning a paid reservation.
     test.skip((await page.getByText("AI not connected").count()) > 0, "Meta is not connected on this target.");
+    expect(tryConsume("meta"), "reserve Meta budget").toBe(true);
+    recordInvocationAttempt("meta");
     await page.getByLabel("Describe the problem").fill(
       "I need an I-beam for a classroom floor for 30 students in Colombia. Ask for missing engineering data only. Do not invent span, loads, or citations.",
     );
     await page.getByRole("button", { name: "Send" }).click();
     await expect(page.getByText("Drafty:")).toBeVisible({ timeout: 90_000 });
+    recordCompletedResponse("meta");
     const reply = await page.locator("text=Drafty:").locator("..").first().innerText();
     expect(reply.toLowerCase()).not.toMatch(/https?:\/\/doi\.org|according to asce 7-22 section/i);
     await showInspectorStep(page, "Inputs");
     // User did not provide span — must remain empty (no fabricated quantity).
     await expect(page.getByLabel("Span m")).toHaveValue("");
-    console.log(JSON.stringify({ meta_live: "PASS", target: target.kind, budget: budgetSnapshot() }));
+    console.log(
+      JSON.stringify({
+        meta_live: "PASS",
+        target: target.kind,
+        budget: budgetSnapshot(),
+        accounting: budgetAccounting(),
+      }),
+    );
   });
 });

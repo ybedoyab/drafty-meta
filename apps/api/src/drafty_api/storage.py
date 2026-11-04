@@ -118,9 +118,17 @@ def mirror_scenario(session: dict, access_token: str | None, snapshot: bool = Fa
         response = client.post(f"{base}/rest/v1/scenarios?on_conflict=id", headers=headers, json=row)
         response.raise_for_status()
         if snapshot:
+            # Inserts only. Prefer: resolution=merge-duplicates requires UPDATE, which
+            # authenticated lacks on scenario_versions (INSERT alone is granted).
+            version_headers = {
+                "apikey": settings.supabase_publishable_key,
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json",
+                "Prefer": "return=minimal",
+            }
             version = client.post(
                 f"{base}/rest/v1/scenario_versions",
-                headers=headers,
+                headers=version_headers,
                 json={
                     "scenario_id": session["id"],
                     "owner_id": session["owner_id"],
@@ -384,6 +392,53 @@ def release_geometry_build_lock_remote(digest: str, owner_id: str) -> None:
         "release_geometry_build_lock",
         {"p_digest": digest, "p_owner_id": owner_id},
     )
+
+
+def get_geometry_build_remote(digest: str) -> dict | None:
+    """Return the durable geometry build row, or None when missing/unavailable."""
+
+    result = call_service_rpc("get_geometry_build", {"p_digest": digest})
+    if not isinstance(result, dict):
+        return None
+    return result
+
+
+def upsert_geometry_build_remote(
+    digest: str,
+    owner_id: str,
+    status: str,
+    *,
+    modal_call_id: str | None = None,
+    profile: dict | None = None,
+    error: str | None = None,
+    charged: bool = False,
+) -> bool:
+    """Persist geometry build status. False when the RPC backend is unavailable."""
+
+    if not settings.supabase_configured:
+        return False
+    try:
+        response = httpx.post(
+            f"{settings.supabase_url.rstrip('/')}/rest/v1/rpc/upsert_geometry_build",
+            headers={
+                "apikey": settings.supabase_secret,
+                "Authorization": f"Bearer {settings.supabase_secret}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "p_digest": digest,
+                "p_owner_id": owner_id,
+                "p_status": status,
+                "p_modal_call_id": modal_call_id,
+                "p_profile": profile or {},
+                "p_error": error,
+                "p_charged": charged,
+            },
+            timeout=30,
+        )
+    except httpx.HTTPError:
+        return False
+    return response.status_code < 400
 
 
 def _upload(client: httpx.Client, base: str, key: str, job_id: str, name: str, path: Path) -> None:

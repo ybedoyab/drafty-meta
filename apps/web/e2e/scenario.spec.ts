@@ -189,6 +189,26 @@ test("a bracket demo asks for the physical faces before Studio", async ({ page }
   await expect(page.getByText("CalculiX solid FEM, not started")).toBeVisible();
 });
 
+test("Load Bracket Demo → Confirm faces → Approve → Open Studio", async ({ page }) => {
+  const pageErrors: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/scenario/new");
+  await page.getByRole("button", { name: "Load Bracket Demo" }).click();
+  await expect(page.getByText(/bracket-v1|Aluminum L-bracket demo/i).first()).toBeVisible({ timeout: 30_000 });
+  await showInspectorStep(page, "Results");
+  await expect(page.getByRole("button", { name: "Confirm faces" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Approve and open Studio" })).toHaveCount(0);
+  await page.getByRole("button", { name: "Confirm faces" }).click();
+  await expect(page.getByRole("button", { name: "Approve and open Studio" })).toBeVisible({ timeout: 15_000 });
+  await page.getByRole("button", { name: "Approve and open Studio" }).click();
+  await expect(page.getByLabel("Part")).toHaveValue("l_bracket", { timeout: 30_000 });
+  await expect(page.getByLabel("Material")).toHaveValue("aluminum_6061_t6");
+  await expect(page.getByRole("button", { name: "Run analysis" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Back to scenario" })).toBeVisible();
+  expect(pageErrors).toEqual([]);
+});
+
 test("a recording stays in the composer until the user sends it", async ({ page }) => {
   await page.addInitScript(() => {
     const rate = 24000;

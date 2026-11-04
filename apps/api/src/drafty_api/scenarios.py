@@ -774,9 +774,16 @@ def scenario_geometry(scenario_id: str, name: str, request: Request) -> FileResp
 
     Authorization is scenario ownership. Identical valid profiles reuse the same immutable
     digest locally and in private storage; Modal runs only on a cache miss in production.
+    Production misses return 202 while a durable Modal build is in progress so the browser
+    can poll without holding a serverless request open for CadQuery cold starts.
     """
 
-    from drafty_api.geometry_cache import load_or_build_geometry, profile_digest, read_local_cache
+    from drafty_api.geometry_cache import (
+        GeometryPending,
+        load_or_build_geometry,
+        profile_digest,
+        read_local_cache,
+    )
 
     owner = current_owner(request)
     session = read_scenario(scenario_id, owner)
@@ -791,11 +798,30 @@ def scenario_geometry(scenario_id: str, name: str, request: Request) -> FileResp
     except ValidationError as exc:
         raise HTTPException(status_code=422, detail="The stored profile is not valid.") from exc
     filename = f"{profile.name}{Path(name).suffix}"
-    files, hit = load_or_build_geometry(profile, owner)
+    digest = profile_digest(profile)
+    try:
+        files, hit = load_or_build_geometry(profile, owner)
+    except GeometryPending as pending:
+        return Response(
+            content=json.dumps(
+                {
+                    "status": pending.status,
+                    "digest": pending.digest,
+                    "retryable": True,
+                    "message": "Geometry is building on Modal. Poll this URL again shortly.",
+                }
+            ),
+            status_code=202,
+            media_type="application/json",
+            headers={
+                "X-Drafty-Geometry-Digest": pending.digest,
+                "X-Drafty-Geometry-Cache": "pending",
+                "Retry-After": "2",
+            },
+        )
     data = files[name]
     if len(data) > MAX_ARTIFACT_BYTES:
         raise HTTPException(status_code=502, detail="Geometry file exceeds the size limit.")
-    digest = profile_digest(profile)
     headers = {
         "X-Drafty-Geometry-Digest": digest,
         "X-Drafty-Geometry-Cache": "hit" if hit else "miss",
