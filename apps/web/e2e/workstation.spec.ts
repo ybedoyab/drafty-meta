@@ -124,7 +124,9 @@ test("after reload, Jobs queue must be opened before a completed job can show Re
         inverted_elements: 0,
         degenerate_elements: 0,
         inconclusive_elements: 18980,
-        quality_warnings: ["soft ratio warning for demo"],
+        low_jacobian_ratio_elements: 0,
+        low_jacobian_ratio_threshold: 0.1,
+        quality_warnings: [],
         certification_note:
           "certified_valid is never claimed by the NumPy path; inconclusive means no inversion was demonstrated",
       },
@@ -225,7 +227,7 @@ test("after reload, Jobs queue must be opened before a completed job can show Re
   await expect(page.getByText("sampled_ok_certification_inconclusive")).toBeVisible();
   await expect(page.getByText("Whole-element certification")).toBeVisible();
   await expect(page.getByTestId("mesh-certification-note")).toContainText("never claimed");
-  await expect(page.getByTestId("mesh-soft-warning")).toContainText("soft ratio warning");
+  await expect(page.getByTestId("mesh-soft-warning")).toHaveCount(0);
   await page.getByTestId("mesh-quality").scrollIntoViewIfNeeded();
   await page.screenshot({ path: "../../docs/screenshots/studio-mesh-quality-batch10a.png" });
 });

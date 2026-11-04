@@ -65,6 +65,7 @@ import {
 } from "@/lib/scenario";
 import { benchmarkForm, formToSpec, specToForm, type DesignSpec } from "@/lib/design";
 import { DEFAULT_GRID_STEP_MM, gridPlaneDistance, gridStepMeters } from "@/lib/grid";
+import { StudioPreviewGuard } from "@/lib/studioPreviewGuard";
 
 const IBEAM = "simply_supported_ibeam";
 function withArticle(noun: string): string {
@@ -127,6 +128,8 @@ export function Scenario() {
   const [studioPreviewUrl, setStudioPreviewUrl] = useState<string | null>(null);
   const [studioPreviewError, setStudioPreviewError] = useState<string | null>(null);
   const [studioPreviewBusy, setStudioPreviewBusy] = useState(false);
+  const studioPreviewGuard = useRef(new StudioPreviewGuard());
+  const studioPreviewBusyToken = useRef<number | null>(null);
   const turnAbort = useRef<AbortController | null>(null);
   const navigate = useNavigate();
   const { scenarioId } = useParams();
@@ -255,30 +258,49 @@ export function Scenario() {
   useEffect(() => {
     // Drop any prior blob when the proposed studio part changes. Do not auto-call
     // /api/v1/designs/preview — opening or revisiting a scenario is not a CAD charge.
-    setStudioPreviewUrl((current) => {
-      if (current) URL.revokeObjectURL(current);
-      return null;
-    });
+    studioPreviewGuard.current.invalidate();
+    studioPreviewBusyToken.current = null;
+    setStudioPreviewUrl(null);
     setStudioPreviewError(null);
     setStudioPreviewBusy(false);
   }, [session?.id, studioSpecKey]);
 
+  useEffect(() => {
+    const guard = studioPreviewGuard.current;
+    return () => {
+      // Unmount or route teardown: abandon in-flight work and release any held blob.
+      guard.invalidate();
+      studioPreviewBusyToken.current = null;
+    };
+  }, []);
+
   async function requestStudioPreview() {
     if (!session?.studio_spec || studioPreviewBusy) return;
+    const token = studioPreviewGuard.current.begin();
+    studioPreviewBusyToken.current = token;
     setStudioPreviewBusy(true);
     setStudioPreviewError(null);
     try {
       const url = await previewSpec(
         formToSpec(specToForm(session.studio_spec as unknown as DesignSpec, benchmarkForm)),
       );
-      setStudioPreviewUrl((current) => {
-        if (current) URL.revokeObjectURL(current);
-        return url;
-      });
+      // Generation advances on navigation, spec change, unmount, or a newer begin().
+      if (!studioPreviewGuard.current.isCurrent(token)) {
+        studioPreviewGuard.current.discard(url);
+        return;
+      }
+      const accepted = studioPreviewGuard.current.accept(token, url);
+      if (accepted == null) return;
+      setStudioPreviewUrl(accepted);
     } catch (reason) {
+      if (!studioPreviewGuard.current.isCurrent(token)) return;
       setStudioPreviewError(reason instanceof Error ? reason.message : "The preview could not be built.");
     } finally {
-      setStudioPreviewBusy(false);
+      // A late response must not clear busy for a newer explicit request.
+      if (studioPreviewBusyToken.current === token) {
+        studioPreviewBusyToken.current = null;
+        setStudioPreviewBusy(false);
+      }
     }
   }
 
