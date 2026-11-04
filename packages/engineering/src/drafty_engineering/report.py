@@ -1,23 +1,23 @@
-"""Engineering report built only from a completed job directory."""
+"""Engineering report built only from completed solver artifacts."""
 
 import json
 from pathlib import Path
 
 
-def build_report(directory: Path) -> dict:
-    job = json.loads((directory / "job.json").read_text(encoding="utf-8"))
-    results_path = directory / "results.json"
-    if not results_path.exists():
-        raise FileNotFoundError("This job has no results.json from CalculiX.")
-    result = json.loads(results_path.read_text(encoding="utf-8"))
-    optimization = None
-    optimization_path = directory / "optimization.json"
-    if optimization_path.exists():
-        optimization = json.loads(optimization_path.read_text(encoding="utf-8"))
+def build_report_from_parts(
+    job: dict,
+    result: dict,
+    optimization: dict | None = None,
+    *,
+    sources: list[str] | None = None,
+) -> dict:
+    """Assemble the canonical report from already-loaded job/result payloads."""
+
     assessment = result.get("stress_assessment") or {}
+    generated_from = list(sources or ["job.json", "results.json"])
     return {
         "report": "drafty-engineering",
-        "generated_from": ["job.json", "results.json"],
+        "generated_from": generated_from,
         "job_id": job.get("id"),
         "kind": job.get("kind"),
         "spec": job.get("spec"),
@@ -45,6 +45,19 @@ def build_report(directory: Path) -> dict:
             "A completed solve is not by itself an accepted engineering design.",
         ],
     }
+
+
+def build_report(directory: Path) -> dict:
+    job = json.loads((directory / "job.json").read_text(encoding="utf-8"))
+    results_path = directory / "results.json"
+    if not results_path.exists():
+        raise FileNotFoundError("This job has no results.json from CalculiX.")
+    result = json.loads(results_path.read_text(encoding="utf-8"))
+    optimization = None
+    optimization_path = directory / "optimization.json"
+    if optimization_path.exists():
+        optimization = json.loads(optimization_path.read_text(encoding="utf-8"))
+    return build_report_from_parts(job, result, optimization)
 
 
 def report_text(report: dict) -> str:

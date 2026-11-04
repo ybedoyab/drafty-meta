@@ -517,6 +517,17 @@ def _download(object_path: str) -> bytes | None:
     )
     if response.status_code == 404:
         return None
+    # Supabase Storage often wraps missing objects as HTTP 400 with statusCode "404".
+    if response.status_code == 400:
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = {}
+        if isinstance(payload, dict) and (
+            str(payload.get("statusCode") or "") == "404"
+            or payload.get("error") in {"not_found", "NotFound", "NoSuchKey"}
+        ):
+            return None
     response.raise_for_status()
     return response.content
 

@@ -172,7 +172,11 @@ test("an aluminum bracket opens in Studio and does not start CalculiX", async ({
   await page.locator('nav[aria-label="Design steps"]').getByRole("button", { name: /Loads/ }).click();
   await expect(page.getByLabel("Support")).toHaveValue("xmin");
   await expect(page.getByLabel("Load face")).toHaveValue("zmax");
-  await expect(page.getByRole("link", { name: "Back to scenario" })).toBeVisible();
+  // Spec is already applied after Approve and open Studio — Studio exposes the
+  // return button, not the pre-apply "Back to scenario" link.
+  await expect(page.getByRole("link", { name: "Back to scenario" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Return to scenario" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Return to scenario" })).toBeEnabled();
   await expect(page.getByRole("button", { name: "Run analysis" })).toBeVisible();
   expect(pageErrors).toEqual([]);
 });
@@ -205,7 +209,11 @@ test("Load Bracket Demo → Confirm faces → Approve → Open Studio", async ({
   await expect(page.getByLabel("Part")).toHaveValue("l_bracket", { timeout: 30_000 });
   await expect(page.getByLabel("Material")).toHaveValue("aluminum_6061_t6");
   await expect(page.getByRole("button", { name: "Run analysis" })).toBeVisible();
-  await expect(page.getByRole("link", { name: "Back to scenario" })).toBeVisible();
+  // Spec is already applied after Approve and open Studio — Studio exposes the
+  // return button, not the pre-apply "Back to scenario" link.
+  await expect(page.getByRole("link", { name: "Back to scenario" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Return to scenario" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Return to scenario" })).toBeEnabled();
   expect(pageErrors).toEqual([]);
 });
 
