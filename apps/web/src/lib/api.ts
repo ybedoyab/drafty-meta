@@ -463,6 +463,9 @@ export async function scenarioGeometryUrl(id: string, name: string) {
   const deadline = Date.now() + 180_000;
   let delayMs = 1_500;
   while (Date.now() < deadline) {
+    // request() throws on non-OK statuses (including 502 spawn failures), so the
+    // Scenario page can replace "Building the preview." with an actionable error
+    // instead of polling forever after a failed Modal lookup.
     const response = await request(path, undefined, false);
     if (response.status === 202) {
       await new Promise((resolve) => setTimeout(resolve, delayMs));

@@ -791,6 +791,46 @@ def test_concurrent_geometry_pollers_do_not_overwrite_terminal_state(tmp_path, m
     assert any(isinstance(item, tuple) for item in results)
 
 
+def test_geometry_spawn_failure_marks_build_failed_without_call_id(tmp_path, monkeypatch):
+    """Charged+queued must not linger when Modal never returns a FunctionCall id."""
+
+    monkeypatch.setattr(settings, "drafty_data_dir", str(tmp_path))
+    monkeypatch.setattr(settings, "drafty_env", "production")
+    monkeypatch.setattr(settings, "supabase_url", "https://example.supabase.co")
+    monkeypatch.setattr(settings, "supabase_secret_key", "service-role")
+    profile = _profile()
+    digest = profile_digest(profile)
+    store = _FakeGeometryBuilds()
+    charges = {"n": 0}
+
+    def _charge(_owner: str) -> None:
+        charges["n"] += 1
+
+    def _spawn(_profile: dict) -> str:
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "Modal function 'generate_revolved' was not found on app "
+                "'drafty-engineering'. Redeploy the Modal app, then retry."
+            ),
+        )
+
+    monkeypatch.setattr("drafty_api.geometry_cache.read_remote_cache", lambda *_a, **_k: None)
+    monkeypatch.setattr("drafty_api.jobs.charge_preview", _charge)
+    monkeypatch.setattr("drafty_api.remote.spawn_remote_geometry", _spawn)
+    _install_fake_builds(monkeypatch, store)
+
+    with pytest.raises(HTTPException) as exc:
+        load_or_build_geometry(profile, "owner-spawn-fail")
+    assert exc.value.status_code == 502
+    assert "generate_revolved" in str(exc.value.detail).lower()
+    assert charges["n"] == 1
+    assert store.rows[digest]["charged"] is True
+    assert store.rows[digest]["status"] == "failed"
+    assert store.rows[digest]["modal_call_id"] is None
+    assert "generate_revolved" in str(store.rows[digest]["error"]).lower()
+
+
 def test_stale_geometry_build_fails_without_new_modal_spawn(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "drafty_data_dir", str(tmp_path))
     monkeypatch.setattr(settings, "drafty_env", "production")
