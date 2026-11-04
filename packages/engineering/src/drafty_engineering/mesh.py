@@ -55,7 +55,13 @@ def mesh_step(step_path: Path, msh_path: Path, spec: DesignSpec) -> meshio.Mesh:
 
 
 def assess_mesh(points: np.ndarray, cells: np.ndarray) -> dict:
-    """Reject inverted, empty, or duplicated corner tetrahedra before the solve."""
+    """Reject inverted, empty, or duplicated tetrahedra before the solve.
+
+    Linear (C3D4) meshes: corner signed-volume checks only.
+    Quadratic (C3D10) meshes: corner checks plus sampled/adaptive TET10 Jacobian
+    validation (see ``tet10_jacobian``). Demonstrated inversion/degeneracy fails
+    closed. Soft Jacobian-ratio warnings do not reject by themselves.
+    """
 
     if len(cells) == 0:
         raise GeometryError("The mesh has no tetrahedra.")
@@ -74,13 +80,33 @@ def assess_mesh(points: np.ndarray, cells: np.ndarray) -> dict:
     keys = {tuple(sorted(int(node) for node in row)) for row in corners}
     if len(keys) != len(corners):
         raise GeometryError("The mesh has duplicate tetrahedra.")
-    return {
+
+    quality: dict = {
         "elements": int(len(cells)),
         "min_corner_volume_m3": float(volumes.min()),
         "max_corner_volume_m3": float(volumes.max()),
         "inverted_elements": 0,
-        "jacobian": "positive corner-tetrahedron volume; quadratic mid-edge nodes are matched separately",
+        "jacobian": "positive corner-tetrahedron volume",
+        "element_type": "C3D10" if cells.shape[1] >= 10 else "C3D4",
     }
+
+    if cells.shape[1] >= 10:
+        from drafty_engineering.tet10_jacobian import evaluate_tet10_elements
+
+        tet10 = evaluate_tet10_elements(points, cells, run_adaptive=True)
+        quality.update(tet10)
+        quality["jacobian"] = (
+            "C3D10 sampled+adaptive det(J); corner volumes also checked; "
+            "certification remains inconclusive without a Bézier/Gmsh bound"
+        )
+        if tet10["inverted_elements"] or tet10["degenerate_elements"]:
+            raise GeometryError(
+                "The quadratic mesh has an inverted or degenerate tetrahedron "
+                f"(inverted={tet10['inverted_elements']}, "
+                f"degenerate={tet10['degenerate_elements']})."
+            )
+        # Soft quality: low ratio is a warning only (already in quality_warnings).
+    return quality
 
 
 def _corner_volumes(points: np.ndarray, corners: np.ndarray) -> np.ndarray:
