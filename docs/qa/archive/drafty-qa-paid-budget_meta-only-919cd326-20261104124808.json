@@ -1,0 +1,30 @@
+{
+  "used": {
+    "modal_geometry": 0,
+    "modal_fem": 0,
+    "meta": 1
+  },
+  "reservations": {
+    "modal_geometry": 0,
+    "modal_fem": 0,
+    "meta": 1
+  },
+  "invocation_attempts": {
+    "modal_geometry": 0,
+    "modal_fem": 0,
+    "meta": 1
+  },
+  "completed_responses": {
+    "modal_geometry": 0,
+    "modal_fem": 0,
+    "meta": 0
+  },
+  "ui_assertions": {
+    "modal_geometry": 0,
+    "modal_fem": 0,
+    "meta": 0
+  },
+  "billing": {},
+  "jobIds": [],
+  "runId": "meta-only-919cd326-20261104124808"
+}

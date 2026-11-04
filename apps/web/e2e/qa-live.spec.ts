@@ -26,8 +26,10 @@ import {
 } from "./qa/budget";
 import {
   recordFemJobSubmitted,
+  recordMetaScenarioRetained,
   retainScenarioEvidence,
   updateFemEvidence,
+  updateMetaEvidence,
 } from "./qa/evidence";
 import {
   accessTokenFromPage,
@@ -47,6 +49,7 @@ import {
   signOut,
   trackScenario,
 } from "./qa/helpers";
+import { assistantMessageArticle, evaluateMetaProviderSession } from "./qa/meta-verify";
 
 function currentTarget() {
   return targetFromProject(test.info().project.name);
@@ -548,31 +551,116 @@ test.describe("Drafty live QA", () => {
     await page.goto(target.web);
     await signIn(page, "primary");
     const name = qaScenarioName("meta");
-    await createNamedScenario(page, request, target.api, name, "primary");
+    const scenarioId = await createNamedScenario(page, request, target.api, name, "primary");
     await openScenarioFromProjects(page, name);
-    await expect(page.getByText(/Muse Spark ready|AI not connected|Meta/i).first()).toBeVisible();
+    // Initial paint is "AI not connected" until /api/v1/health resolves — wait before skip/reserve.
+    await page
+      .waitForResponse(
+        (res) => res.url().includes("/api/v1/health") && res.ok(),
+        { timeout: 30_000 },
+      )
+      .catch(() => null);
+    // Prefer the ready label (includes version, e.g. "Muse Spark 1.3 ready").
+    const readyLabel = page.getByText(/Muse Spark.*ready|Responses API/i).first();
+    const disconnectedLabel = page.getByText("AI not connected").first();
+    await Promise.race([
+      readyLabel.waitFor({ state: "visible", timeout: 30_000 }),
+      disconnectedLabel.waitFor({ state: "visible", timeout: 30_000 }),
+    ]).catch(() => null);
+    const metaUiReady = await readyLabel.isVisible().catch(() => false);
     // Availability must be checked before burning a paid reservation.
-    test.skip((await page.getByText("AI not connected").count()) > 0, "Meta is not connected on this target.");
+    test.skip(!metaUiReady, "Meta is not connected on this target.");
+    // Retain AFTER Muse readiness and BEFORE the paid Meta request so afterAll /
+    // leftover cleanup cannot erase conversation + provider metadata on a UI flake.
+    trackScenario({ scenarioId, name, owner: "primary", retain: true });
+    recordMetaScenarioRetained({ scenarioId, scenarioName: name, owner: "primary" });
     expect(tryConsume("meta"), "reserve Meta budget").toBe(true);
     recordInvocationAttempt("meta");
+    updateMetaEvidence(scenarioId, { phase: "invoked" });
     await page.getByLabel("Describe the problem").fill(
       "I need an I-beam for a classroom floor for 30 students in Colombia. Ask for missing engineering data only. Do not invent span, loads, or citations.",
     );
     await page.getByRole("button", { name: "Send" }).click();
-    await expect(page.getByText("Drafty:")).toBeVisible({ timeout: 90_000 });
+
+    // Provider verification is API-first (independent of UI selector flakes).
+    const token = await accessTokenFromPage(page);
+    let providerOk = false;
+    let offlineFallback = false;
+    await expect
+      .poll(
+        async () => {
+          const got = await apiJson(request, target.api, "GET", `/api/v1/scenarios/${scenarioId}`, token);
+          if (got.status !== 200 || !got.json) return "waiting-for-scenario";
+          const verdict = evaluateMetaProviderSession(got.json);
+          offlineFallback = verdict.offlineFallback;
+          updateMetaEvidence(scenarioId, {
+            mode: verdict.mode,
+            meta_turns: verdict.meta_turns,
+            previous_response_id: verdict.previous_response_id,
+            usage: verdict.usage,
+            assistantExcerpt: verdict.assistantText ? verdict.assistantText.slice(0, 400) : null,
+            phase: verdict.offlineFallback
+              ? "offline_fallback"
+              : verdict.ok
+                ? "provider_ok"
+                : "provider_fail",
+            error: verdict.ok ? null : verdict.reason,
+            retain: true,
+          });
+          if (verdict.offlineFallback) return "offline-template";
+          if (verdict.ok) {
+            providerOk = true;
+            return "provider-ok";
+          }
+          return verdict.reason;
+        },
+        { timeout: 90_000, intervals: [1_000, 2_000, 3_000] },
+      )
+      .toBe("provider-ok");
+
+    expect(offlineFallback, "offline-template must never count as Meta PASS").toBe(false);
+    expect(providerOk).toBe(true);
     recordCompletedResponse("meta");
-    const reply = await page.locator("text=Drafty:").locator("..").first().innerText();
-    expect(reply.toLowerCase()).not.toMatch(/https?:\/\/doi\.org|according to asce 7-22 section/i);
-    await showInspectorStep(page, "Inputs");
-    // User did not provide span — must remain empty (no fabricated quantity).
-    await expect(page.getByLabel("Span m")).toHaveValue("");
-    console.log(
-      JSON.stringify({
-        meta_live: "PASS",
-        target: target.kind,
-        budget: budgetSnapshot(),
-        accounting: budgetAccounting(),
-      }),
-    );
+
+    // Optional UI rendering assertions — failure must not erase retained evidence
+    // or undo provider completed_responses accounting.
+    try {
+      const draftyArticle = assistantMessageArticle(page);
+      await expect(draftyArticle).toBeVisible({ timeout: 15_000 });
+      const reply = await draftyArticle.innerText();
+      expect(reply.toLowerCase()).not.toMatch(/https?:\/\/doi\.org|according to asce 7-22 section/i);
+      await showInspectorStep(page, "Inputs");
+      await expect(page.getByLabel("Span m")).toHaveValue("");
+      recordUiAssertion("meta");
+      console.log(
+        JSON.stringify({
+          meta_live: "PASS",
+          provider: "PASS",
+          ui: "PASS",
+          scenarioId,
+          target: target.kind,
+          budget: budgetSnapshot(),
+          accounting: budgetAccounting(),
+        }),
+      );
+    } catch (error) {
+      updateMetaEvidence(scenarioId, {
+        phase: "ui_assert_failed",
+        error: String(error).slice(0, 500),
+        retain: true,
+      });
+      console.log(
+        JSON.stringify({
+          meta_live: "PROVIDER_PASS_UI_FAIL",
+          provider: "PASS",
+          ui: "FAIL",
+          scenarioId,
+          target: target.kind,
+          budget: budgetSnapshot(),
+          accounting: budgetAccounting(),
+        }),
+      );
+      throw error;
+    }
   });
 });
