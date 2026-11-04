@@ -265,13 +265,36 @@ def _result_payload(
         "quality_gates": {
             "solver_completed": True,
             "equilibrium_verified": bool(equilibrium["passed"]),
+            "mesh_validity": _mesh_validity_gate(quality),
+            "mesh_quality": _mesh_quality_gate(quality),
             "stress_assessment": "exploratory" if stress_reliable else "unreliable",
             "validated_feasibility": bool(benchmark["applicable"] and benchmark["passed"]),
         },
         "benchmark": benchmark,
-        "warnings": warnings,
+        "warnings": warnings + list(quality.get("quality_warnings") or []),
         "surface": surface,
     }
+
+
+def _mesh_validity_gate(quality: dict) -> str:
+    inverted = int(quality.get("inverted_elements") or 0)
+    degenerate = int(quality.get("degenerate_elements") or 0)
+    if inverted or degenerate:
+        return "invalid"
+    status = str(quality.get("jacobian_validation_status") or "")
+    if status in {"ok", "sampled_ok_certification_inconclusive", ""}:
+        # Empty status: linear mesh with corner-volume checks only.
+        return "passed_sampled" if "jacobian_validation_method" in quality else "corner_volumes_ok"
+    return status or "unknown"
+
+
+def _mesh_quality_gate(quality: dict) -> str:
+    low = int(quality.get("low_jacobian_ratio_elements") or 0)
+    if low:
+        return "warnings"
+    if quality.get("jacobian_validation_method"):
+        return "reported"
+    return "not_applicable"
 
 
 def _benchmark(
