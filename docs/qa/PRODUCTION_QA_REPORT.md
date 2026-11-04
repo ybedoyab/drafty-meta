@@ -1,13 +1,13 @@
 # Drafty Engineering — Automated End-to-End QA Report
 
-**Latest authorized production QA:** `fem-batch10a-v5-65fb796-20261104155241`  
-**Production SHA:** `65fb79600a7c5d47e7f162c8916c134e42239c63`  
-**Modal worker:** `drafty-engineering` **v5** (Batch 10A)  
+**Latest authorized production QA:** `studio-batch10b-d05cd76-20261104164700`  
+**Production SHA:** `d05cd76b63b025f32a02882b96c6515aa3cc28b5` (merge of PR #13)  
+**Modal worker:** `drafty-engineering` **v5** (unchanged; no redeploy)  
+**Prior FEM Batch 10A session (preserved):** `fem-batch10a-v5-65fb796-20261104155241` / job `6066bc77-…`  
 **Prior FEM-only session (preserved):** `fem-only-145e1c37-20261104103205` / job `4f8ed6cc-…`  
 **Prior Meta-only session (preserved):** `meta-only-919cd326-20261104124808`  
-**Batch 10A cloud FEM:** **FULL PASS** (API-only path; Studio UI not exercised)  
-**Modal FEM paid requests (this session):** **1**  
-**Meta / CAD preview / optimization (this session):** **0**
+**Batch 10B Studio production verification:** **PASS** (read-only; zero paid POSTs)  
+**Meta / Modal FEM / Modal CAD / optimization (this session):** **0**
 
 Historical archives (immutable; do not overwrite):
 
@@ -18,6 +18,71 @@ Historical archives (immutable; do not overwrite):
 - `docs/qa/archive/drafty-qa-paid-budget_fem-only-145e1c37-20261104103205.json`
 - `docs/qa/archive/drafty-qa-paid-budget_meta-only-919cd326-20261104124808.json`
 - `docs/qa/archive/drafty-qa-paid-budget_fem-batch10a-v5-65fb796-20261104155241.json`
+
+---
+
+## Batch 10B Studio production verification `studio-batch10b-d05cd76-20261104164700` (2026-11-04)
+
+**Authorization:** user explicitly authorized merge of PR #13 and post-merge read-only production Studio verification. Zero Meta. Zero Modal FEM/CAD. Zero optimization. Zero new jobs. Zero Modal redeploy. Browser interceptor blocked all potentially chargeable mutations.
+
+### Verdict
+
+| Axis | Result |
+|---|---|
+| PR #13 merge | **PASS** — merge commit `d05cd76b63b025f32a02882b96c6515aa3cc28b5`; PR **MERGED** |
+| GitHub CI on merge SHA | **PASS** — run `41918377046` (`python`/`web`/`api-bundle`/`e2e`) |
+| Vercel production deploy | **PASS** — GitHub statuses `Vercel – drafty-web` / `drafty-api` success for `d05cd76…`; production web bundle contains Batch 10B markers (`mesh-quality`, preview-gate copy) |
+| API health / auth | **PASS** — `GET /api/v1/health` 200 (`auth=supabase`, `modal_available=true`); QA sign-in succeeded |
+| Modal worker | **PASS** — `drafty-engineering` remains **v5** (deployed 2026-11-04 15:46; not redeployed) |
+| Studio Batch 10A job UI | **PASS** — job `6066bc77-…` shows Solver completion, Validation gates, Mesh quality |
+| Mesh quality fields | **PASS** — C3D10 · 18980 · `sampled_ok_certification_inconclusive` · `mesh_validity=passed_sampled` · whole-element certification **inconclusive** |
+| False low-ratio warning | **PASS** — no fabricated “below 0.10” warning (honest Batch 10A limitation soft notes still shown from retained artifacts) |
+| Reload persistence | **PASS** — Results restored after reload without new job POST |
+| Legacy FEM compatibility | **PASS** — job `4f8ed6cc-…` shows legacy mesh summary; no fabricated `certified_valid` |
+| Preview safety | **PASS** — passive scenario/Studio open/reload caused **0** `/designs/preview` POSTs; explicit Preview/Generate controls visible and **not clicked** |
+| Forbidden paid POST attempts | **0** blocked / **0** attempted (only allowed POST: Supabase auth token) |
+| Overall | **PASS** |
+
+### Preflight / merge
+
+| Field | Value |
+|---|---|
+| Expected PR head | `11fc79cd4bcf33922d647dd4aa5a6bca792a98df` |
+| Pre-merge main | `745ff7715fdb3c17ee3a9c2dbbafd29641d3eb95` |
+| Merge strategy | GitHub merge commit |
+| Merge SHA | `d05cd76b63b025f32a02882b96c6515aa3cc28b5` |
+| CI run | https://github.com/ybedoyab/drafty-meta/actions/runs/41918377046 |
+| Web deploy status URL | https://vercel.com/ybedoyabs-projects/drafty-web/2HH4aMZkyFkApNF2t91cen3EUDsK |
+| API deploy status URL | https://vercel.com/ybedoyabs-projects/drafty-api/7chme5dQtvFQrFkbbqwKgN64rL6Z |
+| Production web alias | `https://drafty-web-umber.vercel.app` |
+| Production API alias | `https://drafty-api.vercel.app` |
+
+### Studio checks (interceptor armed)
+
+Allowed: authentication + read-only GETs.  
+Blocked if attempted: `POST /api/v1/designs/preview`, `POST /api/v1/jobs`, optimize/analyze/turn/segment mutations, Modal/Meta paid paths.
+
+| Check | Result |
+|---|---|
+| Open completed Batch 10A job `6066bc77-…` | PASS |
+| Solver completion / Validation gates / Mesh quality sections | PASS |
+| C3D10 + 18980 elements | PASS |
+| Jacobian status inconclusive | PASS |
+| `passed_sampled` gate | PASS |
+| No false low-ratio soft warning | PASS |
+| Reload restores results | PASS |
+| Legacy job `4f8ed6cc-…` legacy summary | PASS |
+| Passive scenario `abc2180d-…` + Studio navigation | PASS · 0 preview POSTs |
+
+### Evidence
+
+- `docs/qa/evidence/batch10b-prod-verify_2026-11-04T21-47-01-305Z.json`
+- `docs/qa/evidence/_batch10b_prod_verify.mjs` (read-only interceptor harness)
+- `docs/screenshots/prod-batch10b-mesh-quality-10a.png`
+- `docs/screenshots/prod-batch10b-mesh-quality-legacy.png`
+- `docs/screenshots/prod-batch10b-preview-gated.png`
+
+Retained jobs/scenarios unchanged. Historical QA budgets unchanged.
 
 ---
 
