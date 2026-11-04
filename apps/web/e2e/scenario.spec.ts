@@ -312,6 +312,184 @@ test("speech playback explains when the browser has no speech engine", async ({ 
   await expect(page.getByText("Speech playback is not available on this device.").first()).toBeVisible();
 });
 
+async function installVoiceMocks(page: import("@playwright/test").Page) {
+  await page.addInitScript(() => {
+    const rate = 24000;
+    const samples = 480;
+    const buffer = new ArrayBuffer(44 + samples * 2);
+    const view = new DataView(buffer);
+    const ascii = (offset: number, text: string) => {
+      for (let index = 0; index < text.length; index += 1) view.setUint8(offset + index, text.charCodeAt(index));
+    };
+    ascii(0, "RIFF");
+    view.setUint32(4, 36 + samples * 2, true);
+    ascii(8, "WAVE");
+    ascii(12, "fmt ");
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
+    view.setUint16(22, 1, true);
+    view.setUint32(24, rate, true);
+    view.setUint32(28, rate * 2, true);
+    view.setUint16(32, 2, true);
+    view.setUint16(34, 16, true);
+    ascii(36, "data");
+    view.setUint32(40, samples * 2, true);
+    (window as unknown as { __draftyWav?: ArrayBuffer }).__draftyWav = buffer;
+    class FakeRecorder {
+      state = "inactive";
+      mimeType = "audio/wav";
+      ondataavailable: ((event: { data: Blob }) => void) | null = null;
+      onstop: (() => void) | null = null;
+      start() {
+        this.state = "recording";
+      }
+      stop() {
+        this.state = "inactive";
+        const payload = (window as unknown as { __draftyWav: ArrayBuffer }).__draftyWav;
+        this.ondataavailable?.({ data: new Blob([payload], { type: "audio/wav" }) });
+        this.onstop?.();
+      }
+    }
+    Object.defineProperty(window, "MediaRecorder", { configurable: true, value: FakeRecorder });
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: { getUserMedia: async () => ({ getTracks: () => [{ stop() {} }] }) },
+    });
+    class FakeUtterance {
+      lang = "";
+      rate = 1;
+      voice: { lang: string } | null = null;
+      onend: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      constructor(public text: string) {}
+    }
+    Object.defineProperty(window, "SpeechSynthesisUtterance", { configurable: true, value: FakeUtterance });
+    Object.defineProperty(window, "speechSynthesis", {
+      configurable: true,
+      value: {
+        speaking: false,
+        cancel() {
+          (window as unknown as { __draftySpeechCancelled?: boolean }).__draftySpeechCancelled = true;
+        },
+        speak(utterance: FakeUtterance) {
+          (window as unknown as { __draftyLastUtterance?: FakeUtterance }).__draftyLastUtterance = utterance;
+          window.setTimeout(() => utterance.onend?.(), 5000);
+        },
+        getVoices() {
+          return [
+            { lang: "en-US", name: "English" },
+            { lang: "es-ES", name: "Spanish" },
+          ];
+        },
+        addEventListener() {},
+        removeEventListener() {},
+      },
+    });
+  });
+}
+
+test("microphone permission denial stays accessible and does not call STT", async ({ page }) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: {
+        getUserMedia: async () => {
+          throw new DOMException("Permission denied", "NotAllowedError");
+        },
+      },
+    });
+    Object.defineProperty(window, "MediaRecorder", {
+      configurable: true,
+      value: class {
+        start() {}
+        stop() {}
+      },
+    });
+  });
+  let transcribeHits = 0;
+  await page.route("**/api/v1/speech/transcribe", (route) => {
+    transcribeHits += 1;
+    return route.abort();
+  });
+  await page.goto("/scenario/new");
+  await page.getByRole("button", { name: "Microphone" }).click();
+  await expect(page.getByText("Microphone permission was denied.")).toBeVisible();
+  await expect(page.getByLabel("Describe the problem")).toHaveValue("");
+  expect(transcribeHits).toBe(0);
+});
+
+test("a transcript never auto-sends a scenario turn", async ({ page }) => {
+  await installVoiceMocks(page);
+  let turnHits = 0;
+  await page.route("**/api/v1/speech/transcribe", (route) =>
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ transcript: "Editable draft only" }) }),
+  );
+  await page.route("**/api/v1/scenarios/*/turn", (route) => {
+    turnHits += 1;
+    return route.abort();
+  });
+  await page.goto("/scenario/new");
+  await page.getByRole("button", { name: "Microphone" }).click();
+  await page.getByRole("button", { name: /Stop/ }).click();
+  await expect(page.getByLabel("Describe the problem")).toHaveValue("Editable draft only");
+  await page.getByLabel("Describe the problem").fill("Edited before send");
+  await expect(page.getByLabel("Describe the problem")).toHaveValue("Edited before send");
+  expect(turnHits).toBe(0);
+});
+
+test("stale transcription after navigation does not rewrite the composer", async ({ page }) => {
+  await installVoiceMocks(page);
+  await page.route("**/api/v1/speech/transcribe", async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ transcript: "Late stale transcript" }),
+    });
+  });
+  await page.goto("/scenario/new");
+  await page.getByRole("button", { name: "Microphone" }).click();
+  await page.getByRole("button", { name: /Stop/ }).click();
+  await expect(page.getByText("Transcribing")).toBeVisible();
+  await page.getByRole("link", { name: "Capabilities" }).click();
+  await expect(page.getByRole("heading", { name: "What Drafty can and cannot do" })).toBeVisible();
+  await page.goto("/scenario/new");
+  await expect(page.getByLabel("Describe the problem")).toHaveValue("");
+  await expect(page.getByText("Late stale transcript")).toHaveCount(0);
+});
+
+test("passive scenario navigation makes zero speech provider calls", async ({ page }) => {
+  let speechHits = 0;
+  await page.route("**/api/v1/speech/**", (route) => {
+    speechHits += 1;
+    return route.abort();
+  });
+  await page.goto("/scenario/new");
+  await page.getByRole("button", { name: "Load Classroom Demo" }).click();
+  await expect(page.getByText(/classroom|simply supported|beam/i).first()).toBeVisible({ timeout: 30_000 });
+  await page.getByRole("link", { name: "Capabilities" }).click();
+  await expect(page.getByRole("heading", { name: "What Drafty can and cannot do" })).toBeVisible();
+  expect(speechHits).toBe(0);
+});
+
+test("English and Spanish speech playback can be cancelled", async ({ page }) => {
+  await installVoiceMocks(page);
+  await page.goto("/scenario/new");
+  await page.getByRole("button", { name: "Load Classroom Demo" }).click();
+  await expect(page.getByRole("button", { name: "Play speech" }).first()).toBeVisible({ timeout: 30_000 });
+  await page.getByLabel("Speech language").first().selectOption("en");
+  await page.getByRole("button", { name: "Play speech" }).first().click();
+  await expect(page.getByText("Spoken text:").first()).toBeVisible();
+  await page.getByRole("button", { name: "Stop speech" }).first().click();
+  await expect(page.getByRole("button", { name: "Play speech" }).first()).toBeVisible();
+  await page.getByLabel("Speech language").first().selectOption("es");
+  await page.getByRole("button", { name: "Play speech" }).first().click();
+  await expect(page.getByText(/Browser speech.*not Meta TTS/i).first()).toBeVisible();
+  await page.getByRole("button", { name: "Stop speech" }).first().click();
+  const cancelled = await page.evaluate(() => Boolean((window as unknown as { __draftySpeechCancelled?: boolean }).__draftySpeechCancelled));
+  expect(cancelled).toBe(true);
+});
+
 test("an unsupported part lists what Drafty can model instead of the beam form", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/scenario/new");
