@@ -35,12 +35,15 @@ Paid production QA requires **all** of:
 
 ## CI (PR #3)
 
-| Check | First run on `d7909f4` | After config/CI fix |
-|---|---|---|
-| python | PASS | (pending re-run) |
-| api-bundle | PASS | (pending re-run) |
-| web | PASS | (pending re-run) |
-| e2e | **FAIL** | Root cause: Playwright config changed regression defaults (`timeout` / `fullyParallel`) vs `main`. Fixed by restoring CI-like defaults unless live QA is requested; CI now pins `--project=regression`. |
+| Check | Status on tip |
+|---|---|
+| python / api-bundle / web | PASS on `5643711` and later |
+| e2e | Was **FAIL** while `playwright.config.ts` diverged from `main` (even with “restored” defaults). **Fix:** restore `playwright.config.ts` to be identical to `main`; move live QA to `playwright.qa.config.ts` + `npm run test:qa-*`. |
+
+Live QA entrypoints (do not use default CI config):
+
+- `npm run test:qa-local`
+- `npm run test:qa-production` (`--workers=1 --retries=0`, no local webServer)
 
 ## Live-call budget
 
