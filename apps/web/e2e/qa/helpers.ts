@@ -305,7 +305,7 @@ export async function cleanupTracked(
   for (const item of [...tracked].reverse()) {
     // Single gate: mayCleanupScenario (honors ledger + DRAFTY_QA_RELEASE_RETAINED).
     // Tracked retain always mirrors the durable ledger via trackScenario().
-    if (!mayCleanupScenario(item.scenarioId, { production })) {
+    if (!mayCleanupScenario(item.scenarioId, { production, scenarioName: item.name })) {
       remaining.push(item);
       continue;
     }
@@ -380,8 +380,13 @@ export async function cleanupQaOwnedLeftovers(
   const production = Boolean(qaEnv.runProduction);
   const jobsResp = await apiJson(request, apiBase, "GET", "/api/v1/jobs", token);
   const inventory = inspectJobsInventory(jobsResp.status, jobsResp.json);
+  const scenarioNames: Record<string, string> = {};
+  for (const [id, row] of byId) {
+    if (row.name) scenarioNames[id] = row.name;
+  }
   const plan = planQaOwnedLeftoverCleanup({
     scenarioIds: [...byId.keys()],
+    scenarioNames,
     production,
     inventory,
   });

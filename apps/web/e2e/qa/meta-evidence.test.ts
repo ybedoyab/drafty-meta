@@ -14,8 +14,10 @@ import {
   updateMetaEvidence,
 } from "./evidence";
 import {
+  detectInventedMetaQaLoads,
   evaluateMetaProviderSession,
   isAssistantRoleLabel,
+  isMetaQaScenarioName,
   latestAssistantText,
 } from "./meta-verify";
 import {
@@ -46,7 +48,7 @@ const validMetaSession = {
       text: "Still needed: span, tributary width, dead load, supports. A headcount is not a floor load.",
     },
   ],
-  inputs: { span_m: null, dead_load_kpa: null, live_load_kpa: null },
+  inputs: { span_m: null, dead_n_per_m2: null, live_n_per_m2: null },
 };
 
 describe("Meta QA evidence + provider verification", () => {
@@ -89,11 +91,42 @@ describe("Meta QA evidence + provider verification", () => {
     expect(offline.offlineFallback).toBe(true);
   });
 
-  it("rejects invented span/loads and fabricated citations", () => {
+  it("rejects invented canonical span/loads and fabricated citations on Meta QA scenarios", () => {
+    expect(isMetaQaScenarioName("DRAFTY_QA_meta_fixture")).toBe(true);
+    expect(detectInventedMetaQaLoads({ dead_n_per_m2: 3000, live_n_per_m2: null, span_m: null })).toContain(
+      "dead_n_per_m2",
+    );
+    expect(detectInventedMetaQaLoads({ live_n_per_m2: 2000, dead_n_per_m2: null, span_m: null })).toContain(
+      "live_n_per_m2",
+    );
+    expect(detectInventedMetaQaLoads({ span_m: 6, dead_n_per_m2: null, live_n_per_m2: null })).toContain(
+      "span_m",
+    );
+    expect(detectInventedMetaQaLoads({ span_m: null, dead_n_per_m2: null, live_n_per_m2: null })).toBeNull();
+
     expect(
       evaluateMetaProviderSession({
         ...validMetaSession,
-        inputs: { span_m: 6.0 },
+        inputs: { span_m: 6.0, dead_n_per_m2: null, live_n_per_m2: null },
+      }).ok,
+    ).toBe(false);
+    expect(
+      evaluateMetaProviderSession({
+        ...validMetaSession,
+        inputs: { span_m: null, dead_n_per_m2: 2500, live_n_per_m2: null },
+      }).reason,
+    ).toContain("dead_n_per_m2");
+    expect(
+      evaluateMetaProviderSession({
+        ...validMetaSession,
+        inputs: { span_m: null, dead_n_per_m2: null, live_n_per_m2: 1800 },
+      }).reason,
+    ).toContain("live_n_per_m2");
+    // Legacy alias still detected when present on a Meta QA session.
+    expect(
+      evaluateMetaProviderSession({
+        ...validMetaSession,
+        inputs: { dead_load_kpa: 3 },
       }).ok,
     ).toBe(false);
     expect(
@@ -105,6 +138,16 @@ describe("Meta QA evidence + provider verification", () => {
         ],
       }).ok,
     ).toBe(false);
+  });
+
+  it("does not treat user-provided loads as invented outside Meta QA scenario names", () => {
+    const general = evaluateMetaProviderSession({
+      ...validMetaSession,
+      name: "classroom-design",
+      inputs: { span_m: 6, dead_n_per_m2: 3000, live_n_per_m2: 2000 },
+    });
+    expect(general.ok).toBe(true);
+    expect(isMetaQaScenarioName("classroom-design")).toBe(false);
   });
 
   it("matches the real assistant role label Drafty without requiring a colon", () => {

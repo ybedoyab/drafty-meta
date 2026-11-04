@@ -85,9 +85,22 @@ type RetentionLedger = {
 export type CleanupContext = {
   /** True when GET /api/v1/jobs lists at least one job for this scenario. */
   hasLinkedJobs?: boolean;
-  /** Production leftover cleanup uses fail-closed job protection. */
+  /** Production leftover cleanup uses fail-closed job / Meta-name protection. */
   production?: boolean;
+  /**
+   * Scenario display name (when known). Production `DRAFTY_QA_meta_*` names
+   * fail-closed even without a local retention ledger or linked FEM jobs, so
+   * another machine/agent cannot purge Meta evidence.
+   */
+  scenarioName?: string | null;
 };
+
+/** Meta QA scenarios from `qaScenarioName("meta")` — protect across agents. */
+export const META_QA_SCENARIO_PREFIX = "DRAFTY_QA_meta_";
+
+export function isDraftyQaMetaScenarioName(name: string | null | undefined): boolean {
+  return String(name || "").trim().startsWith(META_QA_SCENARIO_PREFIX);
+}
 
 function archiveDir(): string {
   return (
@@ -648,9 +661,11 @@ export function clearEvidenceForTests(): void {
  * Single cleanup gate used by cleanupTracked and cleanupQaOwnedLeftovers.
  * Default: preserve retained evidence. Require explicit release to delete it.
  *
- * When `context.production && context.hasLinkedJobs`, also fail-closed unless
- * this scenario was explicitly released (or DRAFTY_QA_RELEASE_RETAINED=true),
- * so another machine/agent without the local ledger cannot purge FEM artifacts.
+ * Fail-closed in production (unless explicitly released / DRAFTY_QA_RELEASE_RETAINED):
+ * - `hasLinkedJobs` — FEM artifacts across machines without a local ledger
+ * - `DRAFTY_QA_meta_*` scenario names — Meta evidence with no linked jobs
+ *
+ * Ordinary production API scenario deletion is unchanged; this gate is QA-only.
  */
 export function mayCleanupScenario(scenarioId: string, context: CleanupContext = {}): boolean {
   if (explicitReleaseAllAuthorized()) return true;
@@ -658,7 +673,22 @@ export function mayCleanupScenario(scenarioId: string, context: CleanupContext =
   if (ledger.releasedScenarioIds.includes(scenarioId)) return true;
   if (ledger.retainedScenarioIds.includes(scenarioId)) return false;
   if (context.production && context.hasLinkedJobs) return false;
+  if (context.production && isDraftyQaMetaScenarioName(context.scenarioName)) return false;
   return true;
+}
+
+/** Why cleanup is blocked, or null when deletion is allowed. */
+export function cleanupBlockReason(scenarioId: string, context: CleanupContext = {}): string | null {
+  if (mayCleanupScenario(scenarioId, context)) return null;
+  if (explicitReleaseAllAuthorized()) return null;
+  const ledger = loadLedger();
+  if (ledger.releasedScenarioIds.includes(scenarioId)) return null;
+  if (ledger.retainedScenarioIds.includes(scenarioId)) return "retained-evidence";
+  if (context.production && context.hasLinkedJobs) return "job-linked-evidence";
+  if (context.production && isDraftyQaMetaScenarioName(context.scenarioName)) {
+    return "meta-qa-evidence";
+  }
+  return "retained-evidence";
 }
 
 export type JobsInventory =
@@ -707,9 +737,12 @@ export type LeftoverCleanupPlan = {
 /**
  * Decide which QA-owned leftovers may be deleted.
  * Production requires a valid jobs inventory before any destructive cleanup.
+ * Pass `scenarioNames` so Meta QA scenarios are protected across agents.
  */
 export function planQaOwnedLeftoverCleanup(input: {
   scenarioIds: string[];
+  /** Optional id → name map (required for cross-machine Meta QA protection). */
+  scenarioNames?: Record<string, string>;
   production: boolean;
   inventory: JobsInventory;
 }): LeftoverCleanupPlan {
@@ -723,15 +756,19 @@ export function planQaOwnedLeftoverCleanup(input: {
   }
 
   const linked = input.inventory.available ? input.inventory.linkedScenarioIds : new Set<string>();
+  const names = input.scenarioNames || {};
   const deleteIds: string[] = [];
   const skipped: string[] = [];
   for (const id of input.scenarioIds) {
     const hasLinkedJobs = linked.has(id);
-    if (!mayCleanupScenario(id, { production: input.production, hasLinkedJobs })) {
-      const reason =
-        input.production && hasLinkedJobs && mayCleanupScenario(id)
-          ? "job-linked-evidence"
-          : "retained-evidence";
+    const scenarioName = names[id];
+    const context: CleanupContext = {
+      production: input.production,
+      hasLinkedJobs,
+      scenarioName,
+    };
+    const reason = cleanupBlockReason(id, context);
+    if (reason) {
       skipped.push(`${id}:${reason}`);
       continue;
     }

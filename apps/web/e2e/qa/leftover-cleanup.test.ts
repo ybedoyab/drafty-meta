@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   clearEvidenceForTests,
   inspectJobsInventory,
+  mayCleanupScenario,
   planQaOwnedLeftoverCleanup,
   releaseRetainedScenario,
   retainScenarioEvidence,
@@ -13,6 +14,9 @@ import {
 const SCENARIO_A = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const SCENARIO_B = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const UNRELATED = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+const META_ID = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+const META_NAME = "DRAFTY_QA_meta_2026-11-04T17-48-13";
+const CLEANUP_NAME = "DRAFTY_QA_cleanup_fixture";
 
 describe("production leftover cleanup fail-closed jobs inventory", () => {
   const evidenceDir = path.join(os.tmpdir(), `drafty-qa-leftover-vitest-${process.pid}`);
@@ -162,5 +166,62 @@ describe("production leftover cleanup fail-closed jobs inventory", () => {
     });
     expect(plan.abortDestructive).toBe(false);
     expect(plan.deleteIds).toEqual([UNRELATED]);
+  });
+
+  it("protects a retained Meta scenario with a local ledger", () => {
+    retainScenarioEvidence(META_ID);
+    expect(mayCleanupScenario(META_ID, { production: true, scenarioName: META_NAME })).toBe(false);
+    const plan = planQaOwnedLeftoverCleanup({
+      scenarioIds: [META_ID, UNRELATED],
+      scenarioNames: { [META_ID]: META_NAME, [UNRELATED]: CLEANUP_NAME },
+      production: true,
+      inventory: inspectJobsInventory(200, { jobs: [] }),
+    });
+    expect(plan.abortDestructive).toBe(false);
+    expect(plan.deleteIds).toEqual([UNRELATED]);
+    expect(plan.skipped).toEqual([`${META_ID}:retained-evidence`]);
+  });
+
+  it("fail-closes Meta QA scenarios with no local ledger on another agent", () => {
+    // Empty ledger — different machine/agent after a paid Meta turn.
+    expect(mayCleanupScenario(META_ID)).toBe(true);
+    expect(mayCleanupScenario(META_ID, { production: true, scenarioName: META_NAME })).toBe(false);
+    const plan = planQaOwnedLeftoverCleanup({
+      scenarioIds: [META_ID, UNRELATED],
+      scenarioNames: { [META_ID]: META_NAME, [UNRELATED]: CLEANUP_NAME },
+      production: true,
+      inventory: inspectJobsInventory(200, { jobs: [] }),
+    });
+    expect(plan.abortDestructive).toBe(false);
+    expect(plan.deleteIds).toEqual([UNRELATED]);
+    expect(plan.skipped).toEqual([`${META_ID}:meta-qa-evidence`]);
+  });
+
+  it("allows Meta cleanup only after explicit release authorization", () => {
+    releaseRetainedScenario(META_ID);
+    expect(mayCleanupScenario(META_ID, { production: true, scenarioName: META_NAME })).toBe(true);
+    const plan = planQaOwnedLeftoverCleanup({
+      scenarioIds: [META_ID, UNRELATED],
+      scenarioNames: { [META_ID]: META_NAME, [UNRELATED]: CLEANUP_NAME },
+      production: true,
+      inventory: inspectJobsInventory(200, { jobs: [] }),
+    });
+    expect(plan.deleteIds).toEqual([META_ID, UNRELATED]);
+    expect(plan.skipped).toEqual([]);
+  });
+
+  it("keeps unrelated QA leftover cleanup functional alongside Meta protection", () => {
+    const plan = planQaOwnedLeftoverCleanup({
+      scenarioIds: [META_ID, UNRELATED, SCENARIO_A],
+      scenarioNames: {
+        [META_ID]: META_NAME,
+        [UNRELATED]: CLEANUP_NAME,
+        [SCENARIO_A]: "DRAFTY_QA_bracket_fixture",
+      },
+      production: true,
+      inventory: inspectJobsInventory(200, { jobs: [] }),
+    });
+    expect(plan.deleteIds).toEqual([UNRELATED, SCENARIO_A]);
+    expect(plan.skipped).toEqual([`${META_ID}:meta-qa-evidence`]);
   });
 });

@@ -107,6 +107,8 @@ Budget archived: `docs/qa/archive/drafty-qa-paid-budget_meta-only-919cd326-20261
 - UI locator → `assistantMessageArticle()` (exact `Drafty`, article-scoped); fixture Playwright + vitest coverage.
 - Meta retain-before-invoke via `recordMetaScenarioRetained` + shared retention ledger (FEM behavior unchanged).
 - API-first `evaluateMetaProviderSession` before `recordCompletedResponse`; UI failures set `ui_assert_failed` without clearing provider completion; offline-template never PASS.
+- Invented-load checks use canonical `span_m` / `dead_n_per_m2` / `live_n_per_m2` (aliases retained) and only apply to `DRAFTY_QA_meta_*` QA scenarios.
+- Production leftover cleanup fail-closes `DRAFTY_QA_meta_*` by name across machines (no local ledger / no linked jobs) unless explicitly released; FEM job-linked protection unchanged.
 - Historical budget JSON files left byte-stable except the already-recorded `…meta-only-919cd326-20261104124808.json` archive from the paid session.
 
 ---

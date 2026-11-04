@@ -31,12 +31,25 @@ export type MetaProviderVerdict = {
 const FABRICATED_CITATION =
   /https?:\/\/doi\.org|according to asce 7-22 section|asce\s*7[- ]?22\s+section/i;
 
+/** Canonical Drafty scenario input keys (plus legacy aliases for older fixtures). */
+const SPAN_KEYS = ["span_m", "span", "length_m"] as const;
+const DEAD_LOAD_KEYS = ["dead_n_per_m2", "dead_load_kpa", "dead_load", "q_dead"] as const;
+const LIVE_LOAD_KEYS = ["live_n_per_m2", "live_load_kpa", "live_load", "q_live"] as const;
+
+/** Meta QA scenarios created by `qaScenarioName("meta")` — no-load prompt contract. */
+export const META_QA_NAME_PREFIX = "DRAFTY_QA_meta_";
+
+export function isMetaQaScenarioName(name: string | null | undefined): boolean {
+  const trimmed = String(name || "").trim();
+  return trimmed.startsWith(META_QA_NAME_PREFIX);
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   return value as Record<string, unknown>;
 }
 
-function numericInput(inputs: Record<string, unknown> | null | undefined, keys: string[]): number | null {
+function numericInput(inputs: Record<string, unknown> | null | undefined, keys: readonly string[]): number | null {
   if (!inputs) return null;
   for (const key of keys) {
     const raw = inputs[key];
@@ -44,6 +57,22 @@ function numericInput(inputs: Record<string, unknown> | null | undefined, keys: 
     const n = typeof raw === "number" ? raw : Number(raw);
     if (Number.isFinite(n)) return n;
   }
+  return null;
+}
+
+/**
+ * Meta QA no-load prompt: reject positive engineering quantities the model must not invent.
+ * Does not apply to ordinary user workflows outside DRAFTY_QA_meta_* scenarios.
+ */
+export function detectInventedMetaQaLoads(
+  inputs: Record<string, unknown> | null | undefined,
+): string | null {
+  const span = numericInput(inputs, SPAN_KEYS);
+  if (span != null && span > 0) return `invented span_m=${span} without user-provided span`;
+  const live = numericInput(inputs, LIVE_LOAD_KEYS);
+  if (live != null && live > 0) return `invented live_n_per_m2=${live}`;
+  const dead = numericInput(inputs, DEAD_LOAD_KEYS);
+  if (dead != null && dead > 0) return `invented dead_n_per_m2=${dead}`;
   return null;
 }
 
@@ -70,12 +99,25 @@ export function hasProviderUsage(session: MetaSessionLike): boolean {
   return Number.isFinite(out) && out > 0;
 }
 
+export type EvaluateMetaOptions = {
+  /**
+   * When true, reject positive span/dead/live inputs (Meta QA no-load prompt).
+   * Defaults to true for `DRAFTY_QA_meta_*` scenario names only — never for
+   * general application sessions that legitimately carry user-provided loads.
+   */
+  enforceNoInventedLoads?: boolean;
+};
+
 /**
  * Authenticated API verdict for a Meta turn.
  * Offline-template is never ok. Requires mode=meta-responses, meta_turns>=1,
- * response id and/or usage, a real assistant message, and no invented span/loads/citations.
+ * response id and/or usage, a real assistant message, and no invented span/loads/citations
+ * on Meta QA no-load scenarios.
  */
-export function evaluateMetaProviderSession(session: MetaSessionLike): MetaProviderVerdict {
+export function evaluateMetaProviderSession(
+  session: MetaSessionLike,
+  options: EvaluateMetaOptions = {},
+): MetaProviderVerdict {
   const mode = session.mode == null ? null : String(session.mode);
   const metaTurns = Number(session.meta_turns || 0);
   const previous =
@@ -84,6 +126,8 @@ export function evaluateMetaProviderSession(session: MetaSessionLike): MetaProvi
       : String(session.previous_response_id);
   const usage = asRecord(session.usage);
   const assistantText = latestAssistantText(session);
+  const enforceNoInventedLoads =
+    options.enforceNoInventedLoads ?? isMetaQaScenarioName(session.name);
 
   if (mode === "offline-template") {
     return {
@@ -163,44 +207,20 @@ export function evaluateMetaProviderSession(session: MetaSessionLike): MetaProvi
     };
   }
 
-  const span = numericInput(session.inputs, ["span_m", "span", "length_m"]);
-  const live = numericInput(session.inputs, ["live_load_kpa", "live_load", "q_live"]);
-  const dead = numericInput(session.inputs, ["dead_load_kpa", "dead_load", "q_dead"]);
-  if (span != null && span > 0) {
-    return {
-      ok: false,
-      offlineFallback: false,
-      reason: `invented span_m=${span} without user-provided span`,
-      mode,
-      meta_turns: metaTurns,
-      previous_response_id: previous,
-      usage,
-      assistantText,
-    };
-  }
-  if (live != null && live > 0) {
-    return {
-      ok: false,
-      offlineFallback: false,
-      reason: `invented live load=${live}`,
-      mode,
-      meta_turns: metaTurns,
-      previous_response_id: previous,
-      usage,
-      assistantText,
-    };
-  }
-  if (dead != null && dead > 0) {
-    return {
-      ok: false,
-      offlineFallback: false,
-      reason: `invented dead load=${dead}`,
-      mode,
-      meta_turns: metaTurns,
-      previous_response_id: previous,
-      usage,
-      assistantText,
-    };
+  if (enforceNoInventedLoads) {
+    const invented = detectInventedMetaQaLoads(session.inputs);
+    if (invented) {
+      return {
+        ok: false,
+        offlineFallback: false,
+        reason: invented,
+        mode,
+        meta_turns: metaTurns,
+        previous_response_id: previous,
+        usage,
+        assistantText,
+      };
+    }
   }
 
   return {
