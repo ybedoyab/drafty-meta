@@ -1,102 +1,75 @@
 # Drafty Engineering — Automated End-to-End QA Report
 
-**Baseline / main tip (production today):** `6c6a17e153e505183718dc5276fd82585a1bdc25`  
-**QA harness branch:** `qa/e2e-live-harness`  
-**QA branch tip (pre-merge):** `58a8f8796255a079b9490cd47a3c1ab604644de9`  
+**Production merge commit:** `64578bd7203a86c156a600d28d4be2e3b43f3d04`  
+**Branch:** `main` (PR #3 merged)  
 **PR:** https://github.com/ybedoyab/drafty-meta/pull/3  
-**Batch 10A:** not started · **Auto-merge:** not performed  
+**Batch 10A:** not started  
 
-## Deploy / paid-cloud gate (critical)
+## Deploy verification (2026-11-04)
 
-| Claim | Status |
+| Check | Result |
 |---|---|
-| Local CalculiX + FEM proven | **YES** (prior session + this prep) |
-| Storage nested-404 delete fix on QA branch | **YES** (`storage.py`) |
-| Same fix live on **Vercel production** | **NO** until PR #3 is merged **and** production redeploys |
-| Paid Modal/Meta production session | **NOT RUN** — flags false and/or production lacks cleanup fix |
+| `origin/main` tip | `64578bd7203a86c156a600d28d4be2e3b43f3d04` |
+| GitHub Actions `ci` on that commit | **PASS** — python, api-bundle, web, e2e all green ([run 41780854121](https://github.com/ybedoyab/drafty-meta/actions/runs/41780854121)) |
+| GitHub commit status `Vercel – drafty-web` | **success** — Deployment has completed (`…/drafty-web/BQAaDvA6npC24wQtoKuvEcARGAdm`) |
+| GitHub commit status `Vercel – drafty-api` | **success** — Deployment has completed (`…/drafty-api/9CGLG6qgmj9fQ2pY9ZtWSaTDg4fE`) |
+| Production health (`drafty-api.vercel.app`) | **200** — `auth=supabase`, `compute=modal`, `modal_available=true`, `meta=true` |
+| Storage nested-404 delete fix live | **YES** — production leftover DELETE no longer returns 503; prior leftover IDs reported `already-gone` / new QA rows deleted successfully |
+| Exact SHA on production aliases via Vercel MCP/CLI | **Not independently readable** from this agent account (team `ybedoyabs-projects` unauthorized). Verification used commit statuses + main tip identity + live cleanup behavior instead. |
+| Local rebuild asset fingerprint at `64578bd` | CSS `index-8SMhBQiK.css` matches production; JS hash differs (expected when Vercel injects `VITE_*` at build time) |
 
-Paid production QA requires **all** of:
-
-1. PR #3 merged to `main`
-2. Vercel production deployment of that commit
-3. `DRAFTY_QA_RUN_PRODUCTION=true`
-4. `DRAFTY_QA_RUN_LIVE_MODAL=true` and/or `DRAFTY_QA_RUN_LIVE_META=true`
-5. `DRAFTY_QA_REQUIRE_PROD_COMMIT=<deployed production git SHA>`
-6. Single invocation: `npm run test:qa-production` (`--workers=1 --retries=0`)
-
-## Environment flags (this prep session)
+## Environment flags (production QA session)
 
 | Flag | Value |
 |---|---|
 | `DRAFTY_QA_RUN_PRODUCTION` | true |
-| `DRAFTY_QA_RUN_LIVE_MODAL` | **false** |
-| `DRAFTY_QA_RUN_LIVE_META` | **false** |
-| `DRAFTY_QA_REQUIRE_PROD_COMMIT` | unset |
+| `DRAFTY_QA_RUN_LIVE_MODAL` | true |
+| `DRAFTY_QA_RUN_LIVE_META` | true |
+| `DRAFTY_QA_REQUIRE_PROD_COMMIT` | `64578bd7203a86c156a600d28d4be2e3b43f3d04` |
+| Budget run id | `prod-qa-64578bd-20261104005258` |
 
-## CI (PR #3)
+## Production QA session results
 
-| Check | Status on tip `58a8f87` |
-|---|---|
-| python / api-bundle / web | **PASS** |
-| e2e | **PASS** (2m33s) |
+Invocation: `npm run test:qa-production` (`--workers=1 --retries=0`), then continued remaining tests under the **same** budget run id after the first paid failure (no budget reset; no second geometry/FEM reservation).
 
-Prior e2e failures (resolved on this tip): (1) `main@6c6a17e` failed the same Send/turn suite. (2) Idempotent routing remounted Scenario between `/scenario/new` and `/scenario/:id`, wiping the typed draft before Send — zero `/turn` in API logs. (3) Live QA Playwright settings leaked into CI on main via `2d32dc5`; isolated here in `playwright.qa.config.ts`.
+| Step | Status | Notes |
+|---|---|---|
+| Leftover `DRAFTY_QA_*` cleanup | **PASS** | Prior IDs already gone; session rows deleted (including failed pawn/bracket). `failed: []` |
+| Health + homepage | **PASS** | Modal/Meta/Supabase configured on production |
+| Auth persistence / rename / reload | **PASS** | |
+| Cross-user isolation | **PASS** | |
+| Classroom demo + span compare | **PASS** | No paid Modal/Meta |
+| Scenario deletion cleanup policy | **PASS** | DELETE 200 + retained geometry cache; Storage fix live |
+| Mocked microphone UI | **SKIPPED** | Mic control not visible on production UI |
+| One Modal pawn geometry miss → hit | **FAIL** | Budget slot consumed. Timed out 180s waiting for `/geometry/` GET. Scenario stuck `CAD pending`. No cache miss/hit headers captured. **No retry** (budget policy). |
+| One Modal CalculiX FEM + artifacts | **FAIL (pre-solve)** | Budget slot consumed before solve. Failed waiting for **Approve and open Studio** after Confirm faces (30s). No Modal job id recorded. **No retry**. |
+| ≤1 Meta turn | **NOT COMPLETED** | Budget slot was consumed then harness skipped (`AI not connected` path / exhausted remaining). No successful Meta reply asserted. |
+| Remote optimization | forbidden / not run | |
+| Cost | **NOT MEASURED** | No Modal/Meta billing figures available from this environment; `jobIds: []` in budget file |
 
-Fixes on this branch (assertions unchanged):
+### Budget file (end of session)
 
-- Live QA config isolated from CI regression
-- CI runs `scenario.spec.ts` then `bracket-fem.spec.ts` with `--workers=1`
-- Single Scenario route mount; `scenarioEntry("new")` is create; draft preserved across create→open
-- Create navigates without adopting; open route loads the session
-- Abort in-flight turns only when the open scenario id actually changes
+```json
+{
+  "used": { "modal_geometry": 1, "modal_fem": 1, "meta": 1 },
+  "jobIds": [],
+  "runId": "prod-qa-64578bd-20261104005258"
+}
+```
 
-## Live-call budget
+### Paid-call interpretation
 
-| Control | Implementation |
-|---|---|
-| Caps | 1 Modal geometry · 1 Modal FEM · 1 Meta |
-| Persistence | File-backed under OS temp (`drafty-qa-paid-budget.json`) keyed by process run id |
-| Workers | Forced `workers: 1` when live QA is enabled; npm script also passes `--workers=1 --retries=0` |
-| Retries | `retries: 0` globally for QA; failed paid attempts still consume budget (no release) |
-| Production webServer | Skipped when only `qa-production` is selected |
+- Caps honored (1/1/1). Failed/skipped attempts still consumed slots by design.
+- No evidence a Modal FEM job or Meta response completed (`jobIds` empty; pawn never reached geometry GET).
+- Do **not** re-run paid Modal/Meta against production until the pawn CAD path and bracket approve gate are diagnosed; do not reset the budget file to “retry” the same spend without an explicit new authorization.
 
-## Leftover `DRAFTY_QA_*` cleanup
-
-| Target | Result |
-|---|---|
-| Local API (branch code + `drafty-ccx`) | **PASS** — deleted 8 leftover bracket scenarios owned by the QA account (not re-run) |
-| Production API | **BLOCKED** — DELETE returned **503** (expected until Storage nested-404 fix is deployed). No further delete attempts this session |
-
-Leftover IDs still present on production until post-merge cleanup:
-
-`535f2a7f-de71-4e18-a56c-3f887de1af7f`, `6decff8a-5f98-4ed1-8c62-eba7a2fd4542`, `5284c7a3-b0bf-46f8-b220-f562df3252ff`, `229f8821-1538-476a-aaf9-29a320424402`, `d6d64762-a808-4b17-843c-3dc618db7175`, `c658a20c-7c2e-4738-98a8-89282610a2fc`, `7d41ac60-112c-407b-ba55-79bb1e0645e0`, `d27dd637-c521-44b5-932d-e205a5846b37`
-
-## Proven earlier (not re-run this prep)
+## Earlier local proof (unchanged)
 
 | Area | Evidence |
 |---|---|
 | Local FEM benchmarks | 9 passed |
-| Deterministic bracket + optimization E2E | PASS (prior local) |
 | Authenticated local bracket CalculiX | Job `6883389d-07cb-44d3-adc9-da5d5b9e8279` (nodes 31795, C3D10, equilibrium passed) |
-| Auth / isolation / classroom beam | PASS (prior) |
-
-## Production paid session (post-merge)
-
-| Step | Status |
-|---|---|
-| One pawn geometry miss → hit | **NOT RUN** (await merge+deploy+flags) |
-| One Modal bracket FEM + artifacts + persistence | **NOT RUN** |
-| ≤1 Meta turn | **NOT RUN** |
-| Remote optimization | forbidden / not run |
-| Cost | **NOT MEASURED** |
-
-## Merge readiness
-
-- **PR #3 is merge-ready** for harness + local FEM proof + Storage cleanup fix + Scenario create/open draft fix (CI green on `58a8f87`).
-- **Do not** treat merge as authorization for Batch 10A.
-- **Do not** run paid Modal/Meta until production deploy SHA is confirmed and `DRAFTY_QA_REQUIRE_PROD_COMMIT` is set.
-- After merge+deploy: run exactly one `npm run test:qa-production` session with live flags; stop after the first failed paid attempt; then retry production leftover DELETE.
 
 ## Ready for Batch 10A?
 
-**No.** Await merge → production deploy → single authorized paid QA session → update this report with cloud job IDs.
+**No.** Production auth/isolation/cleanup look healthy after merge, but the controlled paid Modal geometry + FEM path did not complete successfully. Diagnose CAD/approve regressions on production before Batch 10A.
