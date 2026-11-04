@@ -1,8 +1,10 @@
 import numpy as np
 import pytest
 
+from drafty_engineering.materials import get_material
 from drafty_engineering.mesh import order_tetra10
-from drafty_engineering.solver import parse_dat, parse_frd_nodal
+from drafty_engineering.solver import parse_dat, parse_frd_nodal, write_input
+from drafty_engineering.spec import cantilever_benchmark_spec
 
 
 def test_quadratic_tet_nodes_are_reordered_to_calculix():
@@ -54,3 +56,17 @@ def test_dat_parser_reads_displacements_and_stress():
     displacements, stresses = parse_dat(text)
     assert displacements[2][2] == -2e-3
     assert len(stresses[1]) == 2
+
+
+def test_solver_heading_flattens_a_legacy_name_with_newlines(tmp_path):
+    spec = cantilever_benchmark_spec().model_construct(
+        **{**cantilever_benchmark_spec().model_dump(), "name": "x\n*BOUNDARY\nFAKE, 1, 3, 9.9"}
+    )
+    points = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
+    cells = np.array([[0, 1, 2, 3]])
+    path = tmp_path / "model.inp"
+    forces = {1: np.array([0.0, 0.0, -1.0])}
+    write_input(path, spec, get_material(spec.material_id), points, cells, np.array([0]), forces)
+    text = path.read_text(encoding="utf-8")
+    assert "\n*BOUNDARY\nFAKE" not in text
+    assert text.splitlines()[1].startswith("Drafty cantilever_beam x *BOUNDARY FAKE")

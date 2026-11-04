@@ -84,6 +84,25 @@ test("a classroom scenario asks for missing data and does not open a 3D solve", 
   expect(pageErrors).toEqual([]);
 });
 
+test("a project can be renamed from inside its workspace", async ({ page }) => {
+  await page.goto("/scenario/new");
+  await page.getByRole("button", { name: "Rename Untitled" }).click();
+  await page.getByLabel("Project name").fill("  Workspace rename check  ");
+  await page.getByRole("button", { name: "Save" }).click();
+  await expect(page.getByText("Workspace rename check")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Rename Workspace rename check" })).toBeVisible();
+  await page.reload();
+  await expect(page.getByText("Workspace rename check")).toBeVisible();
+  await page.getByRole("button", { name: "Rename Workspace rename check" }).click();
+  await page.getByLabel("Project name").fill("   ");
+  await page.getByRole("button", { name: "Save" }).click();
+  await expect(page.getByText("The name must not be empty.")).toBeVisible();
+  await page.getByRole("button", { name: "Cancel" }).click();
+  await expect(page.getByText("Workspace rename check")).toBeVisible();
+  await page.goto("/projects");
+  await expect(page.getByText("Workspace rename check")).toBeVisible();
+});
+
 test("the inspector shows one step at a time and paginates through them", async ({ page }) => {
   await page.goto("/scenario/new");
   await page.getByRole("button", { name: "Load Classroom Demo" }).click();

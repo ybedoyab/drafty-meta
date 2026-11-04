@@ -310,7 +310,7 @@ export function Workstation() {
         trailing={
           <>
             {scenarioId && (
-              <Link to="/scenario/new" className="rounded-md px-3 py-1.5 text-sm font-medium text-gray-600 hover:bg-blue-50 hover:text-blue-800">
+              <Link to={`/scenario/${scenarioId}`} className="rounded-md px-3 py-1.5 text-sm font-medium text-gray-600 hover:bg-blue-50 hover:text-blue-800">
                 Back to scenario
               </Link>
             )}

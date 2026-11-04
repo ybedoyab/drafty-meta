@@ -4,6 +4,7 @@ import {
   GRID_STEPS_MM,
   gridStepLabel,
   gridStepMeters,
+  gridPlaneDistance,
   resolveGridFloor,
 } from "@/lib/grid";
 
@@ -30,6 +31,15 @@ describe("measured grid steps", () => {
     expect(resolveGridFloor([0.04, 0.05], 0.06)).toBe(0.04);
     expect(resolveGridFloor([null, 0.05], 0.06)).toBe(0.05);
     expect(resolveGridFloor([undefined, undefined], 0.06)).toBe(0.06);
+  });
+
+  it("places the grid plane just under the resting face", () => {
+    // Regression: the classroom demo preview had no grid at all, while the
+    // Studio and revolved-geometry views did. Every 3D visor now shares this
+    // offset: measured half-height plus a small lift against z-fighting.
+    expect(gridPlaneDistance([0.1], 0.5, 0.01, 0.4)).toBeCloseTo(0.102, 9);
+    expect(gridPlaneDistance([null], 0.5, 0.01, 0.4)).toBeCloseTo(0.502, 9);
+    expect(gridPlaneDistance([0.04], 0.5, 0.1, 0.1)).toBeCloseTo(0.055, 9);
   });
 
   it("skips non-positive or non-finite measurements", () => {

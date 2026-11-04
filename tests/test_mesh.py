@@ -26,6 +26,23 @@ def test_beam_support_and_load_faces_match_the_design(tmp_path):
     assert load_area == pytest.approx(expected_face_area(spec, "xmax"), rel=0.03)
 
 
+def test_estimated_node_count_rejects_a_memory_exhausting_mesh_before_meshing():
+    from drafty_engineering.geometry_math import envelope
+    from drafty_engineering.pipeline import estimated_node_count
+    from drafty_engineering.spec import DesignSpec
+
+    spec = DesignSpec.model_validate(
+        {
+            **cantilever_benchmark_spec().model_dump(),
+            "beam": {"length_m": 1.0, "width_m": 1.0, "height_m": 0.001},
+            "mesh_size_m": 0.00001,
+        }
+    )
+    assert estimated_node_count(spec, envelope(spec).volume_m3) > 250_000
+    benchmark = cantilever_benchmark_spec()
+    assert estimated_node_count(benchmark, envelope(benchmark).volume_m3) < 250_000
+
+
 def test_curved_midnode_still_belongs_to_its_edge():
     import numpy as np
 
