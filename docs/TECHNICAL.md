@@ -17,10 +17,11 @@ The why, the solver pipeline, and the deployment manuals. The [README](../README
 1. Validate the typed specification. One encastre support, one load, a known material, and explicit dimensions are required.
 2. Build the solid in CadQuery and write STEP.
 3. Mesh that STEP file with Gmsh. Quadratic tetrahedra are the default.
-4. Check that the fixed and loaded faces match the requested surfaces.
-5. Write a CalculiX `.inp` and run `ccx` in its own process, with a timeout.
-6. Read nodal displacements and integration-point stresses from the solver files.
-7. Report von Mises, displacement, and factor of safety. A job is not marked completed without those files.
+4. Assess the tetrahedral mesh: corner volumes for all tets, plus sampled/adaptive C3D10 Jacobian checks for quadratic meshes (see [BATCH_10A_MESH_QUALITY.md](BATCH_10A_MESH_QUALITY.md)). Demonstrated inversion fails closed; whole-element certification stays inconclusive on the NumPy path.
+5. Check that the fixed and loaded faces match the requested surfaces.
+6. Write a CalculiX `.inp` and run `ccx` in its own process, with a timeout.
+7. Read nodal displacements and integration-point stresses from the solver files.
+8. Report von Mises, displacement, factor of safety, and mesh-quality metadata. A job is not marked completed without those files. Solver completion is not mesh certification.
 
 The cantilever check compares free-end deflection with Euler-Bernoulli bending plus rectangular Timoshenko shear, and midspan outer-fiber stress with beam theory. The acceptance bands are 8% on deflection and 20% on that sampled stress. Peak stress on the fixed face is reported separately because a fully fixed face can create a constraint singularity.
 
