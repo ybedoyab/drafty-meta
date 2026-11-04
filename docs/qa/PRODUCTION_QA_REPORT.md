@@ -61,7 +61,7 @@ No live Modal or Meta calls were made during this investigation.
 
 **Conclusion:** Synchronous HTTP waiting for Modal inside a short-lived serverless request is the reliability failure mode. Quota was charged on the miss path before artifacts could be published; the sync wait + cancel prevented durable completion. Vercel team logs for `ybedoyabs-projects` were not readable from this agent; the charge/storage/code evidence is sufficient to classify this as sync-wait reliability (not a frontend-only bug).
 
-**Fix:** Durable async geometry builds — charge + spawn Modal, persist `geometry_builds` status + `modal_call_id`, return **202** while pending, poll without cancelling, publish digest cache atomically when ready. Frontend polls 202 with a bounded backoff (≤180s). Migration `0008_geometry_builds.sql` required on Supabase before production retest.
+**Fix:** Durable async geometry builds — claim → charge → spawn → attach call id, return **202** while pending, poll without cancelling, publish digest cache atomically when ready. Frontend polls 202 with a bounded backoff (≤180s). Migrations `0008` + `0009` (conditional transitions, stale recovery, no duplicate charge/orphan attach) applied on Supabase.
 
 #### 2. Bracket Approve missing before CalculiX
 
@@ -93,7 +93,8 @@ No live Modal or Meta calls were made during this investigation.
 - `apps/web/e2e/qa/budget.ts` + `qa-live.spec.ts` — Meta gate before reserve; layered counters
 - `apps/web/e2e/scenario.spec.ts` — demo → faces → Approve → Studio
 - `supabase/migrations/0008_geometry_builds.sql` — durable build rows
-- Tests for Prefer headers + async geometry spawn/poll
+- `supabase/migrations/0009_geometry_build_transitions.sql` — conditional claim/charge/attach/transition + stale recovery
+- Tests for Prefer headers, async spawn/poll, charge/attach partial failure, concurrent pollers, stale timeout
 
 ### Regression tests run locally (no live Modal/Meta)
 
@@ -119,8 +120,9 @@ No live Modal or Meta calls were made during this investigation.
 
 ### Remaining limitations
 
-- Migration `0008_geometry_builds` **applied** to Supabase project `dwwwyuybbwihpizdrhqp` during investigation (DDL only; unused until API deploy).
+- Migrations `0008` and `0009` **applied** to Supabase project `dwwwyuybbwihpizdrhqp` (DDL only; unused until API deploy).
 - Deploy API + web from this PR before retest; Prefer fix and 202 geometry path are not live until then.
+- Stale `queued`/`running` builds fail closed after ~10 minutes without auto-spawning; a later client retry may charge again for a new attempt.
 - One separately authorized, controlled production retest only — do not reset the prior budget file to “retry” spend.
 - Vercel/`ybedoyabs-projects` runtime logs remain unread from this agent account.
 - Batch 10A not started.

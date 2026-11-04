@@ -403,6 +403,73 @@ def get_geometry_build_remote(digest: str) -> dict | None:
     return result
 
 
+def claim_geometry_build_start_remote(
+    digest: str,
+    owner_id: str,
+    profile: dict | None = None,
+    stale_after_seconds: int = 600,
+    resume_after_seconds: int = 45,
+) -> dict | None:
+    """Claim or observe a geometry build attempt. None when the RPC backend is unavailable."""
+
+    result = call_service_rpc(
+        "claim_geometry_build_start",
+        {
+            "p_digest": digest,
+            "p_owner_id": owner_id,
+            "p_profile": profile or {},
+            "p_stale_after_seconds": int(stale_after_seconds),
+            "p_resume_after_seconds": int(resume_after_seconds),
+        },
+    )
+    if not isinstance(result, dict):
+        return None
+    return result
+
+
+def mark_geometry_build_charged_remote(digest: str) -> bool | None:
+    """Persist the charge bit before Modal spawn. None when unavailable."""
+
+    result = call_service_rpc("mark_geometry_build_charged", {"p_digest": digest})
+    if result is None:
+        return None
+    return bool(result)
+
+
+def attach_geometry_build_call_remote(digest: str, call_id: str) -> bool | None:
+    """Bind a Modal call id onto a queued build. None when unavailable."""
+
+    result = call_service_rpc(
+        "attach_geometry_build_call",
+        {"p_digest": digest, "p_call_id": call_id},
+    )
+    if result is None:
+        return None
+    return bool(result)
+
+
+def transition_geometry_build_remote(
+    digest: str,
+    from_statuses: list[str],
+    to_status: str,
+    error: str | None = None,
+) -> bool | None:
+    """Conditional status transition. None when unavailable; False when not applicable."""
+
+    result = call_service_rpc(
+        "transition_geometry_build",
+        {
+            "p_digest": digest,
+            "p_from_statuses": from_statuses,
+            "p_to_status": to_status,
+            "p_error": error,
+        },
+    )
+    if result is None:
+        return None
+    return bool(result)
+
+
 def upsert_geometry_build_remote(
     digest: str,
     owner_id: str,
@@ -413,7 +480,7 @@ def upsert_geometry_build_remote(
     error: str | None = None,
     charged: bool = False,
 ) -> bool:
-    """Persist geometry build status. False when the RPC backend is unavailable."""
+    """Legacy unconditional upsert from migration 0008. Prefer conditional RPCs."""
 
     if not settings.supabase_configured:
         return False

@@ -334,6 +334,18 @@ def poll_remote_geometry(call_id: str, timeout: float = 0) -> dict[str, bytes] |
     return {name: bytes(payload[name]) for name in names}
 
 
+def cancel_remote_geometry_call(call_id: str) -> None:
+    """Best-effort cancel when a call id could not be durably attached."""
+
+    import modal
+
+    try:
+        call = modal.FunctionCall.from_id(str(call_id))
+    except Exception:
+        return
+    _cancel_call(call)
+
+
 def remote_geometry(profile: dict) -> dict[str, bytes]:
     """STEP, STL, and the GLB preview for a revolved profile, built on Modal.
 
