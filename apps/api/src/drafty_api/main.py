@@ -1,12 +1,13 @@
 """Drafty HTTP API. Heavy analysis returns a job id immediately."""
 
 import hashlib
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
 from drafty_api.auth import current_owner
@@ -47,6 +48,7 @@ ARTIFACTS = {
     "solver.log": "text/plain",
 }
 UPLOAD_TYPES = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp"}
+logger = logging.getLogger(__name__)
 
 
 class OptimizationOptions(BaseModel):
@@ -79,6 +81,22 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="Drafty", version="0.1.0", lifespan=lifespan)
+
+
+@app.middleware("http")
+async def unhandled_errors_as_json(request: Request, call_next):
+    """Answer inside CORSMiddleware, or browsers report a server error as a CORS failure.
+
+    Registered before CORSMiddleware because the last middleware added is the outermost.
+    """
+
+    try:
+        return await call_next(request)
+    except Exception:
+        logger.exception("Unhandled error on %s %s", request.method, request.url.path)
+        return JSONResponse(status_code=500, content={"detail": "Internal server error."})
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=sorted(

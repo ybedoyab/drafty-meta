@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import logging
 import os
 import secrets
 import uuid
@@ -12,6 +13,8 @@ from fastapi import HTTPException
 
 from drafty_api.settings import settings
 from drafty_engineering.artifacts import ARTIFACT_NAMES, MAX_ARTIFACT_BYTES
+
+logger = logging.getLogger(__name__)
 
 ACTIVE_REMOTE = {
     "queued",
@@ -292,7 +295,14 @@ def complete_remote_job(job_id: str, token: str, payload: dict) -> dict:
 def remote_preview(spec: dict) -> bytes:
     import modal
 
-    call = modal.Function.from_name("drafty-engineering", "generate_preview").spawn(spec)
+    try:
+        call = modal.Function.from_name("drafty-engineering", "generate_preview").spawn(spec)
+    except Exception as exc:
+        logger.exception("Modal generate_preview spawn failed")
+        raise HTTPException(
+            status_code=502,
+            detail=f"Modal preview could not start ({type(exc).__name__}).",
+        ) from exc
     try:
         payload = call.get(timeout=50)
     except TimeoutError as exc:
@@ -300,6 +310,12 @@ def remote_preview(spec: dict) -> bytes:
         raise HTTPException(
             status_code=504,
             detail="The solid is still building on Modal. Preview again in a moment.",
+        ) from exc
+    except Exception as exc:
+        logger.exception("Modal generate_preview failed")
+        raise HTTPException(
+            status_code=502,
+            detail=f"Modal preview failed ({type(exc).__name__}).",
         ) from exc
     if not isinstance(payload, (bytes, bytearray)) or not payload:
         raise HTTPException(status_code=502, detail="Modal did not return a preview.")
