@@ -84,6 +84,115 @@ test("a mocked job can be submitted, reopened, and cancelled", async ({ page }) 
   await expect(page.getByText("0.5652").first()).toBeVisible();
 });
 
+test("after reload, Jobs queue must be opened before a completed job can show Results", async ({ page }) => {
+  const jobId = "4f8ed6cc-7d26-4a53-ba2a-ba1569ab4933";
+  const completedJob = {
+    id: jobId,
+    kind: "simulation",
+    status: "completed",
+    message: "completed",
+    error: null,
+    compute: "modal",
+    summary: {
+      mass_kg: 0.42,
+      max_displacement_m: 1.3e-7,
+      safety_factor: 276.2,
+      validation_status: "solver_completed",
+    },
+    spec: null,
+    created_at: "2026-11-04T15:37:55+00:00",
+    updated_at: "2026-11-04T15:38:40+00:00",
+    active: false,
+  };
+  const results = {
+    units: { length: "m" },
+    validation_status: "solver_completed",
+    solver: { name: "calculix", version: "CalculiX", mode: "modal" },
+    mesh: { nodes: 31795, elements: 18980, element_type: "C3D10", target_size_m: 0.004 },
+    mass_kg: 0.42,
+    max_displacement_m: 1.3e-7,
+    max_von_mises_pa: 2.037e6,
+    governing_von_mises_pa: 6.651e5,
+    safety_factor: 276.2,
+    benchmark: { applicable: false, passed: false },
+    warnings: ["exploratory"],
+    surface: {
+      vertices_m: [
+        [0, 0, 0],
+        [1, 0, 0],
+        [0, 1, 0],
+      ],
+      faces: [[0, 1, 2]],
+      displacement_m: [
+        [0, 0, 0],
+        [0, 0, 0],
+        [0, 0, 0],
+      ],
+      von_mises_pa: [1, 2, 3],
+    },
+    stress_assessment: {
+      safety_factor_status: "exploratory",
+      exclusion: "fixed face",
+      exclusion_reason: "singularity",
+      mesh_sensitivity: "compare meshes",
+      measure: "governing",
+      nodal_field: "frd",
+      integration_point_field: "dat",
+      displayed_surface: "corners",
+    },
+    equilibrium: {
+      passed: true,
+      applied_force_n: [0, 0, -200],
+      reaction_force_n: [0, 0, 200],
+      residual_n: 0,
+      relative_residual: 0,
+    },
+  };
+
+  await page.route("**/api/v1/health", (route) =>
+    route.fulfill({
+      json: {
+        service: "drafty",
+        solver: { available: true, mode: "docker", detail: "drafty-ccx" },
+        meta: false,
+        modal: false,
+        supabase: false,
+        auth: "disabled",
+        compute: "local",
+      },
+    }),
+  );
+  await page.route("**/api/v1/materials", (route) => route.fulfill({ json: [] }));
+  // Register job-detail routes before the list route so POST/GET by id are not swallowed.
+  await page.route(`**/api/v1/jobs/${jobId}/results`, (route) => route.fulfill({ json: results }));
+  await page.route(`**/api/v1/jobs/${jobId}/log`, (route) =>
+    route.fulfill({ json: { solver: "ccx", worker: "ok" } }),
+  );
+  await page.route(`**/api/v1/jobs/${jobId}`, (route) => {
+    expect(route.request().method()).toBe("GET");
+    return route.fulfill({ json: completedJob });
+  });
+  // No POST /jobs — regression uses an already-completed job inventory only.
+  await page.route("**/api/v1/jobs", async (route) => {
+    expect(route.request().method()).toBe("GET");
+    await route.fulfill({ json: { jobs: [completedJob] } });
+  });
+
+  await page.goto("/studio");
+  await expect(page.getByRole("tab", { name: "Edition tools" })).toBeVisible();
+  await page.reload();
+  // Default bottom panel is Edition tools — jobs table is not mounted.
+  await expect(page.getByRole("tab", { name: "Edition tools" })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("cell", { name: jobId.slice(0, 8) })).toHaveCount(0);
+
+  await page.getByRole("tab", { name: /Jobs queue/ }).click();
+  await expect(page.getByRole("columnheader", { name: "Job" })).toBeVisible();
+  await page.getByRole("cell", { name: jobId.slice(0, 8) }).click();
+  await showRunStep(page, "Results");
+  await expect(page.getByText("Governing von Mises", { exact: true })).toBeVisible();
+  await expect(page.getByText(/not a certified safety factor/i).first()).toBeVisible();
+});
+
 test("the bottom edition tools offer visual tools and swap with the jobs queue", async ({ page }) => {
   await page.route("**/api/v1/health", (route) =>
     route.fulfill({

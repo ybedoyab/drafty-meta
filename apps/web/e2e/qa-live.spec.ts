@@ -19,6 +19,7 @@ import {
   recordCompletedResponse,
   recordInvocationAttempt,
   recordJobId,
+  recordUiAssertion,
   recordedJobIds,
   remaining,
   tryConsume,
@@ -412,11 +413,19 @@ test.describe("Drafty live QA", () => {
             recordInvocationAttempt("modal_fem");
           }
         },
+        onSolverArtifactsVerified: (job) => {
+          // Provider completion — independent of post-reload UI assertions.
+          updateFemEvidence(job.id, { status: "completed", phase: "reports_ok", retain: retainEvidence });
+          if (target.kind === "production") {
+            recordCompletedResponse("modal_fem");
+          }
+        },
+        onUiRestored: () => {
+          if (target.kind === "production") {
+            recordUiAssertion("modal_fem");
+          }
+        },
       });
-      updateFemEvidence(jobId, { status: "completed", phase: "reports_ok" });
-      if (target.kind === "production") {
-        recordCompletedResponse("modal_fem");
-      }
       trackScenario({ scenarioId, name, owner: "primary", retain: retainEvidence });
       console.log(
         JSON.stringify({

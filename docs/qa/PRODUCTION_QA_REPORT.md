@@ -1,18 +1,149 @@
 # Drafty Engineering — Automated End-to-End QA Report
 
-**Latest authorized production QA:** `prod-qa-0578799-20261104032051`  
-**Expected / verified production SHA:** `05787990cdeb663f0d55801a94ed46df8d7f04c3`  
+**Latest authorized production QA:** `fem-only-145e1c37-20261104103205` (FEM-only)  
+**Expected / verified production SHA:** `145e1c37f4c05334a31c98808e85ad092021c407`  
 **Batch 10A:** not started  
+**Meta AI:** not run  
 
 Historical archives (immutable; do not overwrite):
 
 - `docs/qa/archive/PRODUCTION_QA_REPORT_prod-qa-64578bd-20261104005258.md`
 - `docs/qa/archive/drafty-qa-paid-budget_prod-qa-64578bd-20261104005258.json`
 - `docs/qa/archive/drafty-qa-paid-budget_prod-qa-0578799-20261104032051.json`
+- `docs/qa/archive/drafty-qa-paid-budget_prod-qa-4fbd50b-20261104042159.json`
+- `docs/qa/archive/drafty-qa-paid-budget_fem-only-145e1c37-20261104103205.json`
 
 ---
 
-## Production QA session `prod-qa-0578799-20261104032051` (2026-11-04)
+## Production FEM-only session `fem-only-145e1c37-20261104103205` (2026-11-04)
+
+**Authorization:** exactly **one** paid Modal FEM (`run_simulation`). Zero CAD. Zero Meta. Zero optimization. Zero retries. Evidence retained (`DRAFTY_QA_RELEASE_RETAINED` unset).
+
+### Preflight
+
+| Check | Result |
+|---|---|
+| Production SHA | `145e1c37f4c05334a31c98808e85ad092021c407` (PR #9) on both aliases — Ready / Current / Latest |
+| `DRAFTY_QA_REQUIRE_PROD_COMMIT` | `145e1c37f4c05334a31c98808e85ad092021c407` |
+| `DRAFTY_QA_BUDGET_RUN_ID` | `fem-only-145e1c37-20261104103205` |
+| Live flags | `RUN_PRODUCTION=true`, `RUN_LIVE_MODAL=true` (session only), `RUN_LIVE_META=false` |
+| Focused filter | `-g "aluminum bracket path"` → 1 test listed |
+| Prior budgets | preserved under `docs/qa/archive/` |
+
+### Invocation
+
+```powershell
+cd apps/web
+$env:DRAFTY_QA_RUN_PRODUCTION="true"
+$env:DRAFTY_QA_RUN_LIVE_MODAL="true"
+$env:DRAFTY_QA_RUN_LIVE_META="false"
+$env:DRAFTY_QA_REQUIRE_PROD_COMMIT="145e1c37f4c05334a31c98808e85ad092021c407"
+$env:DRAFTY_QA_BUDGET_RUN_ID="fem-only-145e1c37-20261104103205"
+npm run test:qa-production -- -g "aluminum bracket path"
+# playwright … --workers=1 --retries=0
+```
+
+Playwright exit code: **1** (UI assertion after successful solve; **no** additional paid retry).
+
+### Evidence captured at submit (before poll / reports)
+
+| Field | Value |
+|---|---|
+| Scenario ID | `4b032aac-f23d-438e-9a58-237ce83f5e2b` |
+| Scenario name | `DRAFTY_QA_bracket_2026-11-04T15-37-41` |
+| Job ID | `4f8ed6cc-7d26-4a53-ba2a-ba1569ab4933` |
+| Compute | `modal` |
+| Retained | **yes** (`afterAll` deleted **0**) |
+| Evidence files | `docs/qa/evidence/fem-evidence_fem-only-145e1c37-20261104103205.json`, `docs/qa/evidence/retained-scenarios.json` |
+
+### Playwright result
+
+| Step | Status | Notes |
+|---|---|---|
+| Load Bracket Demo (no CAD generation) | **PASS** | demo geometry; zero Modal geometry |
+| POST `/api/v1/jobs` (Modal FEM) | **PASS** | job id recorded immediately |
+| Poll to `completed` + `/results` + report fetch in helper | **PASS** (reached) | failure occurred **after** reload UI step |
+| Re-open Results cell after `page.reload()` | **FAIL** | `getByRole('cell', { name: '4f8ed6cc' })` not visible within 30s; page restored to Design/Part |
+
+**Blocker (Playwright only):** post-reload Studio Results table did not show the job id cell. Solver/API path had already completed. **Not** a second Modal invocation. **Not** a report 404.
+
+### Paid operations (provider accounting)
+
+| Kind | Authorized | Reservation | Invocation attempt | Completed response (budget counter) | Provider / IDs |
+|---|---|---|---|---|---|
+| Modal geometry (CAD) | 0 | **0** | **0** | **0** | none |
+| Modal CalculiX FEM | 1 | **1** | **1** | **0*** | job `4f8ed6cc-…` · `compute=modal` · status **completed** |
+| Meta AI | 0 | **0** | **0** | **0** | none |
+| Optimization | 0 | — | — | — | none |
+
+\*Historical archive `completed_responses.modal_fem=0` is **preserved as recorded** — the counter was only incremented after the full E2E helper returned, so a post-reload **UI** failure left the provider counter at 0. **Confirmed provider completion (separate from that archive field):** Modal job `4f8ed6cc-…` status `completed`; CalculiX C3D10; results/report.json/report.pdf all HTTP 200. A UI failure must not be read as a failed Modal computation.
+
+**Billing:** unknown (`billing: {}`).
+
+**Accounting correction (future runs):** `completed_responses` is recorded at solver/artifact verification (`onSolverArtifactsVerified`), before reload UI. `ui_assertions` records Studio restoration separately. Historical archives are not rewritten.
+
+### End-of-session budget file
+
+```json
+{
+  "used": { "modal_geometry": 0, "modal_fem": 1, "meta": 0 },
+  "reservations": { "modal_geometry": 0, "modal_fem": 1, "meta": 0 },
+  "invocation_attempts": { "modal_geometry": 0, "modal_fem": 1, "meta": 0 },
+  "completed_responses": { "modal_geometry": 0, "modal_fem": 0, "meta": 0 },
+  "billing": {},
+  "jobIds": ["4f8ed6cc-7d26-4a53-ba2a-ba1569ab4933"],
+  "runId": "fem-only-145e1c37-20261104103205"
+}
+```
+
+Archived at `docs/qa/archive/drafty-qa-paid-budget_fem-only-145e1c37-20261104103205.json`.
+
+### Read-only post-checks (same job ID — zero new Modal)
+
+Authenticated GETs only against production API. Artifact dump: `docs/qa/evidence/fem-readonly-verify_fem-only-145e1c37-20261104103205.json`.
+
+| Check | Result |
+|---|---|
+| `GET /jobs/{id}` | **200** · `status=completed` · `compute=modal` · `kind=simulation` |
+| `GET /jobs/{id}/results` (`results.json`) | **200** · CalculiX · C3D10 · 31795 nodes / 18980 elems |
+| Equilibrium | **passed=true** |
+| Stress / displacement | `max_displacement_m≈1.304e-7` · `governing_von_mises_pa≈6.651e5` · `max_von_mises_pa≈2.037e6` |
+| Validation | `validation_status=solver_completed` · **5** informational warnings |
+| `GET …/artifacts/report.json` | **200** · `report=drafty-engineering` · contains CalculiX |
+| `GET …/artifacts/report.pdf` | **200** · `application/pdf` · 2082 bytes · magic `%PDF-` |
+| Fresh auth + re-GET results / report.json / report.pdf | all **200** · PDF still 2082 bytes |
+| Scenario still present | **200** · name unchanged · **retained** |
+
+Warnings (summary): nodal FRD stresses; corner-triangle contour; peak includes fixed-face singularity; FoS exploratory; no closed-form benchmark.
+
+### Verdict
+
+| Claim | Status |
+|---|---|
+| ≤1 Modal FEM | **MET** (exactly 1) |
+| 0 CAD / 0 Meta / 0 optimization / 0 retries | **MET** |
+| Job + Storage artifacts durable after UI failure | **MET** |
+| `report.json` / `report.pdf` via production API | **PASS** |
+| Playwright full UI path after reload (original helper) | **FAIL** — did not open **Jobs queue** after reload (`bottomPanel` defaults to `edit`) |
+| Existing-job UI reopen (Jobs queue → select → Results) | **PASS** (read-only; 0 POST /jobs) — Governing von Mises visible |
+| Evidence retention | **PASS** (scenario + job kept) |
+
+**Root cause (confirmed):** E2E clicked Run→Results after reload without selecting the bottom **Jobs queue** tab. Jobs table is only rendered when `bottomPanel === "jobs"`. Production UI restores correctly when that tab is opened.
+
+**Overall — FEM computation / artifacts:** **FULL PASS**.  
+**Overall — original Playwright helper path:** **FAIL** (test bug, fixed in follow-up PR; not a Modal failure).  
+No further paid calls. Batch 10A not started. Meta-only QA still pending (not authorized).
+
+### Post-run controls
+
+- Process live Modal flag was session-scoped; repo `.env` remains `DRAFTY_QA_RUN_LIVE_MODAL=false` / `DRAFTY_QA_RUN_LIVE_META=false`
+- Do **not** set `DRAFTY_QA_RELEASE_RETAINED` until explicit cleanup authorization
+- Retained scenario: `4b032aac-f23d-438e-9a58-237ce83f5e2b`
+- Retained job: `4f8ed6cc-7d26-4a53-ba2a-ba1569ab4933`
+
+---
+
+## Prior production QA session `prod-qa-0578799-20261104032051` (2026-11-04)
 
 **Authorization:** single controlled production run only. Executed once. No retry / no budget reset / no new run id.
 
@@ -121,51 +252,30 @@ modal.exception.NotFoundError: Lookup failed for Function 'generate_revolved'
 
 **Root cause:** spawn failed **before** returning a Modal call id (`NotFoundError`). Attachment never ran. Because the exception was uncaught, the durable row stayed `charged=true` / `queued` / `modal_call_id=null`, so later polls returned **202 GeometryPending** during the resume grace window and the UI stayed on **CAD pending / Building the preview** instead of a terminal error.
 
-**Modal dashboard:** Cursor browser hit Modal login — function inventory for `drafty-engineering` could **not** be independently confirmed in-dashboard. Repo source still defines `@app.function … def generate_revolved` in `infra/modal/app.py`; production Modal env `main` does not currently expose that function to the API tokens in use.
+**Conclusion:** Charge succeeded; Modal lookup for `generate_revolved` failed; fail-open left an indefinitely pending charged job. FEM and Meta were not attempted (fail-stop). Later fixed/deployed on subsequent SHAs; CAD later passed on `prod-qa-4fbd50b-…`.
 
-**Conclusion:** Not an attach-after-success bug. Charge succeeded; Modal lookup for `generate_revolved` failed; fail-open left an indefinitely pending charged job. FEM and Meta were not attempted (fail-stop).
-
-### Post-run controls
+### Post-run controls (that session)
 
 - `DRAFTY_QA_RUN_LIVE_MODAL=false`
 - `DRAFTY_QA_RUN_LIVE_META=false`
 - Session budget archived at `docs/qa/archive/drafty-qa-paid-budget_prod-qa-0578799-20261104032051.json`
 - Batch 10A **not** started
 
-### Ready for Batch 10A?
-
-**No.** Geometry paid path still fails on production under the authorized budget; investigate charge→spawn/attach without starting another paid session until authorized.
-
 ---
 
 ## Historical — prior paid session `prod-qa-64578bd-20261104005258`
 
-**Production merge commit (prior paid QA):** `64578bd7203a86c156a600d28d4be2e3b43f3d04`  
-**Investigation tip (this branch):** see open PR for `fix/prod-qa-geometry-approve-budget`  
-
-### Deploy verification (2026-11-04, prior session)
-
-| Check | Result |
-|---|---|
-| `origin/main` tip (at paid QA) | `64578bd7203a86c156a600d28d4be2e3b43f3d04` |
-| GitHub Actions `ci` on that commit | **PASS** — python, api-bundle, web, e2e all green ([run 41780854121](https://github.com/ybedoyab/drafty-meta/actions/runs/41780854121)) |
-| GitHub commit status `Vercel – drafty-web` | **success** |
-| GitHub commit status `Vercel – drafty-api` | **success** |
-| Production health (`drafty-api.vercel.app`) | **200** — `auth=supabase`, `compute=modal`, `modal_available=true`, `meta=true` |
-| Exact SHA on production aliases via Vercel MCP/CLI | **Not independently readable** from this agent account (`ybedoyabs-projects` unauthorized) |
+**Production merge commit (prior paid QA):** `64578bd7203a86c156a600d28d4be2e3b43f3d04`
 
 ### Production QA session results (prior paid run)
-
-Invocation: `npm run test:qa-production` under budget run id `prod-qa-64578bd-20261104005258`.
 
 | Step | Status | Notes |
 |---|---|---|
 | Leftover `DRAFTY_QA_*` cleanup | **PASS** | Storage nested-404 delete live |
 | Health + homepage / auth / isolation / classroom / delete | **PASS** | |
-| One Modal pawn geometry miss → hit | **FAIL** | Budget slot consumed. Timed out 180s waiting for `/geometry/` GET 200. Scenario stuck `CAD pending`. |
-| One Modal CalculiX FEM + artifacts | **FAIL (pre-solve)** | Budget slot consumed before solve. Failed waiting for **Approve and open Studio** after Confirm faces (30s). |
-| ≤1 Meta turn | **NOT COMPLETED** | Budget reservation burned then harness skipped (`AI not connected` path). |
-| Cost | **NOT MEASURED** | `jobIds: []` |
+| One Modal pawn geometry miss → hit | **FAIL** | Budget slot consumed. Timed out 180s waiting for `/geometry/` GET 200. |
+| One Modal CalculiX FEM + artifacts | **FAIL (pre-solve)** | Budget slot consumed before solve. |
+| ≤1 Meta turn | **NOT COMPLETED** | |
 
 ### Budget file (end of prior paid session)
 
@@ -179,40 +289,9 @@ Invocation: `npm run test:qa-production` under budget run id `prod-qa-64578bd-20
 
 ---
 
-## Investigation (branch `fix/prod-qa-geometry-approve-budget`)
+## Remaining notes
 
-No live Modal or Meta calls were made during this investigation.
-
-### Confirmed root causes (pre-merge)
-
-#### 1. CAD pending / preview quota without artifacts
-
-**Evidence (not speculation):**
-
-| Fact | Source |
-|---|---|
-| Preview charge at `2026-11-04T05:53:56.321871+00:00` | Supabase `preview_charges` id=3 for QA owner |
-| Zero objects under `artifacts/geometry/` after that charge | Supabase Storage list |
-| Empty `geometry_build_locks` after the window | Supabase table |
-| Production handler charged **then** waited on Modal with `call.get(timeout=50)` and **cancelled** the call on timeout | `geometry_cache.load_or_build_geometry` + `remote.remote_geometry` on `64578bd` |
-| Function `maxDuration` 60s; Modal `generate_revolved` timeout 180s | `vercel.json`, `infra/modal/app.py` |
-| QA waited 180s for a geometry GET **200** and never saw cache headers | prior `PRODUCTION_QA_REPORT` / Playwright waiter |
-
-**Conclusion (then):** Synchronous HTTP waiting for Modal inside a short-lived serverless request was the reliability failure mode.
-
-**Fix shipped in PR #4:** Durable async geometry builds — claim → charge → spawn → attach call id, return **202** while pending, poll without cancelling, publish digest cache atomically when ready. Frontend polls 202 with a bounded backoff (≤180s). Migrations `0008` + `0009` applied on Supabase.
-
-#### 2. Bracket Approve missing before CalculiX
-
-Prefer upsert on `scenario_versions` required UPDATE; authenticated only had INSERT → 503. Fixed with `Prefer: return=minimal` for version inserts.
-
-#### 3. Meta QA budget accounting
-
-Reserve only after AI-connected check; layered counters for reservations / invocation_attempts / completed_responses.
-
-### Remaining limitations (updated after `prod-qa-0578799-20261104032051`)
-
-- Async path is deployed, but production still observed **charged + queued + `modal_call_id` null** with no completed artifacts within 180s.
-- Stale `queued`/`running` builds fail closed after ~10 minutes without auto-spawning; a later client retry may charge again for a new attempt.
 - Do not reset archived budget files to “retry” spend.
+- FEM-only session retained scenario/job until explicit `DRAFTY_QA_RELEASE_RETAINED` / `releaseRetainedScenario`.
 - Batch 10A not started.
+- Optional follow-up (unpaid): harden Playwright post-reload Results navigation so UI assertion matches durable API success.

@@ -1,0 +1,27 @@
+{
+  "used": {
+    "modal_geometry": 0,
+    "modal_fem": 1,
+    "meta": 0
+  },
+  "reservations": {
+    "modal_geometry": 0,
+    "modal_fem": 1,
+    "meta": 0
+  },
+  "invocation_attempts": {
+    "modal_geometry": 0,
+    "modal_fem": 1,
+    "meta": 0
+  },
+  "completed_responses": {
+    "modal_geometry": 0,
+    "modal_fem": 0,
+    "meta": 0
+  },
+  "billing": {},
+  "jobIds": [
+    "4f8ed6cc-7d26-4a53-ba2a-ba1569ab4933"
+  ],
+  "runId": "fem-only-145e1c37-20261104103205"
+}
