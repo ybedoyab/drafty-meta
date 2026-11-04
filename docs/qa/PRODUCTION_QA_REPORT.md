@@ -2,7 +2,7 @@
 
 **Baseline / main tip (production today):** `6c6a17e153e505183718dc5276fd82585a1bdc25`  
 **QA harness branch:** `qa/e2e-live-harness`  
-**QA branch tip (pre-merge):** see latest push on PR #3  
+**QA branch tip (pre-merge):** `58a8f8796255a079b9490cd47a3c1ab604644de9`  
 **PR:** https://github.com/ybedoyab/drafty-meta/pull/3  
 **Batch 10A:** not started · **Auto-merge:** not performed  
 
@@ -35,10 +35,12 @@ Paid production QA requires **all** of:
 
 ## CI (PR #3)
 
-| Check | Status on tip |
+| Check | Status on tip `58a8f87` |
 |---|---|
-| python / api-bundle / web | PASS on recent tips |
-| e2e | Was **FAIL**. Root causes: (1) `main@6c6a17e` fails the same Send/turn suite. (2) Idempotent routing remounted Scenario between `/scenario/new` and `/scenario/:id`, wiping the typed draft before Send — zero `/turn` in API logs. (3) Live QA Playwright settings leaked into CI on main via `2d32dc5`; isolated here in `playwright.qa.config.ts`. |
+| python / api-bundle / web | **PASS** |
+| e2e | **PASS** (2m33s) |
+
+Prior e2e failures (resolved on this tip): (1) `main@6c6a17e` failed the same Send/turn suite. (2) Idempotent routing remounted Scenario between `/scenario/new` and `/scenario/:id`, wiping the typed draft before Send — zero `/turn` in API logs. (3) Live QA Playwright settings leaked into CI on main via `2d32dc5`; isolated here in `playwright.qa.config.ts`.
 
 Fixes on this branch (assertions unchanged):
 
@@ -90,12 +92,11 @@ Leftover IDs still present on production until post-merge cleanup:
 
 ## Merge readiness
 
-- **Not merge-ready until PR #3 e2e is green** after the Scenario create/navigate fix.
+- **PR #3 is merge-ready** for harness + local FEM proof + Storage cleanup fix + Scenario create/open draft fix (CI green on `58a8f87`).
 - **Do not** treat merge as authorization for Batch 10A.
 - **Do not** run paid Modal/Meta until production deploy SHA is confirmed and `DRAFTY_QA_REQUIRE_PROD_COMMIT` is set.
-- After merge+deploy: run exactly one `npm run test:qa-production` session with live flags; stop after the first failed paid attempt.
-- Note: `origin/main` e2e is currently red for the same Send/turn hang; this PR is intended to fix that race for main as well.
+- After merge+deploy: run exactly one `npm run test:qa-production` session with live flags; stop after the first failed paid attempt; then retry production leftover DELETE.
 
 ## Ready for Batch 10A?
 
-**No.** Await green CI → merge → production deploy → single authorized paid QA session → update this report with cloud job IDs.
+**No.** Await merge → production deploy → single authorized paid QA session → update this report with cloud job IDs.
