@@ -407,3 +407,82 @@ export function mayCleanupScenario(scenarioId: string, context: CleanupContext =
   if (context.production && context.hasLinkedJobs) return false;
   return true;
 }
+
+export type JobsInventory =
+  | { available: true; linkedScenarioIds: ReadonlySet<string> }
+  | { available: false; reason: string };
+
+/**
+ * Parse GET /api/v1/jobs for leftover cleanup.
+ * Unavailable / unauthorized / malformed responses are never treated as "no jobs".
+ */
+export function inspectJobsInventory(status: number, body: unknown): JobsInventory {
+  if (status === 401 || status === 403) {
+    return { available: false, reason: `jobs-unauthorized:${status}` };
+  }
+  if (status !== 200) {
+    return { available: false, reason: `jobs-unavailable:${status}` };
+  }
+  if (body == null || typeof body !== "object" || Array.isArray(body)) {
+    return { available: false, reason: "jobs-malformed:body" };
+  }
+  const jobs = (body as { jobs?: unknown }).jobs;
+  if (!Array.isArray(jobs)) {
+    return { available: false, reason: "jobs-malformed:jobs" };
+  }
+  const linkedScenarioIds = new Set<string>();
+  for (const job of jobs) {
+    if (job == null || typeof job !== "object" || Array.isArray(job)) {
+      return { available: false, reason: "jobs-malformed:item" };
+    }
+    const sid = (job as { scenario_id?: unknown }).scenario_id;
+    if (sid != null && String(sid).trim()) {
+      linkedScenarioIds.add(String(sid));
+    }
+  }
+  return { available: true, linkedScenarioIds };
+}
+
+export type LeftoverCleanupPlan = {
+  /** When true, callers must not issue any scenario DELETE requests. */
+  abortDestructive: boolean;
+  abortReason?: string;
+  deleteIds: string[];
+  skipped: string[];
+};
+
+/**
+ * Decide which QA-owned leftovers may be deleted.
+ * Production requires a valid jobs inventory before any destructive cleanup.
+ */
+export function planQaOwnedLeftoverCleanup(input: {
+  scenarioIds: string[];
+  production: boolean;
+  inventory: JobsInventory;
+}): LeftoverCleanupPlan {
+  if (input.production && !input.inventory.available) {
+    return {
+      abortDestructive: true,
+      abortReason: input.inventory.reason,
+      deleteIds: [],
+      skipped: input.scenarioIds.map((id) => `${id}:jobs-inventory-unavailable`),
+    };
+  }
+
+  const linked = input.inventory.available ? input.inventory.linkedScenarioIds : new Set<string>();
+  const deleteIds: string[] = [];
+  const skipped: string[] = [];
+  for (const id of input.scenarioIds) {
+    const hasLinkedJobs = linked.has(id);
+    if (!mayCleanupScenario(id, { production: input.production, hasLinkedJobs })) {
+      const reason =
+        input.production && hasLinkedJobs && mayCleanupScenario(id)
+          ? "job-linked-evidence"
+          : "retained-evidence";
+      skipped.push(`${id}:${reason}`);
+      continue;
+    }
+    deleteIds.push(id);
+  }
+  return { abortDestructive: false, deleteIds, skipped };
+}

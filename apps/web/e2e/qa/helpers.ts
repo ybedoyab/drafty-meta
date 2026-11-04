@@ -9,7 +9,12 @@ import {
   qaEnv,
   redact,
 } from "./env";
-import { mayCleanupScenario, retainScenarioEvidence } from "./evidence";
+import {
+  inspectJobsInventory,
+  mayCleanupScenario,
+  planQaOwnedLeftoverCleanup,
+  retainScenarioEvidence,
+} from "./evidence";
 
 /** Known DRAFTY_QA leftover IDs from earlier local FEM iterations (pre Storage delete fix). */
 export const KNOWN_QA_LEFTOVER_IDS = [
@@ -374,24 +379,23 @@ export async function cleanupQaOwnedLeftovers(
 
   const production = Boolean(qaEnv.runProduction);
   const jobsResp = await apiJson(request, apiBase, "GET", "/api/v1/jobs", token);
-  const linkedScenarioIds = new Set<string>();
-  if (jobsResp.status === 200 && Array.isArray(jobsResp.json?.jobs)) {
-    for (const job of jobsResp.json.jobs) {
-      const sid = String(job?.scenario_id || "");
-      if (sid) linkedScenarioIds.add(sid);
-    }
+  const inventory = inspectJobsInventory(jobsResp.status, jobsResp.json);
+  const plan = planQaOwnedLeftoverCleanup({
+    scenarioIds: [...byId.keys()],
+    production,
+    inventory,
+  });
+  skipped.push(...plan.skipped);
+
+  // Production: never DELETE when the jobs inventory cannot be established safely.
+  if (plan.abortDestructive) {
+    failed.push(`jobs-inventory:${plan.abortReason || "unavailable"}`);
+    return { deleted, skipped, failed };
   }
 
-  for (const item of byId.values()) {
-    const hasLinkedJobs = linkedScenarioIds.has(item.id);
-    if (!mayCleanupScenario(item.id, { production, hasLinkedJobs })) {
-      const reason =
-        production && hasLinkedJobs && mayCleanupScenario(item.id)
-          ? "job-linked-evidence"
-          : "retained-evidence";
-      skipped.push(`${item.id}:${reason}`);
-      continue;
-    }
+  for (const id of plan.deleteIds) {
+    const item = byId.get(id);
+    if (!item) continue;
     let result = await apiJson(request, apiBase, "DELETE", `/api/v1/scenarios/${item.id}`, token);
     if (result.status === 503) {
       await new Promise((resolve) => setTimeout(resolve, 1500));
