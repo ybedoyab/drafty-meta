@@ -150,6 +150,7 @@ describe("scenario entry", () => {
     expect(scenarioEntry(undefined)).toEqual({ kind: "create" });
     expect(scenarioEntry(null)).toEqual({ kind: "create" });
     expect(scenarioEntry("")).toEqual({ kind: "create" });
+    expect(scenarioEntry("new")).toEqual({ kind: "create" });
   });
 
   it("shares one in-flight creation instead of posting twice", async () => {

@@ -103,4 +103,18 @@ jobs:
         working-directory: apps/web
         env:
           DRAFTY_LIVE_META: "0"
-        run: npx playwright test e2e/scenario.spec.ts e2e/bracket-fem.spec.ts --reporter=line
+        # Keep assertions unchanged. Run scenario UI tests before the real CalculiX
+        # job so the FEM worker does not starve demo loads on the shared runner.
+        run: |
+          set +e
+          npx playwright test e2e/scenario.spec.ts --reporter=line --workers=1
+          scenario_status=$?
+          npx playwright test e2e/bracket-fem.spec.ts --reporter=line --workers=1
+          fem_status=$?
+          if [ -f /tmp/drafty-api.log ]; then
+            echo "---- drafty API log (tail) ----"
+            tail -n 200 /tmp/drafty-api.log || true
+          fi
+          if [ "$scenario_status" -ne 0 ] || [ "$fem_status" -ne 0 ]; then
+            exit 1
+          fi

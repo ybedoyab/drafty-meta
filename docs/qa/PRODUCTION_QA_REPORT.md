@@ -1,138 +1,102 @@
 # Drafty Engineering — Automated End-to-End QA Report
 
-**Tested baseline commit:** `c55173e2beeafef67dad197cc29544c46c08f8a9` (`main` after PR #1 merge)  
+**Baseline / main tip (production today):** `6c6a17e153e505183718dc5276fd82585a1bdc25`  
 **QA harness branch:** `qa/e2e-live-harness`  
-**Report date:** 2026-11-03  
-**Batch 10A:** not started  
+**QA branch tip (pre-merge):** `58a8f8796255a079b9490cd47a3c1ab604644de9`  
+**PR:** https://github.com/ybedoyab/drafty-meta/pull/3  
+**Batch 10A:** not started · **Auto-merge:** not performed  
 
-## Endpoints
+## Deploy / paid-cloud gate (critical)
 
-| Target | Web | API |
-|---|---|---|
-| Local | http://127.0.0.1:5173 | http://127.0.0.1:8000 |
-| Production | https://drafty-web-umber.vercel.app | https://drafty-api.vercel.app |
-
-## Environment capabilities (observed)
-
-| Capability | Local | Production |
-|---|---|---|
-| `DRAFTY_AUTH_MODE` | `supabase` (forced for QA; process env had been `disabled`) | `supabase` |
-| Supabase API / auth | reachable / configured | reachable / configured |
-| Meta configured | true (reachable false in health probe) | true |
-| Modal configured / available | false / false | true / true |
-| Local CalculiX (`ccx` / `drafty-ccx`) | **unavailable** (Docker Desktop engine error; no `ccx` on PATH) | N/A (expected missing on Vercel; compute=`modal`) |
-| `DRAFTY_QA_RUN_LIVE_META` | false | false |
-| `DRAFTY_QA_RUN_LIVE_MODAL` | false | false |
-| `DRAFTY_QA_RUN_PRODUCTION` | true | true |
-
-## Regression suite (non-live)
-
-| Check | Result |
+| Claim | Status |
 |---|---|
-| Ruff | PASS |
-| Pytest non-FEM | PASS (191) |
-| Pytest postgres concurrency | NOT RUN locally (disposable Postgres not restarted this session); covered in CI on `main` |
-| Pytest FEM / CalculiX | BLOCKED — local solver unavailable |
-| Vitest | PASS (23) |
-| TypeScript + production build | PASS |
-| Existing Playwright (`scenario` / `bracket-fem`) under local `auth=supabase` | BLOCKED — deterministic suite expects unauthenticated local mode (`AI not connected` / open `/scenario/new`). CI behavior preserved (auth disabled). |
+| Local CalculiX + FEM proven | **YES** (prior session + this prep) |
+| Storage nested-404 delete fix on QA branch | **YES** (`storage.py`) |
+| Same fix live on **Vercel production** | **NO** until PR #3 is merged **and** production redeploys |
+| Paid Modal/Meta production session | **NOT RUN** — flags false and/or production lacks cleanup fix |
 
-## Live QA suite (`apps/web/e2e/qa-live.spec.ts`)
+Paid production QA requires **all** of:
 
-Credentials loaded from repository-root `.env` via `e2e/qa/env.ts`. Passwords / JWTs / service-role secrets are not logged.
+1. PR #3 merged to `main`
+2. Vercel production deployment of that commit
+3. `DRAFTY_QA_RUN_PRODUCTION=true`
+4. `DRAFTY_QA_RUN_LIVE_MODAL=true` and/or `DRAFTY_QA_RUN_LIVE_META=true`
+5. `DRAFTY_QA_REQUIRE_PROD_COMMIT=<deployed production git SHA>`
+6. Single invocation: `npm run test:qa-production` (`--workers=1 --retries=0`)
 
-### Local (`--project=qa-local`)
+## Environment flags (this prep session)
 
-| Case | Status | Notes |
-|---|---|---|
-| Health + homepage (desktop/mobile) | PASS | auth=supabase, solver unavailable, modal=false, meta=true |
-| Sign-in, create/rename `DRAFTY_QA_*`, reload, sign-out/in | PASS | Authenticated API GET confirmed ownership |
-| Cross-user isolation (API 401/403/404) | PASS | Secondary account cannot GET/rename/DELETE primary scenario |
-| Staunton pawn geometry + STEP/STL + cache header | PASS | Second fetch `x-drafty-geometry-cache=hit`; first also `hit` (local shared digest). No FEM started |
-| Classroom Euler–Bernoulli + 5 m compare | PASS | 3D FEM disabled; beam-element results shown |
-| Aluminum bracket real CalculiX | SKIP | Local CalculiX unavailable |
-| Mocked MediaRecorder mic UI | SKIP | Control not visible / not claimed as live ASR |
-| Deletion cleanup policy | PASS | `cleanup.geometry_cache=retained`; retry → 404/503 |
-| Live Meta (one paid turn) | SKIP | `DRAFTY_QA_RUN_LIVE_META=false` |
-| Cleanup teardown | PASS | 5 QA scenarios deleted |
+| Flag | Value |
+|---|---|
+| `DRAFTY_QA_RUN_PRODUCTION` | true |
+| `DRAFTY_QA_RUN_LIVE_MODAL` | **false** |
+| `DRAFTY_QA_RUN_LIVE_META` | **false** |
+| `DRAFTY_QA_REQUIRE_PROD_COMMIT` | unset |
 
-**Local summary:** 6 PASS · 3 SKIP · 0 FAIL  
+## CI (PR #3)
 
-### Production (`--project=qa-production`)
+| Check | Status on tip `58a8f87` |
+|---|---|
+| python / api-bundle / web | **PASS** |
+| e2e | **PASS** (2m33s) |
 
-| Case | Status | Notes |
-|---|---|---|
-| Health + homepage | PASS | compute=modal, modal=true, solver unavailable (expected), meta=true |
-| Auth persistence / rename / reload | PASS | |
-| Cross-user isolation | PASS | After signOut hardening |
-| Pawn geometry / Modal cache | SKIP | Would require Modal spend; `DRAFTY_QA_RUN_LIVE_MODAL=false` |
-| Classroom beam analysis | PASS | |
-| Bracket Modal FEM | SKIP | `DRAFTY_QA_RUN_LIVE_MODAL=false` |
-| Mocked mic UI | SKIP | |
-| Deletion cleanup | PASS | |
-| Live Meta | SKIP | flag false |
-| Cleanup teardown | PASS | 4 QA resources deleted |
+Prior e2e failures (resolved on this tip): (1) `main@6c6a17e` failed the same Send/turn suite. (2) Idempotent routing remounted Scenario between `/scenario/new` and `/scenario/:id`, wiping the typed draft before Send — zero `/turn` in API logs. (3) Live QA Playwright settings leaked into CI on main via `2d32dc5`; isolated here in `playwright.qa.config.ts`.
 
-**Production summary:** 5 PASS · 4 SKIP · 0 FAIL  
+Fixes on this branch (assertions unchanged):
 
-## Invocation / cost accounting
+- Live QA config isolated from CI regression
+- CI runs `scenario.spec.ts` then `bracket-fem.spec.ts` with `--workers=1`
+- Single Scenario route mount; `scenarioEntry("new")` is create; draft preserved across create→open
+- Create navigates without adopting; open route loads the session
+- Abort in-flight turns only when the open scenario id actually changes
 
-| Resource | Count | Cost |
-|---|---|---|
-| Paid Meta requests | 0 | NOT MEASURED / not invoked |
-| Paid Modal geometry builds | 0 (prod skipped by flag) | NOT MEASURED |
-| Paid Modal CalculiX solves | 0 | NOT MEASURED |
-| Paid Modal optimization | 0 | NOT MEASURED |
+## Live-call budget
 
-Live transcription: **NOT TESTED** (mock MediaRecorder only).
+| Control | Implementation |
+|---|---|
+| Caps | 1 Modal geometry · 1 Modal FEM · 1 Meta |
+| Persistence | File-backed under OS temp (`drafty-qa-paid-budget.json`) keyed by process run id |
+| Workers | Forced `workers: 1` when live QA is enabled; npm script also passes `--workers=1 --retries=0` |
+| Retries | `retries: 0` globally for QA; failed paid attempts still consume budget (no release) |
+| Production webServer | Skipped when only `qa-production` is selected |
 
-## Screenshots
+## Leftover `DRAFTY_QA_*` cleanup
 
-Under `docs/qa/screenshots/` (password fields cleared before capture):
+| Target | Result |
+|---|---|
+| Local API (branch code + `drafty-ccx`) | **PASS** — deleted 8 leftover bracket scenarios owned by the QA account (not re-run) |
+| Production API | **BLOCKED** — DELETE returned **503** (expected until Storage nested-404 fix is deployed). No further delete attempts this session |
 
-- `local-homepage.png`, `local-homepage-mobile.png`
-- `local-projects-after-relogin.png`, `local-pawn-geometry.png`, `local-classroom-beam.png`
-- `production-homepage.png`, `production-homepage-mobile.png`
-- `production-projects-after-relogin.png`, `production-classroom-beam.png`
+Leftover IDs still present on production until post-merge cleanup:
 
-## Browser / API errors
+`535f2a7f-de71-4e18-a56c-3f887de1af7f`, `6decff8a-5f98-4ed1-8c62-eba7a2fd4542`, `5284c7a3-b0bf-46f8-b220-f562df3252ff`, `229f8821-1538-476a-aaf9-29a320424402`, `d6d64762-a808-4b17-843c-3dc618db7175`, `c658a20c-7c2e-4738-98a8-89282610a2fc`, `7d41ac60-112c-407b-ba55-79bb1e0645e0`, `d27dd637-c521-44b5-932d-e205a5846b37`
 
-- No unexpected 500s on exercised authenticated CRUD paths.
-- Production `/api/v1/health` correctly reports local CalculiX missing while Modal is available.
-- Local process env initially forced `DRAFTY_AUTH_MODE=disabled` over `.env`; QA restarted with explicit `supabase`.
+## Proven earlier (not re-run this prep)
 
-## Defects
+| Area | Evidence |
+|---|---|
+| Local FEM benchmarks | 9 passed |
+| Deterministic bracket + optimization E2E | PASS (prior local) |
+| Authenticated local bracket CalculiX | Job `6883389d-07cb-44d3-adc9-da5d5b9e8279` (nodes 31795, C3D10, equilibrium passed) |
+| Auth / isolation / classroom beam | PASS (prior) |
 
-| ID | Sev | Finding |
-|---|---|---|
-| D1 | P1 | `dev.ps1` aborted startup when Docker engine returned HTTP 500 on `docker image inspect` (`$ErrorActionPreference=Stop`). **Fixed** with try/catch so API/web still start. |
-| D2 | P2 | Host/shell `DRAFTY_AUTH_MODE=disabled` overrides `.env` because dotenv loads with `override=False`. Documented; QA forced `supabase` for the live run. |
-| D3 | P2 | Deterministic Playwright suite is incompatible with local `auth=supabase` without a login fixture (expected; CI remains auth-disabled). |
+## Production paid session (post-merge)
 
-## Cleanup
+| Step | Status |
+|---|---|
+| One pawn geometry miss → hit | **NOT RUN** (await merge+deploy+flags) |
+| One Modal bracket FEM + artifacts + persistence | **NOT RUN** |
+| ≤1 Meta turn | **NOT RUN** |
+| Remote optimization | forbidden / not run |
+| Cost | **NOT MEASURED** |
 
-- Only `DRAFTY_QA_*` scenarios created by this run were deleted.
-- Shared geometry cache retained per API cleanup policy.
-- No unrelated projects or Storage prefixes were wiped.
+## Merge readiness
+
+- **PR #3 is merge-ready** for harness + local FEM proof + Storage cleanup fix + Scenario create/open draft fix (CI green on `58a8f87`).
+- **Do not** treat merge as authorization for Batch 10A.
+- **Do not** run paid Modal/Meta until production deploy SHA is confirmed and `DRAFTY_QA_REQUIRE_PROD_COMMIT` is set.
+- After merge+deploy: run exactly one `npm run test:qa-production` session with live flags; stop after the first failed paid attempt; then retry production leftover DELETE.
 
 ## Ready for Batch 10A?
 
-**Not yet.** Auth, project CRUD, isolation, classroom beam analysis, local pawn geometry/cache, and production smoke are proven. Remaining before Batch 10A:
-
-1. Restore local CalculiX (Docker Desktop or `ccx` on PATH) and run real FEM benchmarks + bracket E2E.
-2. With explicit authorization, set `DRAFTY_QA_RUN_LIVE_MODAL=true` for **one** production geometry + **one** CalculiX solve (no optimization loops).
-3. Optionally `DRAFTY_QA_RUN_LIVE_META=true` for **one** Meta turn.
-4. Keep CI deterministic suite on auth-disabled runners.
-
-## Implemented vs proven
-
-| Area | Implemented in product | Proven end-to-end in this QA |
-|---|---|---|
-| Supabase auth + projects | yes | yes (local + production) |
-| Cross-user isolation | yes | yes (API-level) |
-| Pawn CAD + cache | yes | yes locally; production Modal path skipped by flag |
-| Classroom beam analysis | yes | yes (local + production) |
-| CalculiX FEM | yes | **not proven** here (no local solver; Modal flag off) |
-| Meta AI | yes | **not proven** (flag off) |
-| Modal pipeline | yes | health shows available in prod; **job not executed** |
-| Scenario delete / geometry retain | yes | yes |
+**No.** Await merge → production deploy → single authorized paid QA session → update this report with cloud job IDs.
