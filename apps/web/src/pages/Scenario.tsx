@@ -126,6 +126,7 @@ export function Scenario() {
   const [geometryError, setGeometryError] = useState<string | null>(null);
   const [studioPreviewUrl, setStudioPreviewUrl] = useState<string | null>(null);
   const [studioPreviewError, setStudioPreviewError] = useState<string | null>(null);
+  const [studioPreviewBusy, setStudioPreviewBusy] = useState(false);
   const turnAbort = useRef<AbortController | null>(null);
   const navigate = useNavigate();
   const { scenarioId } = useParams();
@@ -252,27 +253,34 @@ export function Scenario() {
 
   const studioSpecKey = session?.studio_spec ? JSON.stringify(session.studio_spec) : "";
   useEffect(() => {
-    setStudioPreviewUrl(null);
+    // Drop any prior blob when the proposed studio part changes. Do not auto-call
+    // /api/v1/designs/preview — opening or revisiting a scenario is not a CAD charge.
+    setStudioPreviewUrl((current) => {
+      if (current) URL.revokeObjectURL(current);
+      return null;
+    });
     setStudioPreviewError(null);
-    if (!session?.studio_spec || !studioSpecKey) return;
-    let cancel = false;
-    let created: string | null = null;
-    previewSpec(formToSpec(specToForm(session.studio_spec as unknown as DesignSpec, benchmarkForm)))
-      .then((url) => {
-        if (cancel) URL.revokeObjectURL(url);
-        else {
-          created = url;
-          setStudioPreviewUrl(url);
-        }
-      })
-      .catch((reason) => {
-        if (!cancel) setStudioPreviewError(reason instanceof Error ? reason.message : "The preview could not be built.");
-      });
-    return () => {
-      cancel = true;
-      if (created) URL.revokeObjectURL(created);
-    };
+    setStudioPreviewBusy(false);
   }, [session?.id, studioSpecKey]);
+
+  async function requestStudioPreview() {
+    if (!session?.studio_spec || studioPreviewBusy) return;
+    setStudioPreviewBusy(true);
+    setStudioPreviewError(null);
+    try {
+      const url = await previewSpec(
+        formToSpec(specToForm(session.studio_spec as unknown as DesignSpec, benchmarkForm)),
+      );
+      setStudioPreviewUrl((current) => {
+        if (current) URL.revokeObjectURL(current);
+        return url;
+      });
+    } catch (reason) {
+      setStudioPreviewError(reason instanceof Error ? reason.message : "The preview could not be built.");
+    } finally {
+      setStudioPreviewBusy(false);
+    }
+  }
 
   async function downloadGeometry(name: string) {
     if (!session?.geometry_spec) return;
@@ -841,6 +849,8 @@ export function Scenario() {
               spec={session.studio_spec as unknown as DesignSpec}
               previewUrl={studioPreviewUrl}
               error={studioPreviewError}
+              busy={studioPreviewBusy}
+              onRequestPreview={() => void requestStudioPreview()}
               description={inspectorSteps.find((step) => step.id === "model")?.hint}
             />
           )}
@@ -1185,11 +1195,15 @@ function StudioPreviewPanel({
   spec,
   previewUrl,
   error,
+  busy,
+  onRequestPreview,
   description,
 }: {
   spec: DesignSpec;
   previewUrl: string | null;
   error: string | null;
+  busy: boolean;
+  onRequestPreview: () => void;
   description?: string;
 }) {
   const [gridVisible, setGridVisible] = useState(true);
@@ -1231,8 +1245,18 @@ function StudioPreviewPanel({
           />
         </Suspense>
         {!previewUrl && (
-          <p className="absolute inset-x-0 top-1/2 text-center text-sm text-slate-500">{error ?? "Building the preview."}</p>
+          <p className="absolute inset-x-0 top-1/2 px-4 text-center text-sm text-slate-500">
+            {busy ? "Building the preview." : error ?? "Preview is not loaded yet. Generate it only when you need the solid."}
+          </p>
         )}
+      </div>
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        <Button type="button" variant="primary" disabled={busy} onClick={onRequestPreview}>
+          {busy ? "Building preview" : previewUrl ? "Rebuild preview" : "Generate preview"}
+        </Button>
+        <p className="text-sm text-slate-600">
+          Opening this scenario does not generate CAD. Preview starts a potentially chargeable solid build.
+        </p>
       </div>
       <p className="mt-2 text-sm text-slate-600">
         Geometry preview of the proposed part. It is not a solved model. Approve it in the Results step to open Studio and run the analysis there.

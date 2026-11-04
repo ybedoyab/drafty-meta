@@ -372,3 +372,102 @@ test("landing screenshots", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.screenshot({ path: "../../docs/screenshots/landing-mobile.png", fullPage: true });
 });
+
+test("scenario Model does not auto-call designs/preview for a studio_spec", async ({ page }) => {
+  const scenarioId = "abc2180d-e0e3-4ddb-87cc-da3f8ada8c7b";
+  let previewPosts = 0;
+  const session = {
+    id: scenarioId,
+    name: "Retained Batch 10A",
+    missing: [],
+    messages: [],
+    evidence: [],
+    errors: [],
+    assumptions: [],
+    sources: [],
+    verification: [],
+    model_questions: [],
+    observations: [],
+    mode: "guided",
+    model: null,
+    calculation: null,
+    section: null,
+    beam: null,
+    analysis: null,
+    comparison: null,
+    ai: "off",
+    jobs: [],
+    inputs: {},
+    model_proposal: {
+      family: "l_bracket",
+      ready_for_3d_simulation: true,
+      reason: "mocked",
+    },
+    engineering: {
+      domain: "mechanical",
+      physical_system: "bracket",
+      missing: [],
+      suitable_methods: ["solid_fem"],
+      unsupported: [],
+      validation_status: "proposed",
+      simulator: "calculix",
+      quantities: [],
+    },
+    studio_approval: "confirmed",
+    studio_spec: {
+      name: "retained-bracket",
+      kind: "l_bracket",
+      material_id: "aluminum_6061_t6",
+      mesh_size_m: 0.004,
+      element_order: 2,
+      supports: [{ surface: "xmin", constraint: "encastre" }],
+      loads: [
+        {
+          surface: "zmax",
+          mode: "force",
+          magnitude: 200,
+          direction: { x: 0, y: 0, z: -1 },
+        },
+      ],
+      beam: null,
+      plate: null,
+      bracket: { leg_x_m: 0.08, leg_z_m: 0.08, thickness_m: 0.008, width_m: 0.04 },
+      holes: null,
+      additions: [],
+    },
+    geometry_spec: null,
+  };
+  await page.route("**/api/v1/health", (route) =>
+    route.fulfill({
+      json: {
+        service: "drafty",
+        solver: { available: true, mode: "docker", detail: "drafty-ccx" },
+        meta: false,
+        modal: false,
+        supabase: false,
+        auth: "disabled",
+        compute: "local",
+      },
+    }),
+  );
+  await page.route("**/api/v1/models", (route) => route.fulfill({ json: { models: [] } }));
+  await page.route(`**/api/v1/scenarios/${scenarioId}`, (route) => route.fulfill({ json: session }));
+  await page.route("**/api/v1/designs/preview", async (route) => {
+    previewPosts += 1;
+    await route.fulfill({ status: 500, json: { detail: "preview stubbed in this test" } });
+  });
+
+  await page.goto(`/scenario/${scenarioId}`);
+  await showInspectorStep(page, "Model");
+  await expect(page.getByRole("button", { name: "Generate preview" })).toBeVisible();
+  await expect(page.getByText(/does not generate CAD/i)).toBeVisible();
+  await expect.poll(() => previewPosts).toBe(0);
+
+  await page.reload();
+  await showInspectorStep(page, "Model");
+  await expect(page.getByRole("button", { name: "Generate preview" })).toBeVisible();
+  await expect.poll(() => previewPosts).toBe(0);
+
+  await page.getByRole("button", { name: "Generate preview" }).click();
+  await expect.poll(() => previewPosts).toBe(1);
+});
