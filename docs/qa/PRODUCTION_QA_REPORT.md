@@ -37,13 +37,15 @@ Paid production QA requires **all** of:
 
 | Check | Status on tip |
 |---|---|
-| python / api-bundle / web | PASS on `5643711` and later |
-| e2e | Was **FAIL** (flake under parallel CalculiX + demo load contention; also earlier config drift). **Fixes:** (1) `playwright.config.ts` identical to `main`; live QA in `playwright.qa.config.ts`. (2) CI runs `scenario.spec.ts` then `bracket-fem.spec.ts` separately so FEM does not starve UI demos. Assertions unchanged. |
+| python / api-bundle / web | PASS on recent tips |
+| e2e | Was **FAIL**. Root causes found: (1) `main@6c6a17e` itself fails the same Send/turn suite (confirmed by re-running main CI). (2) Scenario create adopted the session before `navigate`, so a fast first **Send** could start a turn that the open-route effect immediately **aborted** — zero `/turn` completions in API logs. (3) Live QA Playwright settings had leaked into CI on main via `2d32dc5`; this branch isolates them in `playwright.qa.config.ts`. |
 
-Live QA entrypoints (do not use default CI config):
+Fixes on this branch (assertions unchanged):
 
-- `npm run test:qa-local`
-- `npm run test:qa-production` (`--workers=1 --retries=0`, no local webServer)
+- Live QA config isolated from CI regression
+- CI runs `scenario.spec.ts` then `bracket-fem.spec.ts` with `--workers=1`
+- Scenario create path navigates without adopting; open route loads the session
+- Abort in-flight turns only when the open scenario id actually changes
 
 ## Live-call budget
 
@@ -59,8 +61,8 @@ Live QA entrypoints (do not use default CI config):
 
 | Target | Result |
 |---|---|
-| Local API (branch code + `drafty-ccx`) | **PASS** — deleted 8 leftover bracket scenarios owned by the QA account |
-| Production API | **BLOCKED** — DELETE returned **503** for the same mirrored QA rows. Expected: production has not received the Storage nested-404 fix yet |
+| Local API (branch code + `drafty-ccx`) | **PASS** — deleted 8 leftover bracket scenarios owned by the QA account (not re-run) |
+| Production API | **BLOCKED** — DELETE returned **503** (expected until Storage nested-404 fix is deployed). No further delete attempts this session |
 
 Leftover IDs still present on production until post-merge cleanup:
 
@@ -71,7 +73,7 @@ Leftover IDs still present on production until post-merge cleanup:
 | Area | Evidence |
 |---|---|
 | Local FEM benchmarks | 9 passed |
-| Deterministic bracket + optimization E2E | PASS |
+| Deterministic bracket + optimization E2E | PASS (prior local) |
 | Authenticated local bracket CalculiX | Job `6883389d-07cb-44d3-adc9-da5d5b9e8279` (nodes 31795, C3D10, equilibrium passed) |
 | Auth / isolation / classroom beam | PASS (prior) |
 
@@ -87,12 +89,11 @@ Leftover IDs still present on production until post-merge cleanup:
 
 ## Merge readiness
 
-Once CI is fully green on the follow-up commit:
-
-- **PR #3 is merge-ready for harness + local FEM proof + cleanup fix.**
+- **Not merge-ready until PR #3 e2e is green** after the Scenario create/navigate fix.
 - **Do not** treat merge as authorization for Batch 10A.
 - **Do not** run paid Modal/Meta until production deploy SHA is confirmed and `DRAFTY_QA_REQUIRE_PROD_COMMIT` is set.
 - After merge+deploy: run exactly one `npm run test:qa-production` session with live flags; stop after the first failed paid attempt.
+- Note: `origin/main` e2e is currently red for the same Send/turn hang; this PR is intended to fix that race for main as well.
 
 ## Ready for Batch 10A?
 

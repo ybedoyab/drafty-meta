@@ -162,10 +162,15 @@ export function Scenario() {
   // (shareInFlight absorbs StrictMode's double effect run), then replaces
   // itself with that scenario's route. A named scenario that cannot be
   // loaded is an error, never a silent replacement scenario.
+  //
+  // Create must not adopt before navigate: adopting enables Send while the
+  // route is still "/scenario/new", so a fast first turn is aborted when the
+  // open-route effect runs and calls turnAbort.abort().
   useEffect(() => {
     let cancel = false;
-    turnAbort.current?.abort();
-    openIdRef.current = entry.kind === "open" ? entry.id : null;
+    const nextOpenId = entry.kind === "open" ? entry.id : null;
+    if (nextOpenId !== openIdRef.current) turnAbort.current?.abort();
+    openIdRef.current = nextOpenId;
     setSession(null);
     setForm(emptyForm());
     setEditingProjectName(false);
@@ -177,8 +182,12 @@ export function Scenario() {
     load
       .then((next) => {
         if (cancel) return;
+        if (entry.kind === "create") {
+          rememberScenarioId(localStorage, next.id);
+          navigate(scenarioPath(next.id), { replace: true });
+          return;
+        }
         adopt(next);
-        if (entry.kind === "create") navigate(scenarioPath(next.id), { replace: true });
       })
       .catch((reason) => {
         if (!cancel) setError(reason instanceof Error ? reason.message : "The scenario service is unavailable.");
