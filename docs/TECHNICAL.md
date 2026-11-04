@@ -17,7 +17,7 @@ The why, the solver pipeline, and the deployment manuals. The [README](../README
 1. Validate the typed specification. One encastre support, one load, a known material, and explicit dimensions are required.
 2. Build the solid in CadQuery and write STEP.
 3. Mesh that STEP file with Gmsh. Quadratic tetrahedra are the default.
-4. Assess the tetrahedral mesh: corner volumes for all tets, plus sampled/adaptive C3D10 Jacobian checks for quadratic meshes (see [BATCH_10A_MESH_QUALITY.md](BATCH_10A_MESH_QUALITY.md)). Demonstrated inversion fails closed; whole-element certification stays inconclusive on the NumPy path.
+4. Assess the tetrahedral mesh: corner volumes for all tets, plus sampled/adaptive C3D10 Jacobian checks for quadratic meshes (see [BATCH_10A_MESH_QUALITY.md](BATCH_10A_MESH_QUALITY.md); merged on `main` as PR #12). Demonstrated inversion fails closed; whole-element certification stays inconclusive on the NumPy path. Determinant floors use `1e-12·max(|J₀|, L³)` relative to the affine corner mapping.
 5. Check that the fixed and loaded faces match the requested surfaces.
 6. Write a CalculiX `.inp` and run `ccx` in its own process, with a timeout.
 7. Read nodal displacements and integration-point stresses from the solver files.

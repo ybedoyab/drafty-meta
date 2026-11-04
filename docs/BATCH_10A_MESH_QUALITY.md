@@ -107,3 +107,11 @@ Environment for this batch:
 - `DRAFTY_QA_RUN_LIVE_MODAL=false`
 - `DRAFTY_QA_RUN_LIVE_META=false`
 - `DRAFTY_QA_RELEASE_RETAINED` unset
+
+## Post-merge production note (2026-11-04)
+
+- Merged as `8637665193c0d77acea233908039be50cc104cf8` (PR #12).
+- GitHub CI on that commit: python / web / api-bundle / e2e **success**.
+- Vercel production aliases `drafty-api.vercel.app` and `drafty-web-umber.vercel.app` serve that commit (**Production** / **Latest**).
+- Retained FEM job `4f8ed6cc-…` remains completed with pre-Batch-10A `mesh.quality` keys only — historical artifacts were **not** rewritten.
+- Cloud Modal worker image was **not** redeployed with this merge; local/API-bundle NumPy validation is on main, but Modal-hosted FEM will pick up Batch 10A mesh gates only after an explicitly authorized worker redeploy.
