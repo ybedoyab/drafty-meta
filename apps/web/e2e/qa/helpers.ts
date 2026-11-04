@@ -9,6 +9,7 @@ import {
   qaEnv,
   redact,
 } from "./env";
+import { isScenarioRetained, mayCleanupScenario } from "./evidence";
 
 /** Known DRAFTY_QA leftover IDs from earlier local FEM iterations (pre Storage delete fix). */
 export const KNOWN_QA_LEFTOVER_IDS = [
@@ -24,6 +25,8 @@ export type TrackedResource = {
   scenarioId: string;
   name: string;
   owner: "primary" | "secondary";
+  /** When true, afterAll / leftover cleanup must not delete this scenario. */
+  retain?: boolean;
 };
 
 const tracked: TrackedResource[] = [];
@@ -33,9 +36,13 @@ export function trackedResources(): TrackedResource[] {
 }
 
 export function trackScenario(resource: TrackedResource): void {
-  if (!tracked.some((item) => item.scenarioId === resource.scenarioId)) {
-    tracked.push(resource);
+  const existing = tracked.find((item) => item.scenarioId === resource.scenarioId);
+  if (existing) {
+    if (resource.retain) existing.retain = true;
+    if (resource.name) existing.name = resource.name;
+    return;
   }
+  tracked.push({ ...resource });
 }
 
 export function qaScenarioName(suffix: string): string {
@@ -284,7 +291,13 @@ export async function cleanupTracked(
       token = null;
     }
   }
+  const remaining: TrackedResource[] = [];
   for (const item of [...tracked].reverse()) {
+    const retain = Boolean(item.retain) || isScenarioRetained(item.scenarioId) || !mayCleanupScenario(item.scenarioId);
+    if (retain) {
+      remaining.push(item);
+      continue;
+    }
     try {
       let result = await apiJson(request, apiBase, "DELETE", `/api/v1/scenarios/${item.scenarioId}`, token);
       // Cleanup is retryable when private artifact purge is incomplete (HTTP 503).
@@ -302,6 +315,7 @@ export async function cleanupTracked(
     }
   }
   tracked.length = 0;
+  tracked.push(...remaining.reverse());
   if (failed.length) {
     ensureScreenshotDir();
     fs.writeFileSync(
@@ -353,6 +367,10 @@ export async function cleanupQaOwnedLeftovers(
   }
 
   for (const item of byId.values()) {
+    if (!mayCleanupScenario(item.id) || isScenarioRetained(item.id)) {
+      skipped.push(`${item.id}:retained-evidence`);
+      continue;
+    }
     let result = await apiJson(request, apiBase, "DELETE", `/api/v1/scenarios/${item.id}`, token);
     if (result.status === 503) {
       await new Promise((resolve) => setTimeout(resolve, 1500));
@@ -419,7 +437,12 @@ export async function runApprovedBracketFem(
   page: Page,
   request: APIRequestContext,
   apiBase: string,
-  opts: { expectCompute?: "local" | "modal"; timeoutMs?: number } = {},
+  opts: {
+    expectCompute?: "local" | "modal";
+    timeoutMs?: number;
+    /** Called immediately after POST /jobs succeeds — before poll or report downloads. */
+    onJobSubmitted?: (job: { id: string; status: string; compute?: string }) => void;
+  } = {},
 ): Promise<{ jobId: string; results: any; report: any }> {
   await showInspectorStep(page, "Results");
   await page.getByLabel("Fixed face").selectOption("xmin");
@@ -454,6 +477,8 @@ export async function runApprovedBracketFem(
   expect(jobResponse.status(), "job submission HTTP status").toBeLessThan(400);
   const submitted = (await jobResponse.json()) as { id: string; status: string; compute?: string };
   expect(submitted.id).toBeTruthy();
+  // Persist the id before any poll / report assertion so a later 404 cannot erase it.
+  opts.onJobSubmitted?.(submitted);
   const token = await accessTokenFromPage(page);
   const terminal = await waitForJobTerminal(
     request,
